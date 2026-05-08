@@ -27,6 +27,7 @@ import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { EquityChart } from "@/components/algo/EquityChart";
+import { PositionChartDialog } from "@/components/algo/PositionChartDialog";
 import {
   type AlgoStatus,
   type LogEntry,
@@ -61,6 +62,7 @@ function Index() {
   const [autoCompound, setAutoCompound] = useState(true);
   const [paperMode, setPaperMode] = useState(false);
   const [uptimeSec, setUptimeSec] = useState(4 * 3600 + 17 * 60 + 22);
+  const [chartSymbol, setChartSymbol] = useState<string | null>(null);
   const tickRef = useRef(0);
 
   // Live tick simulation
@@ -298,7 +300,7 @@ function Index() {
               <span className="text-[11px] text-muted-foreground">{positions.length} active</span>
             }
           >
-            <PositionsTable positions={positions} />
+            <PositionsTable positions={positions} onOpen={(p) => setChartSymbol(p.symbol)} />
           </Panel>
 
           <Panel title="LIVE LOG" right={<LiveDot active={status === "running"} />}>
@@ -319,6 +321,12 @@ function Index() {
           </Panel>
         </section>
       </main>
+
+      <PositionChartDialog
+        position={positions.find((p) => p.symbol === chartSymbol) ?? null}
+        open={chartSymbol !== null}
+        onOpenChange={(o) => !o && setChartSymbol(null)}
+      />
     </div>
   );
 }
@@ -485,7 +493,13 @@ function LiveDot({ active }: { active: boolean }) {
   );
 }
 
-function PositionsTable({ positions }: { positions: Position[] }) {
+function PositionsTable({
+  positions,
+  onOpen,
+}: {
+  positions: Position[];
+  onOpen: (p: Position) => void;
+}) {
   if (!positions.length) {
     return (
       <div className="px-4 py-10 text-center text-xs text-muted-foreground">
@@ -504,6 +518,7 @@ function PositionsTable({ positions }: { positions: Position[] }) {
             <th className="px-2 py-2 text-right font-normal">Entry</th>
             <th className="px-2 py-2 text-right font-normal">Mark</th>
             <th className="px-4 py-2 text-right font-normal">PnL</th>
+            <th className="px-2 py-2 text-right font-normal" />
           </tr>
         </thead>
         <tbody className="font-mono">
@@ -513,8 +528,12 @@ function PositionsTable({ positions }: { positions: Position[] }) {
             const pct = ((p.mark - p.entry) / p.entry) * 100 * dir;
             const positive = pnl >= 0;
             return (
-              <tr key={p.symbol} className="border-t border-border/60 hover:bg-accent/30">
-                <td className="px-4 py-2.5">{p.symbol}</td>
+              <tr
+                key={p.symbol}
+                onClick={() => onOpen(p)}
+                className="cursor-pointer border-t border-border/60 transition-colors hover:bg-accent/30"
+              >
+                <td className="px-4 py-2.5 font-semibold">{p.symbol}</td>
                 <td className="px-2 py-2.5">
                   <span
                     className={cn(
@@ -535,6 +554,17 @@ function PositionsTable({ positions }: { positions: Position[] }) {
                   {positive ? "+" : ""}
                   {pnl.toFixed(2)}{" "}
                   <span className="text-[10px] opacity-70">({pct.toFixed(2)}%)</span>
+                </td>
+                <td className="px-3 py-2.5 text-right">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onOpen(p);
+                    }}
+                    className="rounded-sm border border-border px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground hover:border-bull/40 hover:text-bull"
+                  >
+                    Chart
+                  </button>
                 </td>
               </tr>
             );
