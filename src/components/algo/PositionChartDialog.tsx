@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { TrendingDown, TrendingUp, X } from "lucide-react";
+import { TrendingDown, TrendingUp } from "lucide-react";
 
 import {
   Dialog,
@@ -7,7 +7,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { Position } from "./mockData";
 
@@ -86,10 +85,7 @@ export function PositionChartDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        showCloseButton={false}
-        className="max-w-3xl border-border bg-card p-0 sm:rounded-sm"
-      >
+      <DialogContent className="max-w-3xl border-border bg-card p-0 sm:rounded-sm">
         <DialogHeader className="flex flex-row items-center justify-between gap-3 border-b border-border px-5 py-3 space-y-0">
           <div className="flex items-center gap-3">
             <DialogTitle className="font-mono text-base tracking-wide">
@@ -111,7 +107,7 @@ export function PositionChartDialog({
               {position.side} · {position.size}
             </span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 pr-6">
             <div className="hidden gap-1 sm:flex">
               {TIMEFRAMES.map((t) => (
                 <button
@@ -128,14 +124,6 @@ export function PositionChartDialog({
                 </button>
               ))}
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-7"
-              onClick={() => onOpenChange(false)}
-            >
-              <X className="size-4" />
-            </Button>
           </div>
         </DialogHeader>
 
