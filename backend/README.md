@@ -124,6 +124,7 @@ backend/
     risk/                    Limits + PnLTracker + StopLossMonitor + RiskManager
     strategies/              StrategyBase + PairsTradingStrategy
     performance/             PerformanceTracker (win rate + trade history)
+    persistence/             EventRecorder (per-run JSONL archive of the EventBus)
     main_engine.py           CLI to run the engine without the API
 
   analytics/                 offline calibration jobs
@@ -299,6 +300,44 @@ Loaded from `backend/.env` via `pydantic-settings` in `common/config.py`. Defaul
 | `IMPACT_K`                   | `0.5`                                | Square-root impact coefficient |
 | `API_HOST` / `API_PORT`      | `127.0.0.1` / `8000`                 | FastAPI bind |
 | `CORS_ORIGINS`               | `http://localhost:5173,...`          | Allowed origins for the frontend |
+| `PERSIST_ENABLED`            | `true`                               | Tee every event into the per-run JSONL archive |
+| `PERSIST_DIR`                | `data/runs`                          | Base folder for run archives (relative paths anchored at `backend/`) |
+| `PERSIST_RECORD_TICKS`       | `false`                              | Also archive the TICK firehose (very high volume) |
+| `LOG_FILE_ENABLED`           | `true`                               | Write `app.log` into the run archive |
+| `LOG_FILE_MAX_BYTES`         | `10000000`                           | Rotate `app.log` at this size |
+| `LOG_FILE_BACKUP_COUNT`      | `5`                                  | Keep N rotated `app.log` backups |
+
+## Run archive
+
+Every engine start creates a fresh, timestamped folder under `PERSIST_DIR`:
+
+```
+backend/data/runs/2026-05-09T13-30-15Z/
+  manifest.json          run id + UTC start + which streams are recorded
+  app.log                rotating (10 MB x 5 by default) full-fidelity log
+  fills.jsonl            every venue fill (incl. venue_price + impact_bps)
+  orders.jsonl           every child order lifecycle update
+  parents.jsonl          per-parent progress snapshots
+  executions.jsonl       per-parent post-trade reports (slippage, vwap, ...)
+  positions.jsonl        every position snapshot change
+  equity.jsonl           every mark-to-market equity tick
+  status.jsonl           engine status transitions (running/paused/stopped)
+  logs.jsonl             same INFO+ records the dashboard sees
+  ticks.jsonl            (only if PERSIST_RECORD_TICKS=true)
+```
+
+Each `.jsonl` is one self-contained JSON object per line of the form `{"ts": <epoch>, "type": "<event>", "data": {...}}` — the same shape `/ws` emits, so any downstream parser (pandas, DuckDB, parquet, etc.) can replay a session without re-running live trading.
+
+A typical post-mortem:
+
+```python
+import pandas as pd
+fills = pd.read_json("backend/data/runs/<run-id>/fills.jsonl", lines=True)
+exec_ = pd.read_json("backend/data/runs/<run-id>/executions.jsonl", lines=True)
+print(exec_["data"].apply(pd.Series)[["symbol", "slippage_bps", "impact_bps"]].describe())
+```
+
+Persistence is opt-out (`PERSIST_ENABLED=false`); the rotating `app.log` is independent (`LOG_FILE_ENABLED=false`) so you can drop one without losing the other.
 
 ## REST + WebSocket contract
 
@@ -344,6 +383,7 @@ Highlights:
 - `test_vwap_executor.py` runs the executor end-to-end against an in-test `MockGateway`.
 - `test_impact_model.py` covers sign convention + square-root scaling of synthetic impact.
 - `test_execution_metrics.py` covers per-parent slippage, vwap, and the completion lifecycle.
+- `test_event_recorder.py` covers per-type JSONL routing, opt-in tick capture, and the run manifest.
 
 ## Troubleshooting
 

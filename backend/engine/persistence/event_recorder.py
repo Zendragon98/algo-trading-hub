@@ -74,6 +74,7 @@ class EventRecorder:
         self._cfg = config
         self._task: asyncio.Task[None] | None = None
         self._files: dict[EventType, IO[str]] = {}
+        self._subscribed = asyncio.Event()
 
         types = list(_DEFAULT_TYPES)
         if config.record_ticks:
@@ -88,6 +89,10 @@ class EventRecorder:
         self._cfg.run_dir.mkdir(parents=True, exist_ok=True)
         self._write_manifest()
         self._task = asyncio.create_task(self._run(), name="event-recorder")
+        # Block the caller until the bus subscription is in place; otherwise
+        # the very first publish() right after start() can race the
+        # recorder and end up dropped.
+        await self._subscribed.wait()
         logger.info("event recorder writing to %s", self._cfg.run_dir)
 
     async def stop(self) -> None:
@@ -110,6 +115,7 @@ class EventRecorder:
     async def _run(self) -> None:
         try:
             async with self._bus.subscribe(types=self._types) as queue:
+                self._subscribed.set()
                 last_flush = asyncio.get_event_loop().time()
                 while True:
                     event = await queue.get()
@@ -124,6 +130,9 @@ class EventRecorder:
         except Exception:  # noqa: BLE001
             logger.exception("event recorder crashed")
             self._flush_all()
+        finally:
+            # Unblock callers waiting on start() even on early failure.
+            self._subscribed.set()
 
     def _file_for(self, event_type: EventType) -> IO[str] | None:
         existing = self._files.get(event_type)
