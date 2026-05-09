@@ -4,7 +4,7 @@ httpx==0.27.2                     # used by gateways/binance/rest_client for sig
 websockets==12.0                  # raw WS for the user-data + market streams
 fastapi==0.115.5                  # REST + WebSocket layer for the React console
 uvicorn[standard]==0.32.1         # ASGI server, in-process with the engine
-pydantic==2.9.2                   # DTOs + settings model
+pydantic==2.10.6                  # DTOs + settings model (compat with pydantic-settings 2.7.x)
 pydantic-settings==2.7.0          # .env loader (NoDecode marker requires >=2.7)
 python-dotenv==1.0.1              # local .env parser, used by pydantic-settings
 numpy==2.1.3                      # vectorised math in analytics + features

@@ -15,6 +15,8 @@ from typing import Annotated
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from .enums import TradingMode
+
 # Resolve .env relative to this file rather than the cwd, so the engine can
 # be launched from anywhere (run.bat, pytest, or `python -m`).
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
@@ -34,12 +36,28 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # --- Venue selection + trading mode ---
+    # `venue` picks the gateway adapter (`gateways/factory.py`).
+    # `trading_mode` is venue-agnostic and controls cross-venue safety
+    # behaviour (synthetic impact, log volume, kill-switch sensitivity).
+    venue: str = "binance"
+    trading_mode: TradingMode = TradingMode.PAPER
+
     # --- Binance ---
-    binance_api_key: str = Field(default="", description="Futures testnet API key")
-    binance_api_secret: str = Field(default="", description="Futures testnet API secret")
+    binance_api_key: str = Field(default="", description="Futures API key")
+    binance_api_secret: str = Field(default="", description="Futures API secret")
     binance_testnet: bool = True
     binance_rest_base: str = "https://testnet.binancefuture.com"
     binance_ws_base: str = "wss://stream.binancefuture.com"
+
+    # --- IBKR (Interactive Brokers) ---
+    # Defaults match the canonical paper-trading IB Gateway / TWS port (7497).
+    # Switch to 7496 for the live port. host/client_id are passed straight
+    # through to ib_async / ib_insync when that adapter is implemented.
+    ibkr_host: str = "127.0.0.1"
+    ibkr_port: int = 7497
+    ibkr_client_id: int = 7
+    ibkr_account: str = ""
 
     # --- Engine ---
     # Annotated[..., NoDecode] tells pydantic-settings to skip JSON parsing
@@ -97,6 +115,26 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @field_validator("venue", mode="before")
+    @classmethod
+    def _normalise_venue(cls, value: object) -> object:
+        # Case-insensitive venue ids so VENUE=Binance and VENUE=binance both work.
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @field_validator("trading_mode", mode="before")
+    @classmethod
+    def _normalise_mode(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @property
+    def is_live(self) -> bool:
+        """Convenience: True when running against real money."""
+        return self.trading_mode is TradingMode.LIVE
 
     @property
     def env_path(self) -> Path:

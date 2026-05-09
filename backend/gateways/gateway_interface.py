@@ -83,3 +83,14 @@ class GatewayInterface(ABC):
     @abstractmethod
     async def fetch_balance(self) -> float:
         """Return wallet balance in `Settings.base_currency`."""
+
+    # --- Reference data ---
+    @abstractmethod
+    async def book_snapshot(self, symbol: str, depth: int = 100) -> dict:
+        """REST snapshot of the L2 book for `symbol`.
+
+        Returns a venue-normalised mapping with keys ``"bids"``, ``"asks"``
+        (each a list of ``[price, qty]``) and ``"lastUpdateId"`` so the
+        engine's incremental diff loop can synchronise without caring
+        which venue produced the snapshot.
+        """

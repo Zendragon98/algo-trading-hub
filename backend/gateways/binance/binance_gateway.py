@@ -79,6 +79,11 @@ class BinanceGateway(GatewayInterface):
     async def fetch_balance(self) -> float:
         return await self._account.fetch_balance()
 
+    async def book_snapshot(self, symbol: str, depth: int = 100) -> dict:
+        # Binance returns {"lastUpdateId": int, "bids": [[p, q], ...], "asks": [...]}
+        # which matches the GatewayInterface contract directly.
+        return await self._rest.book_snapshot(symbol, limit=depth)
+
     @property
     def rest(self) -> BinanceRestClient:
         """Exposed so the analytics CLI can reuse the signed REST client."""

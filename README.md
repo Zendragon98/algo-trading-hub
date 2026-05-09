@@ -5,45 +5,73 @@ End-to-end trading console: a React frontend that observes and controls the **AL
 ## Architecture
 
 ```mermaid
-flowchart LR
-    BinanceWs["Binance Futures WS<br/>depth + aggTrade + markPrice + user-data"] --> MarketConn
-    BinanceRest["Binance Futures REST<br/>orders + account + klines"] <--> OrderConn
+%%{init: {"flowchart": {"useMaxWidth": false, "htmlLabels": true, "nodeSpacing": 45, "rankSpacing": 60}, "themeVariables": {"fontSize": "18px"}}}%%
+flowchart TB
+    BinanceWs["Binance Futures WS<br/>depth + aggTrade + user-data"]
+    BinanceRest["Binance Futures REST<br/>orders + account + klines"]
+    IbkrTws["IBKR TWS / IB Gateway<br/>(7497 paper · 7496 live)"]
 
-    subgraph gateways ["gateways/binance/"]
-        MarketConn["market_connection"]
-        OrderConn["order_connection"]
-        AcctConn["account_connection"]
+    subgraph gw ["gateways/ (pluggable via factory)"]
+        direction LR
+        Factory["factory.create_gateway(VENUE)"]
+        BinanceGw["binance/<br/>BinanceGateway"]
+        IbkrGw["ibkr/<br/>IBKRGateway (skeleton)"]
+        Factory -.-> BinanceGw
+        Factory -.-> IbkrGw
     end
+    BinanceWs --> BinanceGw
+    BinanceRest <--> BinanceGw
+    IbkrTws <--> IbkrGw
 
-    subgraph engine ["engine/"]
-        MarketConn --> MarketData["market_data<br/>OrderBook + TradeTape"]
-        MarketData --> Features["FeatureStore"]
-        Features --> Strategy["strategies/<br/>PairsTrading cross-coin USDT/USDC basis"]
-        Strategy -->|"Signal"| Risk["risk/<br/>RiskManager pre-trade"]
-        Risk -->|"approved ParentOrder"| Router["execution/<br/>ExecutionRouter"]
-        Router --> Tracker["execution/<br/>ExecutionTracker (arrival, vwap, slippage)"]
-        Router --> Wheel["AlgoWheel<br/>FRONTLOAD / NORMAL / BACKLOAD"]
-        Wheel --> Slicer["Slicer<br/>schedule + child weights"]
-        Slicer --> Vwap["VwapExecutor"]
-        Vwap --> OrderMgr["orders/<br/>OrderManager"]
-        OrderMgr --> OrderConn
-        AcctConn -->|"fills + balances"| Impact["execution/<br/>ImpactModel (synthetic slippage)"]
-        Impact --> Position["position/<br/>PositionTracker"]
+    subgraph eng ["engine/"]
+        direction TB
+        MarketData["market_data<br/>OrderBook + TradeTape"]
+        Features["FeatureStore"]
+        Strategy["strategies/<br/>PairsTrading — cross-coin USDT/USDC basis"]
+        Risk["risk/<br/>RiskManager (pre-trade)"]
+        Router["execution/<br/>ExecutionRouter"]
+        Wheel["execution/<br/>AlgoWheel — FRONTLOAD · NORMAL · BACKLOAD"]
+        Slicer["execution/<br/>Slicer + VwapExecutor"]
+        OrderMgr["orders/<br/>OrderManager (OMS)"]
+        Tracker["execution/<br/>ExecutionTracker (arrival, vwap, slippage)"]
+        Impact["execution/<br/>ImpactModel (paper-only)"]
+        Position["position/<br/>PositionTracker"]
+        Portfolio["portfolio/<br/>Portfolio + PnLTracker"]
+        RiskMon["risk/<br/>StopLoss / TakeProfit monitor"]
+
+        MarketData --> Features --> Strategy --> Risk --> Router
+        Router --> Wheel --> Slicer --> OrderMgr
+        Router --> Tracker
+        Impact --> Position --> Portfolio --> RiskMon
         Impact --> Tracker
-        Position --> Portfolio["portfolio/<br/>Portfolio + PnLTracker"]
-        Portfolio --> RiskMon["risk/<br/>StopLoss + TakeProfit monitor"]
-        RiskMon -->|"exit ParentOrder"| Router
+        RiskMon -->|exit ParentOrder| Router
     end
 
-    Portfolio --> Bus["common/<br/>EventBus"]
+    BinanceGw --> MarketData
+    IbkrGw -.-> MarketData
+    OrderMgr --> BinanceGw
+    OrderMgr -.-> IbkrGw
+    BinanceGw -->|fills + balances| Impact
+    IbkrGw -.->|fills + balances| Impact
+
+    Mode["TRADING_MODE<br/>paper · live"] -.->|live disables| Impact
+
+    Bus["common/<br/>EventBus"]
+    Portfolio --> Bus
     OrderMgr --> Bus
     Tracker --> Bus
     MarketData --> Bus
-    Bus --> API["api/<br/>FastAPI REST + WebSocket"]
-    API <--> FE["React console<br/>src/routes/index.tsx<br/>OMS + Execution Quality panels"]
 
-    Analytics["analytics/<br/>data_loader + pair_analyzer + orderbook_analyzer"] -.->|"calibrates thresholds"| Strategy
-    Analytics -.->|"calibrates"| Wheel
+    Recorder["persistence/<br/>EventRecorder<br/>data/runs/&lt;id&gt;/*.jsonl"]
+    API["api/<br/>FastAPI REST + WebSocket"]
+    FE["React console<br/>OMS + Execution Quality panels"]
+    Bus --> Recorder
+    Bus --> API
+    API <--> FE
+
+    Analytics["analytics/<br/>data_loader · pair_analyzer · orderbook_analyzer"]
+    Analytics -.->|calibrates thresholds| Strategy
+    Analytics -.->|calibrates| Wheel
 ```
 
 Source kept editable at `backend/docs/architecture.mmd`. Full architecture deep-dive in `backend/README.md`.

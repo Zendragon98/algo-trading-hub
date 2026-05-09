@@ -92,6 +92,20 @@ class LogLevel(str, Enum):
     SIGNAL = "signal"
 
 
+class TradingMode(str, Enum):
+    """Whether the engine is wired to a paper / demo / testnet account or
+    a real-money one.
+
+    The mode is venue-agnostic: it is set independently of the venue's
+    own toggles (e.g. ``BINANCE_TESTNET``, IBKR's port, etc.) so that
+    cross-venue policies (kill-switch sensitivity, synthetic impact, log
+    annotations) can react to it uniformly.
+    """
+
+    PAPER = "paper"   # testnet / demo / sandbox — synthetic impact ON by default
+    LIVE = "live"    # real money — synthetic impact OFF, louder logging
+
+
 class EventType(str, Enum):
     """Topics carried by the in-process EventBus."""
 

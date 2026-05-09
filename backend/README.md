@@ -5,45 +5,73 @@ Python backend that powers the React console at the repo root. Runs locally, con
 ## Architecture
 
 ```mermaid
-flowchart LR
-    BinanceWs["Binance Futures WS<br/>depth + aggTrade + markPrice + user-data"] --> MarketConn
-    BinanceRest["Binance Futures REST<br/>orders + account + klines"] <--> OrderConn
+%%{init: {"flowchart": {"useMaxWidth": false, "htmlLabels": true, "nodeSpacing": 45, "rankSpacing": 60}, "themeVariables": {"fontSize": "18px"}}}%%
+flowchart TB
+    BinanceWs["Binance Futures WS<br/>depth + aggTrade + user-data"]
+    BinanceRest["Binance Futures REST<br/>orders + account + klines"]
+    IbkrTws["IBKR TWS / IB Gateway<br/>(7497 paper · 7496 live)"]
 
-    subgraph gateways ["gateways/binance/"]
-        MarketConn["market_connection"]
-        OrderConn["order_connection"]
-        AcctConn["account_connection"]
+    subgraph gw ["gateways/ (pluggable via factory)"]
+        direction LR
+        Factory["factory.create_gateway(VENUE)"]
+        BinanceGw["binance/<br/>BinanceGateway"]
+        IbkrGw["ibkr/<br/>IBKRGateway (skeleton)"]
+        Factory -.-> BinanceGw
+        Factory -.-> IbkrGw
     end
+    BinanceWs --> BinanceGw
+    BinanceRest <--> BinanceGw
+    IbkrTws <--> IbkrGw
 
-    subgraph engine ["engine/"]
-        MarketConn --> MarketData["market_data<br/>OrderBook + TradeTape"]
-        MarketData --> Features["FeatureStore"]
-        Features --> Strategy["strategies/<br/>PairsTrading cross-coin USDT/USDC basis"]
-        Strategy -->|"Signal"| Risk["risk/<br/>RiskManager pre-trade"]
-        Risk -->|"approved ParentOrder"| Router["execution/<br/>ExecutionRouter"]
-        Router --> Tracker["execution/<br/>ExecutionTracker (arrival, vwap, slippage)"]
-        Router --> Wheel["AlgoWheel<br/>FRONTLOAD / NORMAL / BACKLOAD"]
-        Wheel --> Slicer["Slicer<br/>schedule + child weights"]
-        Slicer --> Vwap["VwapExecutor"]
-        Vwap --> OrderMgr["orders/<br/>OrderManager"]
-        OrderMgr --> OrderConn
-        AcctConn -->|"fills + balances"| Impact["execution/<br/>ImpactModel (synthetic slippage)"]
-        Impact --> Position["position/<br/>PositionTracker"]
+    subgraph eng ["engine/"]
+        direction TB
+        MarketData["market_data<br/>OrderBook + TradeTape"]
+        Features["FeatureStore"]
+        Strategy["strategies/<br/>PairsTrading — cross-coin USDT/USDC basis"]
+        Risk["risk/<br/>RiskManager (pre-trade)"]
+        Router["execution/<br/>ExecutionRouter"]
+        Wheel["execution/<br/>AlgoWheel — FRONTLOAD · NORMAL · BACKLOAD"]
+        Slicer["execution/<br/>Slicer + VwapExecutor"]
+        OrderMgr["orders/<br/>OrderManager (OMS)"]
+        Tracker["execution/<br/>ExecutionTracker (arrival, vwap, slippage)"]
+        Impact["execution/<br/>ImpactModel (paper-only)"]
+        Position["position/<br/>PositionTracker"]
+        Portfolio["portfolio/<br/>Portfolio + PnLTracker"]
+        RiskMon["risk/<br/>StopLoss / TakeProfit monitor"]
+
+        MarketData --> Features --> Strategy --> Risk --> Router
+        Router --> Wheel --> Slicer --> OrderMgr
+        Router --> Tracker
+        Impact --> Position --> Portfolio --> RiskMon
         Impact --> Tracker
-        Position --> Portfolio["portfolio/<br/>Portfolio + PnLTracker"]
-        Portfolio --> RiskMon["risk/<br/>StopLoss + TakeProfit monitor"]
-        RiskMon -->|"exit ParentOrder"| Router
+        RiskMon -->|exit ParentOrder| Router
     end
 
-    Portfolio --> Bus["common/<br/>EventBus"]
+    BinanceGw --> MarketData
+    IbkrGw -.-> MarketData
+    OrderMgr --> BinanceGw
+    OrderMgr -.-> IbkrGw
+    BinanceGw -->|fills + balances| Impact
+    IbkrGw -.->|fills + balances| Impact
+
+    Mode["TRADING_MODE<br/>paper · live"] -.->|live disables| Impact
+
+    Bus["common/<br/>EventBus"]
+    Portfolio --> Bus
     OrderMgr --> Bus
     Tracker --> Bus
     MarketData --> Bus
-    Bus --> API["api/<br/>FastAPI REST + WebSocket"]
-    API <--> FE["React console<br/>src/routes/index.tsx<br/>OMS + Execution Quality panels"]
 
-    Analytics["analytics/<br/>data_loader + pair_analyzer + orderbook_analyzer"] -.->|"calibrates thresholds"| Strategy
-    Analytics -.->|"calibrates"| Wheel
+    Recorder["persistence/<br/>EventRecorder<br/>data/runs/&lt;id&gt;/*.jsonl"]
+    API["api/<br/>FastAPI REST + WebSocket"]
+    FE["React console<br/>OMS + Execution Quality panels"]
+    Bus --> Recorder
+    Bus --> API
+    API <--> FE
+
+    Analytics["analytics/<br/>data_loader · pair_analyzer · orderbook_analyzer"]
+    Analytics -.->|calibrates thresholds| Strategy
+    Analytics -.->|calibrates| Wheel
 ```
 
 ## What this is
@@ -105,13 +133,17 @@ backend/
   .env.example
 
   common/                    config, EventBus, enums, shared dataclasses
-  gateways/                  abstract venue interface + Binance Futures adapter
-    binance/
+  gateways/                  abstract venue interface + concrete adapters
+    gateway_interface.py     ABC every venue must implement
+    factory.py               create_gateway(settings) selects venue by VENUE env var
+    binance/                 Binance USDT-M Futures adapter (testnet + mainnet)
       rest_client.py         signed httpx wrapper
       market_connection.py   public WS: bookTicker + aggTrade + depth
       order_connection.py    REST orders + user-data WS
       account_connection.py  balances + positions
       binance_gateway.py     composes the three above
+    ibkr/                    Interactive Brokers skeleton (drop-in template)
+      ibkr_gateway.py        every method conforms to the interface; TODOs point at ib_async
 
   engine/                    strategy-agnostic trading core
     core/                    Engine orchestrator + heartbeat clock + state
@@ -143,6 +175,55 @@ backend/
   data/                      gitignored cache of parquet/JSON artefacts
   docs/                      architecture.mmd
 ```
+
+## Trading mode (paper vs live)
+
+`TRADING_MODE` is a venue-agnostic safety flag, separate from any per-venue testnet/live toggle. It's the *only* knob you should flip to graduate from a sandbox account to real money. Two consequences are wired into the engine:
+
+| `TRADING_MODE`    | Synthetic impact model | Startup banner               |
+| ----------------- | ---------------------- | ---------------------------- |
+| `paper` (default) | enabled (if `IMPACT_MODEL_ENABLED=true`) | one-line INFO line           |
+| `live`            | **force-disabled** regardless of env var | hard-to-miss WARN banner     |
+
+The model is a paper-trading aid — testnet liquidity is unrealistic so we bake estimated mainnet slippage into the recorded fill price. In LIVE mode the venue's fill *is* the real impact, so the model is hard-disabled to avoid double-counting (see `ImpactConfig.from_settings`).
+
+When you flip to LIVE you also need to point the gateway at its live endpoints:
+
+- Binance: set `BINANCE_TESTNET=false` and switch `BINANCE_REST_BASE` / `BINANCE_WS_BASE` to mainnet hosts.
+- IBKR: set `IBKR_PORT=7496` (TWS / IB Gateway live port).
+
+The factory warns on inconsistent combos (e.g. `TRADING_MODE=live` but `BINANCE_TESTNET=true`) without hard-failing, so a CI smoke test on testnet can keep `TRADING_MODE=paper` while pointed at the real testnet host.
+
+## Adding a new gateway
+
+The engine never imports a venue. It calls `create_gateway(settings)` from `gateways/factory.py` and gets back something that satisfies `GatewayInterface`. Adding a new venue is three steps:
+
+1. **Build the adapter.** Create `gateways/<venue>/<venue>_gateway.py` with a class that extends `GatewayInterface` and implements every abstract method:
+
+   | Method                   | Purpose                                                           |
+   | ------------------------ | ----------------------------------------------------------------- |
+   | `connect / disconnect`   | open/close the venue connection (REST + WS)                       |
+   | `subscribe_market_data`  | wire ticks + L2 depth + tape into the engine callbacks            |
+   | `subscribe_user_data`    | wire fills + order updates into the engine callbacks              |
+   | `place_order`            | translate a `ChildOrder` into a venue order; return with `venue_order_id` |
+   | `cancel_order`           | cancel by `client_order_id`                                       |
+   | `fetch_positions`        | `list[Position]` snapshot (in `Settings.base_currency`)           |
+   | `fetch_balance`          | wallet balance in `Settings.base_currency`                        |
+   | `book_snapshot`          | REST L2 snapshot in `{lastUpdateId, bids, asks}` shape            |
+
+2. **Register it.** Add a one-liner to `_REGISTRY` in `gateways/factory.py`:
+
+   ```python
+   _REGISTRY = {
+       "binance": _build_binance,
+       "ibkr": _build_ibkr,
+       "<venue>": _build_<venue>,   # <- here
+   }
+   ```
+
+3. **Configure it.** Add the new venue's connection knobs to `Settings` (e.g. `IBKR_HOST` / `IBKR_PORT` already there for IBKR), then set `VENUE=<venue>` in `.env`.
+
+`gateways/ibkr/ibkr_gateway.py` is a complete skeleton you can copy from — every method conforms to the interface and includes a TODO pointing at the matching `ib_async` (or `ib_insync`) call. `python -m pytest tests/test_gateway_factory.py -q` exercises both the Binance path and the IBKR skeleton against the same `GatewayInterface` to keep the contract honest.
 
 ## Module deep-dives
 
@@ -280,11 +361,16 @@ Loaded from `backend/.env` via `pydantic-settings` in `common/config.py`. Defaul
 
 | Key                          | Default                              | Effect |
 | ---------------------------- | ------------------------------------ | ------ |
-| `BINANCE_API_KEY`            | _required_                           | Futures Testnet API key |
-| `BINANCE_API_SECRET`         | _required_                           | Futures Testnet secret |
+| `VENUE`                      | `binance`                            | Selects the gateway adapter (`binance` \| `ibkr`) |
+| `TRADING_MODE`               | `paper`                              | `paper` \| `live`. LIVE force-disables synthetic impact |
+| `BINANCE_API_KEY`            | _required when VENUE=binance_        | Futures API key |
+| `BINANCE_API_SECRET`         | _required when VENUE=binance_        | Futures API secret |
 | `BINANCE_TESTNET`            | `true`                               | Pin to testnet endpoints |
 | `BINANCE_REST_BASE`          | `https://testnet.binancefuture.com`  | REST host |
 | `BINANCE_WS_BASE`            | `wss://stream.binancefuture.com`     | WS host |
+| `IBKR_HOST` / `IBKR_PORT`    | `127.0.0.1` / `7497`                 | TWS / IB Gateway address (7497 paper, 7496 live) |
+| `IBKR_CLIENT_ID`             | `7`                                  | IB API client id |
+| `IBKR_ACCOUNT`               | empty                                | Specific account to trade (empty = default) |
 | `SYMBOLS`                    | `BTCUSDT,BTCUSDC,...`                | Subscribed symbols (must include both legs of each pair) |
 | `BASE_CURRENCY`              | `USDT`                               | Equity / PnL denomination |
 | `MAX_RISK_PCT`               | `0.35`                               | Max equity fraction risked per signal (UI slider) |
@@ -384,6 +470,7 @@ Highlights:
 - `test_impact_model.py` covers sign convention + square-root scaling of synthetic impact.
 - `test_execution_metrics.py` covers per-parent slippage, vwap, and the completion lifecycle.
 - `test_event_recorder.py` covers per-type JSONL routing, opt-in tick capture, and the run manifest.
+- `test_gateway_factory.py` covers venue selection (binance / ibkr / unknown), case-insensitivity, and that LIVE mode hard-disables the impact model.
 
 ## Troubleshooting
 

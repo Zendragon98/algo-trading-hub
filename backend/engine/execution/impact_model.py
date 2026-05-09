@@ -50,8 +50,13 @@ class ImpactConfig:
 
     @classmethod
     def from_settings(cls, settings) -> "ImpactConfig":
+        # Synthetic impact is a paper-trading aid: it makes testnet PnL
+        # look like mainnet would. In LIVE mode the impact is real and
+        # already baked into the venue's fill price, so we hard-disable
+        # the model regardless of `IMPACT_MODEL_ENABLED`.
+        enabled = settings.impact_model_enabled and not settings.is_live
         return cls(
-            enabled=settings.impact_model_enabled,
+            enabled=enabled,
             k=settings.impact_k,
             min_depth=settings.impact_min_depth,
             top_n=settings.imbalance_top_n,

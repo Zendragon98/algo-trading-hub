@@ -22,14 +22,31 @@ import uvicorn
 
 from api.server import create_app
 from common.config import get_settings
+from common.enums import TradingMode
 from common.events import EventBus
 from common.logging import configure_logging
 from engine.core.engine import Engine
 from engine.persistence.event_recorder import EventRecorder, RecorderConfig, make_run_dir
 from engine.strategies.pairs_trading import PairsTradingStrategy
-from gateways.binance.binance_gateway import BinanceGateway
+from gateways.factory import create_gateway
 
 logger = logging.getLogger(__name__)
+
+
+def _log_mode_banner(settings) -> None:
+    """Print a hard-to-miss banner so LIVE mode is always confirmed in the log."""
+    if settings.trading_mode is TradingMode.LIVE:
+        logger.warning("=" * 64)
+        logger.warning(
+            "TRADING_MODE=LIVE  venue=%s  — REAL MONEY. synthetic impact disabled.",
+            settings.venue,
+        )
+        logger.warning("=" * 64)
+    else:
+        logger.info(
+            "TRADING_MODE=paper  venue=%s  — synthetic impact enabled (testnet/demo).",
+            settings.venue,
+        )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -69,6 +86,7 @@ async def _run() -> None:
         log_file_backup_count=settings.log_file_backup_count,
     )
     logger.info("config loaded from %s", settings.env_path)
+    _log_mode_banner(settings)
     if run_dir is not None:
         logger.info("run archive: %s", run_dir)
 
@@ -83,7 +101,7 @@ async def _run() -> None:
         )
         await recorder.start()
 
-    gateway = BinanceGateway(settings)
+    gateway = create_gateway(settings)
     strategies = [PairsTradingStrategy(settings)]
     engine = Engine(settings=settings, bus=bus, gateway=gateway, strategies=strategies)
 

@@ -23,8 +23,7 @@ from common.config import Settings
 from common.enums import EngineStatus, EventType, Side
 from common.events import Event, EventBus
 from common.types import Fill, Position, Signal, TapeTrade, Tick
-from gateways.binance.binance_gateway import BinanceGateway
-from gateways.gateway_interface import DepthDiff
+from gateways.gateway_interface import DepthDiff, GatewayInterface
 
 from ..execution.algo_wheel import AlgoWheel
 from ..execution.execution_metrics import ExecutionTracker
@@ -56,7 +55,7 @@ class Engine:
         self,
         settings: Settings,
         bus: EventBus,
-        gateway: BinanceGateway,
+        gateway: GatewayInterface,
         strategies: list[StrategyBase],
     ) -> None:
         self._settings = settings
@@ -336,7 +335,7 @@ class Engine:
 
     async def _snapshot_book(self, symbol: str) -> None:
         try:
-            data = await self._gateway.rest.book_snapshot(symbol, limit=100)
+            data = await self._gateway.book_snapshot(symbol, depth=100)
         except Exception:  # noqa: BLE001
             logger.exception("book snapshot failed for %s", symbol)
             return

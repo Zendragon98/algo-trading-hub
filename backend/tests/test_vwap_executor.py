@@ -52,6 +52,9 @@ class _MockGateway(GatewayInterface):
     async def fetch_balance(self) -> float:
         return 1000.0
 
+    async def book_snapshot(self, symbol: str, depth: int = 100) -> dict:
+        return {"lastUpdateId": 0, "bids": [], "asks": []}
+
 
 @pytest.mark.asyncio
 async def test_executor_runs_full_schedule() -> None:

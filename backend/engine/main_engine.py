@@ -14,9 +14,10 @@ import signal as os_signal
 from pathlib import Path
 
 from common.config import get_settings
+from common.enums import TradingMode
 from common.events import EventBus
 from common.logging import configure_logging
-from gateways.binance.binance_gateway import BinanceGateway
+from gateways.factory import create_gateway
 
 from .core.engine import Engine
 from .persistence.event_recorder import EventRecorder, RecorderConfig, make_run_dir
@@ -47,6 +48,16 @@ async def run() -> None:
         log_file_max_bytes=settings.log_file_max_bytes,
         log_file_backup_count=settings.log_file_backup_count,
     )
+    if settings.trading_mode is TradingMode.LIVE:
+        logger.warning(
+            "TRADING_MODE=LIVE venue=%s — REAL MONEY. synthetic impact disabled.",
+            settings.venue,
+        )
+    else:
+        logger.info(
+            "TRADING_MODE=paper venue=%s — synthetic impact enabled.",
+            settings.venue,
+        )
     if run_dir is not None:
         logger.info("run archive: %s", run_dir)
 
@@ -61,7 +72,7 @@ async def run() -> None:
         )
         await recorder.start()
 
-    gateway = BinanceGateway(settings)
+    gateway = create_gateway(settings)
     strategies = [PairsTradingStrategy(settings)]
     engine = Engine(settings=settings, bus=bus, gateway=gateway, strategies=strategies)
 
