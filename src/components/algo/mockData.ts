@@ -24,6 +24,50 @@ export type LogEntry = {
   msg: string;
 };
 
+// Live working child order tracked by the OMS panel.
+export type WorkingOrder = {
+  id: string;
+  parentId: string | null;
+  symbol: string;
+  side: "buy" | "sell";
+  qty: number;
+  filledQty: number;
+  price: number | null;
+  avgFillPrice: number;
+  orderType: "limit" | "market";
+  status: "new" | "ack" | "partial" | "filled" | "cancelled" | "rejected";
+  venueOrderId: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+// One in-flight or completed parent order with execution-quality metrics.
+export type ExecutionParent = {
+  parentId: string;
+  symbol: string;
+  side: "buy" | "sell";
+  requestedQty: number;
+  filledQty: number;
+  fillRatio: number;
+  arrivalPrice: number;
+  vwapPrice: number;
+  slippageBps: number;
+  impactBps: number;
+  durationSec: number;
+  algoMode: string | null;
+  startedAt: number;
+  completedAt: number | null;
+};
+
+export type ExecutionAggregate = {
+  count: number;
+  avgSlippageBps: number;
+  avgImpactBps: number;
+  avgFillRatio: number;
+  avgDurationSec: number;
+  totalTradedNotional: number;
+};
+
 export const SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ARB/USDT"] as const;
 
 function rand(seed: number) {

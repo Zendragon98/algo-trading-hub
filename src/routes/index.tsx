@@ -1,17 +1,19 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   CircleDot,
   Cpu,
   Gauge,
+  ListOrdered,
   Pause,
   Play,
   Power,
   RefreshCcw,
   Settings2,
   Square,
+  Target,
   TrendingDown,
   TrendingUp,
   Wallet,
@@ -28,16 +30,17 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { EquityChart } from "@/components/algo/EquityChart";
 import { PositionChartDialog } from "@/components/algo/PositionChartDialog";
-import {
-  type AlgoStatus,
-  type LogEntry,
-  type Position,
-  type Trade,
-  initialLogs,
-  initialPositions,
-  initialTrades,
-  makeEquitySeries,
+import type {
+  AlgoStatus,
+  ExecutionAggregate,
+  ExecutionParent,
+  LogEntry,
+  Position,
+  Trade,
+  WorkingOrder,
 } from "@/components/algo/mockData";
+import { useAlgoStream } from "@/hooks/useAlgoStream";
+import { api } from "@/lib/api";
 
 export const Route = createFileRoute("/")({
   component: Index,
@@ -53,66 +56,27 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
-  const [status, setStatus] = useState<AlgoStatus>("running");
-  const [equity, setEquity] = useState<number[]>(() => makeEquitySeries());
-  const [positions, setPositions] = useState<Position[]>(initialPositions);
-  const [trades, setTrades] = useState<Trade[]>(initialTrades);
-  const [logs, setLogs] = useState<LogEntry[]>(initialLogs);
+  const live = useAlgoStream();
+  const status: AlgoStatus = live.status;
+  const equity: number[] = live.equity;
+  const positions: Position[] = live.positions;
+  const trades: Trade[] = live.trades;
+  const logs: LogEntry[] = live.logs;
+  const uptimeSec: number = live.uptimeSec;
+  const workingOrders: WorkingOrder[] = live.orders;
+  const workingParents: ExecutionParent[] = live.workingParents;
+  const executionHistory: ExecutionParent[] = live.executionHistory;
+  const executionAggregate: ExecutionAggregate = live.executionAggregate;
+
   const [risk, setRisk] = useState<number[]>([35]);
   const [autoCompound, setAutoCompound] = useState(true);
   const [paperMode, setPaperMode] = useState(false);
-  const [uptimeSec, setUptimeSec] = useState(4 * 3600 + 17 * 60 + 22);
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
-  const tickRef = useRef(0);
 
-  // Live tick simulation
-  useEffect(() => {
-    const id = setInterval(() => {
-      tickRef.current += 1;
-      if (status === "running") setUptimeSec((u) => u + 1);
-
-      setEquity((prev) => {
-        const last = prev[prev.length - 1];
-        const drift = status === "running" ? (Math.random() - 0.45) * 60 : 0;
-        const next = Math.max(0, last + drift);
-        return [...prev.slice(1), Math.round(next * 100) / 100];
-      });
-
-      if (status === "running") {
-        setPositions((prev) =>
-          prev.map((p) => {
-            const wiggle = (Math.random() - 0.5) * (p.mark * 0.0015);
-            return { ...p, mark: Math.round((p.mark + wiggle) * 100) / 100 };
-          }),
-        );
-      }
-
-      // Occasionally inject a new trade + log line
-      if (status === "running" && tickRef.current % 6 === 0) {
-        const symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ARB/USDT"];
-        const sym = symbols[Math.floor(Math.random() * symbols.length)];
-        const side: "buy" | "sell" = Math.random() > 0.5 ? "buy" : "sell";
-        const price = +(100 + Math.random() * 70000).toFixed(2);
-        const qty = +(Math.random() * 0.5).toFixed(3);
-        const pnl = Math.random() > 0.55 ? +((Math.random() - 0.4) * 40).toFixed(2) : null;
-        const ts = new Date().toLocaleTimeString("en-GB", { hour12: false });
-        const id = `T-${10473 + tickRef.current}`;
-        setTrades((t) => [{ id, ts, symbol: sym, side, qty, price, pnl }, ...t].slice(0, 40));
-        setLogs((l) =>
-          [
-            { ts, level: "info" as const, msg: `Order filled: ${side.toUpperCase()} ${qty} ${sym} @ ${price.toLocaleString()}` },
-            ...l,
-          ].slice(0, 60),
-        );
-      }
-    }, 1200);
-    return () => clearInterval(id);
-  }, [status]);
-
-  const totalEquity = equity[equity.length - 1];
-  const startEquity = equity[0];
+  const totalEquity = equity.length ? equity[equity.length - 1] : 0;
+  const startEquity = equity.length ? equity[0] : 0;
   const pnlAbs = totalEquity - startEquity;
-  const pnlPct = (pnlAbs / startEquity) * 100;
+  const pnlPct = startEquity > 0 ? (pnlAbs / startEquity) * 100 : 0;
 
   const openPnl = useMemo(
     () =>
@@ -130,27 +94,24 @@ function Index() {
     return (wins / closed.length) * 100;
   }, [trades]);
 
-  const onStart = () => {
-    setStatus("running");
-    pushLog("info", "Algorithm resumed by operator");
-  };
-  const onPause = () => {
-    setStatus("paused");
-    pushLog("warn", "Algorithm paused — open positions still tracked");
-  };
-  const onStop = () => {
-    setStatus("stopped");
-    pushLog("error", "EMERGENCY STOP — all new orders halted");
-  };
-  const onFlatten = () => {
-    pushLog("warn", `Flatten requested · closing ${positions.length} positions`);
-    setPositions([]);
+  // Fire-and-forget control commands. The engine drives the next status
+  // update over the WebSocket so we don't optimistically mutate React state.
+  const handleControl = (fn: () => Promise<unknown>) => {
+    fn().catch((err) => {
+      console.error("control command failed", err);
+    });
   };
 
-  function pushLog(level: LogEntry["level"], msg: string) {
-    const ts = new Date().toLocaleTimeString("en-GB", { hour12: false });
-    setLogs((l) => [{ ts, level, msg }, ...l].slice(0, 60));
-  }
+  const onStart = () => handleControl(api.start);
+  const onPause = () => handleControl(api.pause);
+  const onStop = () => handleControl(api.stop);
+  const onFlatten = () => handleControl(api.flatten);
+
+  // Push the slider's percentage (0-100) to the engine as a fraction.
+  const onRiskCommit = (value: number[]) => {
+    setRisk(value);
+    handleControl(() => api.setRisk(value[0] / 100));
+  };
 
   return (
     <div className="min-h-screen text-foreground">
@@ -262,7 +223,14 @@ function Index() {
                   <span className="uppercase tracking-wider text-muted-foreground">Risk per trade</span>
                   <span className="tabular-nums text-bull">{risk[0]}%</span>
                 </div>
-                <Slider value={risk} onValueChange={setRisk} min={5} max={100} step={5} />
+                <Slider
+                  value={risk}
+                  onValueChange={setRisk}
+                  onValueCommit={onRiskCommit}
+                  min={5}
+                  max={100}
+                  step={5}
+                />
               </div>
 
               <ToggleRow
@@ -291,7 +259,7 @@ function Index() {
           </Panel>
         </section>
 
-        {/* Positions + trades */}
+        {/* Positions + log */}
         <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
           <Panel
             className="lg:col-span-2"
@@ -305,6 +273,33 @@ function Index() {
 
           <Panel title="LIVE LOG" right={<LiveDot active={status === "running"} />}>
             <LogStream logs={logs} />
+          </Panel>
+        </section>
+
+        {/* OMS: working parent VWAPs + their child orders */}
+        <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <Panel
+            className="lg:col-span-2"
+            title="ORDER MANAGEMENT"
+            right={
+              <span className="text-[11px] text-muted-foreground">
+                {workingParents.length} parent · {workingOrders.length} child
+              </span>
+            }
+          >
+            <OmsTable parents={workingParents} children={workingOrders} />
+          </Panel>
+
+          <Panel
+            title="EXECUTION QUALITY"
+            right={
+              <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                <Target className="mr-1 inline size-3" />
+                {executionAggregate.count} parents
+              </span>
+            }
+          >
+            <ExecutionQualityPanel aggregate={executionAggregate} history={executionHistory} />
           </Panel>
         </section>
 
@@ -653,5 +648,257 @@ function LogStream({ logs }: { logs: LogEntry[] }) {
         ))}
       </div>
     </ScrollArea>
+  );
+}
+
+function OmsTable({
+  parents,
+  children,
+}: {
+  parents: ExecutionParent[];
+  children: WorkingOrder[];
+}) {
+  if (!parents.length && !children.length) {
+    return (
+      <div className="px-4 py-10 text-center text-xs text-muted-foreground">
+        No working orders. The OMS lights up the moment a parent VWAP is in flight.
+      </div>
+    );
+  }
+
+  // Group children by parent for the nested rendering. Anything orphaned
+  // (e.g. an operator-side cancel from another UI) is shown under "manual".
+  const childrenByParent = new Map<string, WorkingOrder[]>();
+  for (const child of children) {
+    const key = child.parentId ?? "manual";
+    const existing = childrenByParent.get(key) ?? [];
+    existing.push(child);
+    childrenByParent.set(key, existing);
+  }
+
+  return (
+    <ScrollArea className="h-[320px]">
+      <div className="divide-y divide-border/60">
+        {parents.map((parent) => (
+          <ParentRow
+            key={parent.parentId}
+            parent={parent}
+            children={childrenByParent.get(parent.parentId) ?? []}
+          />
+        ))}
+        {(childrenByParent.get("manual") ?? []).map((child) => (
+          <div key={child.id} className="px-4 py-2.5 text-xs">
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <ListOrdered className="size-3" />
+              <span className="uppercase tracking-wider">manual order</span>
+            </div>
+            <ChildRow child={child} />
+          </div>
+        ))}
+      </div>
+    </ScrollArea>
+  );
+}
+
+function ParentRow({
+  parent,
+  children,
+}: {
+  parent: ExecutionParent;
+  children: WorkingOrder[];
+}) {
+  const pct = Math.min(100, Math.max(0, parent.fillRatio * 100));
+  const sideClass =
+    parent.side === "buy"
+      ? "border-bull/40 bg-bull/10 text-bull"
+      : "border-bear/40 bg-bear/10 text-bear";
+  return (
+    <div className="px-4 py-3">
+      <div className="flex flex-wrap items-center gap-3 text-xs">
+        <span className="font-mono text-foreground/90">{parent.parentId}</span>
+        <span
+          className={cn(
+            "rounded-sm border px-1.5 py-0.5 text-[10px] uppercase",
+            sideClass,
+          )}
+        >
+          {parent.side}
+        </span>
+        <span className="font-semibold">{parent.symbol}</span>
+        {parent.algoMode && (
+          <Badge variant="outline" className="border-border text-[10px] uppercase tracking-wider">
+            {parent.algoMode}
+          </Badge>
+        )}
+        <span className="ml-auto tabular-nums text-muted-foreground">
+          {parent.filledQty.toFixed(4)} / {parent.requestedQty.toFixed(4)}
+        </span>
+      </div>
+
+      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted/60">
+        <div
+          className={cn(
+            "h-full transition-all",
+            parent.side === "buy" ? "bg-bull" : "bg-bear",
+          )}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+        <span>arrival <span className="tabular-nums text-foreground/80">{parent.arrivalPrice.toFixed(4)}</span></span>
+        <span>vwap <span className="tabular-nums text-foreground/80">{parent.vwapPrice.toFixed(4)}</span></span>
+        <span className={cn("tabular-nums", parent.slippageBps > 0 ? "text-bear" : "text-bull")}>
+          slippage {parent.slippageBps >= 0 ? "+" : ""}{parent.slippageBps.toFixed(1)} bps
+        </span>
+        <span className="tabular-nums">
+          impact {parent.impactBps.toFixed(1)} bps
+        </span>
+        <span className="tabular-nums">{parent.durationSec.toFixed(1)}s</span>
+      </div>
+
+      {children.length > 0 && (
+        <div className="mt-2 space-y-1 border-l border-border/60 pl-3">
+          {children.map((c) => (
+            <ChildRow key={c.id} child={c} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChildRow({ child }: { child: WorkingOrder }) {
+  const sideClass =
+    child.side === "buy"
+      ? "border-bull/30 bg-bull/5 text-bull"
+      : "border-bear/30 bg-bear/5 text-bear";
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono text-muted-foreground">
+      <span className="text-foreground/80">{child.id.slice(-10)}</span>
+      <span
+        className={cn(
+          "rounded-sm border px-1 py-0.5 text-[10px] uppercase",
+          sideClass,
+        )}
+      >
+        {child.side}
+      </span>
+      <span className="uppercase tracking-wider">{child.orderType}</span>
+      <span className="tabular-nums">
+        {child.filledQty.toFixed(4)} / {child.qty.toFixed(4)}
+      </span>
+      <span className="tabular-nums">
+        @ {child.price !== null ? child.price.toFixed(4) : "mkt"}
+      </span>
+      <span className="ml-auto rounded-sm border border-border px-1 py-0.5 text-[10px] uppercase">
+        {child.status}
+      </span>
+    </div>
+  );
+}
+
+function ExecutionQualityPanel({
+  aggregate,
+  history,
+}: {
+  aggregate: ExecutionAggregate;
+  history: ExecutionParent[];
+}) {
+  return (
+    <div className="space-y-4 p-4">
+      <div className="grid grid-cols-2 gap-3">
+        <Stat
+          label="AVG SLIPPAGE"
+          value={`${aggregate.avgSlippageBps >= 0 ? "+" : ""}${aggregate.avgSlippageBps.toFixed(2)} bps`}
+          tone={aggregate.avgSlippageBps > 0 ? "bear" : "bull"}
+        />
+        <Stat
+          label="AVG IMPACT (sim)"
+          value={`${aggregate.avgImpactBps.toFixed(2)} bps`}
+          tone="neutral"
+        />
+        <Stat
+          label="FILL RATE"
+          value={`${(aggregate.avgFillRatio * 100).toFixed(1)}%`}
+          tone={aggregate.avgFillRatio >= 0.95 ? "bull" : "neutral"}
+        />
+        <Stat
+          label="AVG DURATION"
+          value={`${aggregate.avgDurationSec.toFixed(1)}s`}
+          tone="neutral"
+        />
+      </div>
+
+      <Separator />
+
+      <div className="space-y-1">
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          Recent parent orders
+        </div>
+        {history.length === 0 ? (
+          <div className="py-6 text-center text-[11px] text-muted-foreground">
+            No completed parents yet.
+          </div>
+        ) : (
+          <ScrollArea className="h-[180px]">
+            <div className="space-y-1 font-mono text-[11px]">
+              {history.slice(0, 12).map((r) => (
+                <div
+                  key={r.parentId}
+                  className="flex items-center gap-2 border-b border-border/40 py-1"
+                >
+                  <span className="text-muted-foreground">{r.symbol}</span>
+                  <span
+                    className={cn(
+                      "rounded-sm px-1 text-[10px] uppercase",
+                      r.side === "buy" ? "bg-bull/15 text-bull" : "bg-bear/15 text-bear",
+                    )}
+                  >
+                    {r.side}
+                  </span>
+                  <span className="tabular-nums text-muted-foreground">
+                    {r.filledQty.toFixed(4)}
+                  </span>
+                  <span
+                    className={cn(
+                      "ml-auto tabular-nums",
+                      r.slippageBps > 0 ? "text-bear" : "text-bull",
+                    )}
+                  >
+                    {r.slippageBps >= 0 ? "+" : ""}
+                    {r.slippageBps.toFixed(1)} bps
+                  </span>
+                  <span className="tabular-nums text-muted-foreground">
+                    {r.durationSec.toFixed(1)}s
+                  </span>
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: "bull" | "bear" | "neutral";
+}) {
+  const color =
+    tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : "text-foreground/90";
+  return (
+    <div className="rounded-sm border border-border/60 bg-card/40 p-2.5">
+      <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">{label}</div>
+      <div className={cn("mt-1 font-mono text-base font-semibold tabular-nums", color)}>
+        {value}
+      </div>
+    </div>
   );
 }

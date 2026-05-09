@@ -1,0 +1,39 @@
+flowchart LR
+    BinanceWs["Binance Futures WS<br/>depth + aggTrade + markPrice + user-data"] --> MarketConn
+    BinanceRest["Binance Futures REST<br/>orders + account + klines"] <--> OrderConn
+
+    subgraph gateways ["gateways/binance/"]
+        MarketConn["market_connection"]
+        OrderConn["order_connection"]
+        AcctConn["account_connection"]
+    end
+
+    subgraph engine ["engine/"]
+        MarketConn --> MarketData["market_data<br/>OrderBook + TradeTape"]
+        MarketData --> Features["FeatureStore"]
+        Features --> Strategy["strategies/<br/>PairsTrading cross-coin USDT/USDC basis"]
+        Strategy -->|"Signal"| Risk["risk/<br/>RiskManager pre-trade"]
+        Risk -->|"approved ParentOrder"| Router["execution/<br/>ExecutionRouter"]
+        Router --> Tracker["execution/<br/>ExecutionTracker (arrival, vwap, slippage)"]
+        Router --> Wheel["AlgoWheel<br/>FRONTLOAD / NORMAL / BACKLOAD"]
+        Wheel --> Slicer["Slicer<br/>schedule + child weights"]
+        Slicer --> Vwap["VwapExecutor"]
+        Vwap --> OrderMgr["orders/<br/>OrderManager"]
+        OrderMgr --> OrderConn
+        AcctConn -->|"fills + balances"| Impact["execution/<br/>ImpactModel (synthetic slippage)"]
+        Impact --> Position["position/<br/>PositionTracker"]
+        Impact --> Tracker
+        Position --> Portfolio["portfolio/<br/>Portfolio + PnLTracker"]
+        Portfolio --> RiskMon["risk/<br/>StopLoss + TakeProfit monitor"]
+        RiskMon -->|"exit ParentOrder"| Router
+    end
+
+    Portfolio --> Bus["common/<br/>EventBus"]
+    OrderMgr --> Bus
+    Tracker --> Bus
+    MarketData --> Bus
+    Bus --> API["api/<br/>FastAPI REST + WebSocket"]
+    API <--> FE["React console<br/>src/routes/index.tsx<br/>OMS + Execution Quality panels"]
+
+    Analytics["analytics/<br/>data_loader + pair_analyzer + orderbook_analyzer"] -.->|"calibrates thresholds"| Strategy
+    Analytics -.->|"calibrates"| Wheel

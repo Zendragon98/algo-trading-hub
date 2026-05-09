@@ -1,0 +1,168 @@
+"""Engine-state -> DTO conversion helpers.
+
+Centralised so the WebSocket layer and the REST handlers serialise the
+same way. The fields and naming are dictated by the React console.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from common.types import ChildOrder, Position
+from engine.core.engine import Engine
+from engine.core.state import EngineSnapshot
+from engine.execution.execution_metrics import ExecutionReport
+from engine.performance.performance_tracker import TradeRecord
+
+from .schemas import (
+    ChildOrderDTO,
+    EquityDTO,
+    ExecutionAggregateDTO,
+    ExecutionReportDTO,
+    ExecutionStatsDTO,
+    KpiDTO,
+    LogDTO,
+    OrdersDTO,
+    ParentOrderDTO,
+    PositionDTO,
+    StateDTO,
+    StatusDTO,
+    TradeDTO,
+)
+
+
+def _fmt_ts(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%H:%M:%S")
+
+
+def position_to_dto(position: Position) -> PositionDTO:
+    return PositionDTO(
+        symbol=position.symbol,
+        side=position.side.value,
+        size=position.size,
+        entry=position.avg_entry_price,
+        mark=position.mark_price,
+    )
+
+
+def trade_to_dto(trade: TradeRecord) -> TradeDTO:
+    return TradeDTO(
+        id=trade.id,
+        ts=_fmt_ts(trade.ts),
+        symbol=trade.symbol,
+        side=trade.side,  # type: ignore[arg-type]
+        qty=trade.qty,
+        price=trade.price,
+        pnl=trade.pnl,
+    )
+
+
+def child_order_to_dto(child: ChildOrder) -> ChildOrderDTO:
+    return ChildOrderDTO(
+        id=child.id,
+        parent_id=child.parent_id,
+        symbol=child.symbol,
+        side=child.side.value,  # type: ignore[arg-type]
+        qty=child.qty,
+        filled_qty=child.filled_qty,
+        price=child.price,
+        avg_fill_price=child.avg_fill_price,
+        order_type=child.order_type.value,  # type: ignore[arg-type]
+        status=child.status.value,  # type: ignore[arg-type]
+        venue_order_id=child.venue_order_id,
+        created_at=child.created_at,
+        updated_at=child.updated_at,
+    )
+
+
+def execution_report_to_parent_dto(report: ExecutionReport) -> ParentOrderDTO:
+    return ParentOrderDTO(
+        parent_id=report.parent_id,
+        symbol=report.symbol,
+        side=report.side,  # type: ignore[arg-type]
+        requested_qty=report.requested_qty,
+        filled_qty=report.filled_qty,
+        fill_ratio=report.fill_ratio,
+        arrival_price=report.arrival_price,
+        vwap_price=report.vwap_price,
+        slippage_bps=report.slippage_bps,
+        impact_bps=report.impact_bps,
+        duration_sec=report.duration_sec,
+        algo_mode=report.algo_mode,
+        started_at=report.started_at,
+    )
+
+
+def execution_report_to_dto(report: ExecutionReport) -> ExecutionReportDTO:
+    return ExecutionReportDTO(
+        parent_id=report.parent_id,
+        symbol=report.symbol,
+        side=report.side,  # type: ignore[arg-type]
+        requested_qty=report.requested_qty,
+        filled_qty=report.filled_qty,
+        fill_ratio=report.fill_ratio,
+        arrival_price=report.arrival_price,
+        vwap_price=report.vwap_price,
+        slippage_bps=report.slippage_bps,
+        impact_bps=report.impact_bps,
+        duration_sec=report.duration_sec,
+        algo_mode=report.algo_mode,
+        started_at=report.started_at,
+        completed_at=report.completed_at,
+    )
+
+
+def orders_dto(engine: Engine) -> OrdersDTO:
+    return OrdersDTO(
+        working=[child_order_to_dto(c) for c in engine.oms.working_children()],
+    )
+
+
+def execution_stats_dto(engine: Engine) -> ExecutionStatsDTO:
+    tracker = engine.execution_tracker
+    agg = tracker.aggregate()
+    return ExecutionStatsDTO(
+        working=[execution_report_to_parent_dto(r) for r in tracker.open_reports()],
+        history=[execution_report_to_dto(r) for r in tracker.history()],
+        aggregate=ExecutionAggregateDTO(
+            count=int(agg["count"]),
+            avg_slippage_bps=agg["avg_slippage_bps"],
+            avg_impact_bps=agg["avg_impact_bps"],
+            avg_fill_ratio=agg["avg_fill_ratio"],
+            avg_duration_sec=agg["avg_duration_sec"],
+            total_traded_notional=agg["total_traded_notional"],
+        ),
+    )
+
+
+def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
+    open_pnl = sum(p.unrealized_pnl for p in snapshot.positions)
+    return StateDTO(
+        status=StatusDTO(status=snapshot.status.value, uptime_sec=snapshot.uptime_sec),
+        kpi=KpiDTO(
+            equity=snapshot.equity,
+            open_pnl=open_pnl,
+            win_rate=snapshot.win_rate,
+            realized_pnl=snapshot.realized_pnl,
+            unrealized_pnl=snapshot.unrealized_pnl,
+            gross_notional=snapshot.gross_notional,
+            net_notional=snapshot.net_notional,
+        ),
+        equity=EquityDTO(equity=snapshot.equity_curve, last_ts=snapshot.last_tick_ts),
+        positions=[position_to_dto(p) for p in snapshot.positions],
+        trades=[trade_to_dto(t) for t in snapshot.trades],
+        orders=orders_dto(engine),
+        execution=execution_stats_dto(engine),
+    )
+
+
+def log_event_to_dto(payload: dict) -> LogDTO:
+    return LogDTO(
+        ts=_fmt_ts(payload.get("ts", 0.0)) if "ts" in payload else _fmt_now(),
+        level=payload.get("level", "info"),  # type: ignore[arg-type]
+        msg=payload.get("msg", ""),
+    )
+
+
+def _fmt_now() -> str:
+    return datetime.now(tz=timezone.utc).strftime("%H:%M:%S")

@@ -1,0 +1,19 @@
+# Runtime
+binance-connector==3.7.0          # official Binance SDK (REST + WS, spot/futures)
+httpx==0.27.2                     # used by gateways/binance/rest_client for signed REST
+websockets==12.0                  # raw WS for the user-data + market streams
+fastapi==0.115.5                  # REST + WebSocket layer for the React console
+uvicorn[standard]==0.32.1         # ASGI server, in-process with the engine
+pydantic==2.9.2                   # DTOs + settings model
+pydantic-settings==2.7.0          # .env loader (NoDecode marker requires >=2.7)
+python-dotenv==1.0.1              # local .env parser, used by pydantic-settings
+numpy==2.1.3                      # vectorised math in analytics + features
+pandas==2.2.3                     # tabular ops in analytics + reports
+scipy==1.14.1                     # stats helpers (zscore, percentiles)
+statsmodels==0.14.4               # cointegration / ADF for pair_analyzer
+pyarrow==18.0.0                   # parquet cache for analytics/data/
+
+# Dev / test
+pytest==8.3.3
+pytest-asyncio==0.24.0
+ruff==0.7.4
