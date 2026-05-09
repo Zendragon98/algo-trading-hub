@@ -36,7 +36,7 @@ class PerformanceTracker:
 
     def record_fill(self, fill: Fill, realized_pnl: float | None) -> TradeRecord:
         record = TradeRecord(
-            id=fill.child_id,
+            id=fill.trade_id or fill.child_id,
             ts=fill.ts,
             symbol=fill.symbol,
             side=fill.side.value,

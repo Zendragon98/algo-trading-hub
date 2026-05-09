@@ -1,6 +1,6 @@
 # Algo Trading Hub
 
-End-to-end trading console: a React frontend that observes and controls the **ALPHA-7** Python trading engine running against the Binance USDT-M Futures Testnet.
+End-to-end trading console: a React frontend that observes and controls a Python trading engine running against the Binance USDT-M Futures Testnet. Two strategies ship out of the box — a volume-weighted cross-coin USDT/USDC basis pairs-trader and a multi-symbol SMA crossover scanner — and the dashboard hot-swaps between them at runtime via the strategy toggle in the Control panel (`POST /api/control/strategy`). The engine is strategy-agnostic, so additional plug-ins surface in the toggle without UI changes.
 
 ## Architecture
 
@@ -27,7 +27,7 @@ flowchart TB
         direction TB
         MarketData["market_data<br/>OrderBook + TradeTape"]
         Features["FeatureStore"]
-        Strategy["strategies/<br/>PairsTrading — cross-coin USDT/USDC basis"]
+        Strategy["strategies/<br/>PairsTrading + SmaCrossover (hot-swap)"]
         Risk["risk/<br/>RiskManager (pre-trade)"]
         Router["execution/<br/>ExecutionRouter"]
         Wheel["execution/<br/>AlgoWheel — FRONTLOAD · NORMAL · BACKLOAD"]
@@ -84,6 +84,7 @@ algo-trading-hub/
     routes/index.tsx       the dashboard
     hooks/useAlgoStream.ts REST + WS client hook bound to the dashboard
     lib/api.ts             typed fetch + WS helpers
+    components/algo/types.ts  view-model shapes (mirrors backend/api/schemas.py)
   backend/                 Python trading engine + FastAPI surface
     main.py                runs engine + uvicorn in one event loop
     engine/                strategy-agnostic core (orders, exec, risk, ...)
@@ -108,7 +109,7 @@ Two terminals.
 ```powershell
 cd backend
 copy .env.example .env
-# paste your testnet API key + secret into .env
+# set BINANCE_API_KEY + BINANCE_API_SECRET in .env (other overrides optional; defaults in backend/common/config.py)
 .\run.bat
 ```
 
@@ -118,7 +119,7 @@ POSIX or manual:
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env  # then edit
+cp .env.example .env  # add keys; optional overrides — defaults in backend/common/config.py
 python main.py
 # -> serving on http://127.0.0.1:8000
 ```
@@ -131,7 +132,24 @@ bun run dev        # or: npm run dev
 # -> http://localhost:5173
 ```
 
-The dashboard hydrates from `GET /api/state` on mount and stays live over `/ws`. Control buttons (Start / Pause / Stop / Flatten) and the risk slider issue REST calls; the engine fans the resulting status changes back over the WebSocket.
+In dev, Vite proxies `/api` and `/ws` to `http://127.0.0.1:8000`, so the dashboard talks to the API same-origin (no CORS). Set `VITE_API_BASE` if your backend URL differs.
+
+The dashboard hydrates from `GET /api/state` on mount and stays live over `/ws`. The strategy toggle, label, description and paper/live mode shown in the UI come from that hydrate — no values are hardcoded on the frontend, and there is no mock data wired in dev or prod (mocks live only under `backend/tests/`). Control buttons (Start / Pause / Stop / Flatten), the risk slider, and the strategy picker issue REST calls; the engine fans the resulting status changes back over the WebSocket. Position-chart candles are pulled live via `GET /api/klines`.
+
+Equity correctness is anchored to the venue. Wallet balances are tracked per-asset (Binance Futures keeps separate USDT and USDC wallets) so a partial `ACCOUNT_UPDATE` event never wipes an unreported leg, and a 30-second REST resync runs as a safety net behind the live stream so the dashboard equity always converges back to Binance.
+
+In **LIVE** mode the backend will **refuse to start** if your venue is still pointed at a sandbox/testnet, so the portfolio cash/equity always seeds from your **real account balance**.
+
+### Failsafes at a glance
+
+A unified circuit-breaker covers the engine end-to-end so extreme events have a defined safety fallback:
+
+- **Pre-trade gates** — stale-tick / wide-spread veto, per-symbol exposure cap, free-margin floor, on top of the existing `MAX_RISK_PCT` / `MAX_GROSS_NOTIONAL` ceilings.
+- **In-flight execution** — per-parent slippage abort (`max_slippage_bps`), repeat-reject symbol pause, open-parent ceiling, REST submit token-bucket throttle.
+- **Portfolio guards** — high-water-mark drawdown, daily-loss kill, consecutive-loss streak, rolling-avg execution-quality blowout. All `MAJOR` and latched until operator re-arm.
+- **System-level** — auto-pause on WS / user-data silence, periodic gateway position reconciliation, auto-flatten on `engine.stop()` (reduce-only orders bypass the breaker so closing exits always reach the venue).
+
+`MAJOR` breaches automatically flatten + latch; the operator clears them via `POST /api/control/breakers/rearm`. `MINOR` breaches auto-resume after a cooldown. See `backend/README.md` "Failsafes — circuit-breaker matrix" for the full list and tunables.
 
 ## Backend deep-dive
 

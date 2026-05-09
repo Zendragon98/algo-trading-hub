@@ -70,7 +70,7 @@ class AlgoMode(str, Enum):
 class EngineStatus(str, Enum):
     """Top-level engine state surfaced on the dashboard.
 
-    Values match `AlgoStatus` in `src/components/algo/mockData.ts` so the
+    Values match `AlgoStatus` in `src/components/algo/types.ts` so the
     REST/WS payloads can be consumed without any client-side translation.
     """
 
@@ -98,12 +98,12 @@ class TradingMode(str, Enum):
 
     The mode is venue-agnostic: it is set independently of the venue's
     own toggles (e.g. ``BINANCE_TESTNET``, IBKR's port, etc.) so that
-    cross-venue policies (kill-switch sensitivity, synthetic impact, log
-    annotations) can react to it uniformly.
+    cross-venue policies (kill-switch sensitivity, log annotations)
+    can react to it uniformly.
     """
 
-    PAPER = "paper"   # testnet / demo / sandbox — synthetic impact ON by default
-    LIVE = "live"    # real money — synthetic impact OFF, louder logging
+    PAPER = "paper"   # testnet / demo / sandbox
+    LIVE = "live"    # real money — louder logging / stricter checks
 
 
 class EventType(str, Enum):
@@ -118,3 +118,4 @@ class EventType(str, Enum):
     EQUITY = "equity"               # portfolio mark-to-market changed
     LOG = "log"                     # operator-visible log line
     STATUS = "status"               # engine status changed
+    BREAKER = "breaker"             # circuit breaker tripped / cleared

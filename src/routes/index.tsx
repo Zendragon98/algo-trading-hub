@@ -36,9 +36,10 @@ import type {
   ExecutionParent,
   LogEntry,
   Position,
+  StrategyInfo,
   Trade,
   WorkingOrder,
-} from "@/components/algo/mockData";
+} from "@/components/algo/types";
 import { useAlgoStream } from "@/hooks/useAlgoStream";
 import { api } from "@/lib/api";
 
@@ -46,7 +47,7 @@ export const Route = createFileRoute("/")({
   component: Index,
   head: () => ({
     meta: [
-      { title: "ALPHA-7 · Algo Trading Console" },
+      { title: "Algo Trading Console" },
       {
         name: "description",
         content: "Live console for monitoring and controlling your crypto trading algorithm.",
@@ -58,6 +59,9 @@ export const Route = createFileRoute("/")({
 function Index() {
   const live = useAlgoStream();
   const status: AlgoStatus = live.status;
+  const paperMode: boolean = live.paperMode;
+  const strategy: StrategyInfo | null = live.strategy;
+  const strategies: StrategyInfo[] = live.strategies;
   const equity: number[] = live.equity;
   const positions: Position[] = live.positions;
   const trades: Trade[] = live.trades;
@@ -70,7 +74,6 @@ function Index() {
 
   const [risk, setRisk] = useState<number[]>([35]);
   const [autoCompound, setAutoCompound] = useState(true);
-  const [paperMode, setPaperMode] = useState(false);
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
 
   const totalEquity = equity.length ? equity[equity.length - 1] : 0;
@@ -113,12 +116,24 @@ function Index() {
     handleControl(() => api.setRisk(value[0] / 100));
   };
 
+  // Hot-swap the active strategy. The /api/state response drives the
+  // ``active`` flag; we re-hydrate immediately so the UI flips without
+  // waiting for the next status push.
+  const onSelectStrategy = (name: string) => {
+    if (strategy?.name === name) return;
+    handleControl(async () => {
+      await api.setStrategy(name);
+      await live.refresh();
+    });
+  };
+
   return (
     <div className="min-h-screen text-foreground">
       <TopBar
         status={status}
         uptimeSec={uptimeSec}
         paperMode={paperMode}
+        strategy={strategy}
         onStart={onStart}
         onPause={onPause}
         onStop={onStop}
@@ -152,8 +167,8 @@ function Index() {
           <KpiCard
             icon={<Zap className="size-4" />}
             label="STRATEGY"
-            value="ALPHA-7"
-            sub="momentum + mean-revert"
+            value={strategy?.label ?? "—"}
+            sub={strategy?.description ?? "Loading..."}
             tone="neutral"
           />
         </section>
@@ -218,6 +233,14 @@ function Index() {
 
               <Separator />
 
+              <StrategyPicker
+                strategies={strategies}
+                activeName={strategy?.name ?? null}
+                onSelect={onSelectStrategy}
+              />
+
+              <Separator />
+
               <div>
                 <div className="mb-2 flex items-center justify-between text-xs">
                   <span className="uppercase tracking-wider text-muted-foreground">Risk per trade</span>
@@ -238,12 +261,6 @@ function Index() {
                 hint="Reinvest realized PnL into sizing"
                 checked={autoCompound}
                 onChange={setAutoCompound}
-              />
-              <ToggleRow
-                label="Paper trading"
-                hint="Simulate orders, no exchange calls"
-                checked={paperMode}
-                onChange={setPaperMode}
               />
 
               <Separator />
@@ -332,12 +349,13 @@ function TopBar(props: {
   status: AlgoStatus;
   uptimeSec: number;
   paperMode: boolean;
+  strategy: StrategyInfo | null;
   onStart: () => void;
   onPause: () => void;
   onStop: () => void;
   onFlatten: () => void;
 }) {
-  const { status, uptimeSec, paperMode } = props;
+  const { status, uptimeSec, paperMode, strategy } = props;
   const statusMeta = {
     running: { label: "RUNNING", color: "text-bull", dot: "bg-bull glow-bull" },
     paused: { label: "PAUSED", color: "text-warning", dot: "bg-warning" },
@@ -361,7 +379,9 @@ function TopBar(props: {
               <div className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
                 Algo Console
               </div>
-              <div className="text-sm font-semibold tracking-wide">ALPHA-7 · v1.4.2</div>
+              <div className="text-sm font-semibold tracking-wide">
+                {strategy?.label ?? "Loading..."}
+              </div>
             </div>
           </div>
 
@@ -479,6 +499,57 @@ function ToggleRow({
   );
 }
 
+function StrategyPicker({
+  strategies,
+  activeName,
+  onSelect,
+}: {
+  strategies: StrategyInfo[];
+  activeName: string | null;
+  onSelect: (name: string) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between text-xs">
+        <span className="uppercase tracking-wider text-muted-foreground">Strategy</span>
+        {strategies.length === 0 && (
+          <span className="text-[11px] text-muted-foreground">Loading…</span>
+        )}
+      </div>
+      <div className="grid grid-cols-1 gap-1.5">
+        {strategies.map((s) => {
+          const isActive = (activeName ?? "") === s.name;
+          return (
+            <button
+              key={s.name}
+              type="button"
+              onClick={() => onSelect(s.name)}
+              className={cn(
+                "flex flex-col items-start gap-0.5 rounded-sm border px-2.5 py-2 text-left transition-colors",
+                isActive
+                  ? "border-bull/60 bg-bull/10 text-bull"
+                  : "border-border bg-background/40 text-foreground/80 hover:border-bull/30 hover:text-foreground",
+              )}
+            >
+              <div className="flex w-full items-center gap-2">
+                <span className="text-sm font-semibold tracking-tight">{s.label}</span>
+                {isActive && (
+                  <span className="ml-auto rounded-sm border border-bull/40 bg-bull/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wider">
+                    Active
+                  </span>
+                )}
+              </div>
+              {s.description && (
+                <div className="text-[11px] text-muted-foreground">{s.description}</div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function LiveDot({ active }: { active: boolean }) {
   return (
     <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -589,7 +660,9 @@ function TradesTable({ trades }: { trades: Trade[] }) {
           {trades.slice(0, 12).map((t) => (
             <tr key={t.id} className="border-t border-border/60 hover:bg-accent/30">
               <td className="px-4 py-2 text-muted-foreground tabular-nums">{t.ts}</td>
-              <td className="px-2 py-2 text-xs text-muted-foreground">{t.id}</td>
+              <td className="px-2 py-2 text-xs text-muted-foreground">
+                {t.id.slice(-8).toUpperCase()}
+              </td>
               <td className="px-2 py-2">{t.symbol}</td>
               <td className="px-2 py-2">
                 <span

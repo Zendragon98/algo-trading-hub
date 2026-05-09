@@ -1,0 +1,99 @@
+"""WS / user-data freshness monitor.
+
+A silent feed (network blip, server-side hiccup, exchange downtime,
+expired listenKey) is one of the most dangerous failure modes: the
+engine keeps emitting orders against a frozen view of the book and
+never receives back the fills it expects.
+
+`ConnectionMonitor.tick(now)` is called from the engine heartbeat with
+the latest `last_tick_ts` (any market-data WS event) and
+`last_user_data_ts` (any order/fill update). If either timestamp
+exceeds `ws_stale_pause_sec` of staleness, a minor ENGINE-scope breach
+is tripped which auto-clears (cooldown-resumes) once data flows again.
+
+This module never *unpauses* the engine on its own — it only manages
+the breach. Phase 0's auto-flatten path is deliberately limited to
+MAJOR breaches; minor stale-tick trips are pure pauses.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from common.config import Settings
+
+from ..risk.circuit_breaker import (
+    Breach,
+    BreakerScope,
+    BreakerSeverity,
+    CircuitBreaker,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class ConnectionMonitor:
+    def __init__(
+        self,
+        breaker: CircuitBreaker,
+        ws_stale_pause_sec: float,
+        cooldown_sec: float,
+    ) -> None:
+        self._breaker = breaker
+        self._stale_threshold = max(0.0, ws_stale_pause_sec)
+        self._cooldown_sec = max(0.0, cooldown_sec)
+
+    @classmethod
+    def from_settings(
+        cls,
+        settings: Settings,
+        breaker: CircuitBreaker,
+    ) -> "ConnectionMonitor":
+        return cls(
+            breaker=breaker,
+            ws_stale_pause_sec=settings.ws_stale_pause_sec,
+            cooldown_sec=settings.breaker_minor_cooldown_sec,
+        )
+
+    def evaluate(
+        self,
+        *,
+        now: float,
+        last_tick_ts: float,
+        last_user_data_ts: float,
+        engine_running: bool,
+    ) -> None:
+        """Trip / refresh the stale-feed breach according to current ages.
+
+        ``last_user_data_ts`` is allowed to be ``0`` before any fill
+        lands (user-data only emits when something changes). We only
+        trip on user-data once it has produced at least one event.
+        """
+        if not engine_running or self._stale_threshold <= 0:
+            return
+
+        if last_tick_ts > 0:
+            tick_age = max(0.0, now - last_tick_ts)
+            if tick_age > self._stale_threshold:
+                self._breaker.trip(
+                    Breach(
+                        code="stale_market_data",
+                        scope=BreakerScope.ENGINE,
+                        severity=BreakerSeverity.MINOR,
+                        cooldown_sec=self._cooldown_sec,
+                        detail=f"tick_age={tick_age:.1f}s",
+                    )
+                )
+
+        if last_user_data_ts > 0:
+            user_age = max(0.0, now - last_user_data_ts)
+            if user_age > self._stale_threshold:
+                self._breaker.trip(
+                    Breach(
+                        code="stale_user_data",
+                        scope=BreakerScope.ENGINE,
+                        severity=BreakerSeverity.MINOR,
+                        cooldown_sec=self._cooldown_sec,
+                        detail=f"user_age={user_age:.1f}s",
+                    )
+                )

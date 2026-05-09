@@ -19,7 +19,7 @@ from common.config import Settings, get_settings
 from common.enums import EventType
 from common.events import EventBus
 
-from .routes import control, execution, logs, orders, positions, status, trades
+from .routes import control, execution, klines, logs, orders, positions, status, trades
 from .schemas import LogDTO
 from .ws import router as ws_router
 
@@ -64,7 +64,7 @@ def create_app(engine, bus: EventBus, settings: Settings | None = None) -> FastA
                 pass
 
     app = FastAPI(
-        title="ALPHA-7 Algo Trading API",
+        title="Algo Trading API",
         version="0.1.0",
         lifespan=lifespan,
     )
@@ -72,6 +72,10 @@ def create_app(engine, bus: EventBus, settings: Settings | None = None) -> FastA
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
+        # Allow local dev frontends (Vite, Storybook, etc.) regardless of port.
+        # This also covers cases where the browser reports `localhost` while the
+        # API is addressed via `127.0.0.1` (or vice versa).
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -85,6 +89,7 @@ def create_app(engine, bus: EventBus, settings: Settings | None = None) -> FastA
     app.include_router(trades.router)
     app.include_router(orders.router)
     app.include_router(execution.router)
+    app.include_router(klines.router)
     app.include_router(logs.router)
     app.include_router(control.router)
     app.include_router(ws_router)

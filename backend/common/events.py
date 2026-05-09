@@ -85,6 +85,20 @@ class EventBus:
         for ev in events:
             await self.publish(ev)
 
+    def publish_nowait(self, event: Event) -> None:
+        """Schedule a publish from a synchronous callsite.
+
+        Designed for safety-critical notifiers (circuit breaker trips,
+        risk vetoes) that fire from sync paths but need to fan-out onto
+        the bus. If no event loop is running we silently drop the event;
+        callers must already have logged the underlying state change.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self.publish(event))
+
     @asynccontextmanager
     async def subscribe(
         self,

@@ -13,6 +13,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from time import time
+from typing import Mapping
 
 from common.enums import EventType
 from common.events import Event, EventBus
@@ -21,6 +22,11 @@ from common.types import Position
 from ..position.position_tracker import PositionTracker
 
 logger = logging.getLogger(__name__)
+
+# Stablecoin assets we treat as 1:1 cash when ``BASE_CURRENCY`` is one of
+# them. Both wallets contribute to dashboard equity so users with split
+# USDT/USDC balances see their real account value.
+_STABLE_CASH_ASSETS = frozenset({"USDT", "USDC"})
 
 
 @dataclass(slots=True)
@@ -46,32 +52,103 @@ class PortfolioSnapshot:
 
 
 class Portfolio:
-    """Maintains cash + positions + equity curve."""
+    """Maintains cash + positions + equity curve.
+
+    Cash is held as a per-asset map so partial ``ACCOUNT_UPDATE`` messages
+    (Binance only ships the assets that *changed* in each event) merge
+    cleanly without zeroing out unreported wallets. ``cash`` collapses the
+    map to a single number using ``base_currency``.
+    """
 
     def __init__(
         self,
         bus: EventBus,
         position_tracker: PositionTracker,
         equity_curve_size: int = 256,
+        base_currency: str = "USDT",
     ) -> None:
         self._bus = bus
         self._tracker = position_tracker
-        self._cash: float = 0.0
+        self._cash_by_asset: dict[str, float] = {}
         self._equity_curve: list[EquityPoint] = []
         self._curve_size = equity_curve_size
         self._session_start_equity: float = 0.0
+        self._base_currency = base_currency.upper()
         self._lock = asyncio.Lock()
 
     # --- Lifecycle ---
 
-    def seed_cash(self, cash: float) -> None:
-        self._cash = cash
+    def seed_balances(self, balances: Mapping[str, float]) -> None:
+        """Replace the per-asset cash map (used at engine boot).
+
+        Sets ``session_start_equity`` so drawdown is measured from this
+        snapshot. Subsequent updates from the venue should go through
+        ``update_asset_balance`` so unreported assets retain their balance.
+        """
+        self._cash_by_asset = {k.upper(): float(v) for k, v in balances.items()}
         self._session_start_equity = self.snapshot().equity
-        logger.info("portfolio seeded cash=%.2f equity=%.2f", cash, self._session_start_equity)
+        logger.info(
+            "portfolio seeded cash=%.2f equity=%.2f assets=%s",
+            self.cash, self._session_start_equity,
+            {k: round(v, 2) for k, v in self._cash_by_asset.items()},
+        )
+
+    def seed_cash(self, cash: float) -> None:
+        """Compatibility shim: seed a single ``base_currency`` balance.
+
+        Kept for tests and venues that expose only one wallet number. New
+        callers should prefer ``seed_balances`` so the stablecoin merge
+        rules (USDT + USDC) survive partial updates.
+        """
+        self.seed_balances({self._base_currency: float(cash)})
+
+    def update_asset_balance(self, asset: str, balance: float) -> None:
+        """Refresh a single asset's wallet balance from the venue.
+
+        Only the named asset is mutated; every other asset retains its
+        previous balance. This is the merge-friendly counterpart to the
+        wholesale ``update_cash`` overwrite below — it is the entry point
+        the engine uses for streaming ``ACCOUNT_UPDATE`` events.
+        """
+        self._cash_by_asset[asset.upper()] = float(balance)
+
+    def update_balances(self, balances: Mapping[str, float]) -> None:
+        """Bulk per-asset refresh (e.g. periodic REST resync).
+
+        Equivalent to calling ``update_asset_balance`` for every entry.
+        Assets not present in ``balances`` are left untouched, so a partial
+        REST response cannot zero out unreported wallets.
+        """
+        for asset, value in balances.items():
+            self.update_asset_balance(asset, value)
+
+    def update_cash(self, cash: float) -> None:
+        """Compatibility shim: overwrite the ``base_currency`` balance.
+
+        Behaviour matches the legacy single-cash model. Prefer
+        ``update_asset_balance`` for live updates so per-asset merge holds.
+        """
+        self._cash_by_asset[self._base_currency] = float(cash)
 
     @property
     def session_start_equity(self) -> float:
         return self._session_start_equity
+
+    @property
+    def cash(self) -> float:
+        """Single-number cash view in ``base_currency`` units.
+
+        For USDT/USDC base currencies we sum both stablecoin wallets so
+        users with split balances see their real account value. Other
+        bases collapse to that asset's wallet directly.
+        """
+        if self._base_currency in _STABLE_CASH_ASSETS:
+            return sum(self._cash_by_asset.get(a, 0.0) for a in _STABLE_CASH_ASSETS)
+        return self._cash_by_asset.get(self._base_currency, 0.0)
+
+    def cash_by_asset(self) -> dict[str, float]:
+        """Return a defensive copy of the per-asset wallet map."""
+        return dict(self._cash_by_asset)
 
     # --- Reads ---
 
@@ -82,7 +159,7 @@ class Portfolio:
         gross = sum(p.notional for p in positions)
         net = sum(p.notional * (1 if p.qty > 0 else -1) for p in positions)
         return PortfolioSnapshot(
-            cash=self._cash,
+            cash=self.cash,
             realized_pnl=realized,
             unrealized_pnl=unrealized,
             gross_notional=gross,

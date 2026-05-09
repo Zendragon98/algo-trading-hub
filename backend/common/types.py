@@ -15,6 +15,24 @@ from .enums import AlgoMode, OrderStatus, OrderType, PositionSide, Side
 
 
 @dataclass(slots=True)
+class Kline:
+    """One historical OHLCV candle.
+
+    Returned by `GatewayInterface.klines` so the dashboard can render real
+    price history for an open position. Times are seconds since epoch
+    (UTC). Volume is in base-asset units (e.g. BTC).
+    """
+
+    open_time: float
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    close_time: float
+
+
+@dataclass(slots=True)
 class Tick:
     """A market data update.
 
@@ -56,6 +74,11 @@ class Signal:
     `qty` is in base-asset units (e.g. BTC), positive for the requested
     direction. The risk manager may scale or reject the signal before it
     reaches the execution router.
+
+    `group_id` ties multiple signals into a single atomic batch — used
+    by pair strategies so the engine can either submit every leg of a
+    pair or none of them (preventing a "naked" leg when one side fails
+    a venue filter).
     """
 
     symbol: str
@@ -63,6 +86,7 @@ class Signal:
     qty: float
     reason: str                        # human-readable, surfaced in the log stream
     score: float = 0.0                 # strategy-internal confidence in [0, 1]
+    group_id: str | None = None        # legs sharing this id are submitted atomically
     ts: float = field(default_factory=time)
 
 
@@ -83,6 +107,12 @@ class ParentOrder:
     max_slippage_bps: float = 5.0
     algo_mode: AlgoMode | None = None  # populated by AlgoWheel
     notes: str = ""                    # used for log lines / dashboard
+    group_id: str | None = None        # links pair-trade legs across the OMS
+    # True when the parent is unwinding an existing position (stop-loss,
+    # take-profit, max-drawdown, operator flatten). Propagates onto every
+    # child so the venue is told the order can only reduce position size.
+    # Binance Futures additionally waives MIN_NOTIONAL for reduce-only.
+    reduce_only: bool = False
 
 
 @dataclass(slots=True)
@@ -102,6 +132,10 @@ class ChildOrder:
     venue_order_id: str | None = None  # Binance orderId once acknowledged
     created_at: float = field(default_factory=time)
     updated_at: float = field(default_factory=time)
+    # Mirrors `ParentOrder.reduce_only`. The OMS forwards this onto the
+    # venue (`reduceOnly=true` for Binance Futures) so the order is only
+    # accepted as a position-reducing trade.
+    reduce_only: bool = False
 
 
 @dataclass(slots=True)
@@ -111,12 +145,11 @@ class Fill:
     Multiple fills can refer to the same `child_id` for partial fills.
     `fee` is in `fee_asset` units (e.g. USDT for a USDT-margined contract).
 
-    `price` is the price the engine uses for downstream PnL accounting.
-    On the testnet this is normally adjusted to include synthetic market
-    impact so the dashboard reflects what mainnet would look like.
-    `venue_price` is preserved as the raw exchange-reported price so the
-    OMS / API can show the audit trail unchanged. `impact_bps` records
-    the magnitude of the synthetic adjustment.
+    `price` is the venue fill price used for PnL accounting (same as the
+    exchange-reported execution unless a future adapter adds adjustments).
+    `venue_price` duplicates that audit trail for API payloads. `impact_bps`
+    is unused (zero); execution quality vs arrival is in parent-level
+    slippage metrics.
     """
 
     child_id: str
@@ -127,6 +160,9 @@ class Fill:
     price: float
     fee: float
     fee_asset: str
+    # Exchange identifiers / fields (when provided by the venue adapter).
+    trade_id: str | None = None
+    realized_pnl: float | None = None
     ts: float = field(default_factory=time)
     venue_price: float = 0.0
     impact_bps: float = 0.0
@@ -145,6 +181,10 @@ class Position:
     avg_entry_price: float = 0.0
     mark_price: float = 0.0
     realized_pnl: float = 0.0
+    # When populated by the exchange adapter (e.g. Binance ACCOUNT_UPDATE /
+    # positionRisk), this value is the venue's own unrealized PnL figure.
+    # If absent (tests/mocks), we fall back to mark-entry math.
+    exchange_unrealized_pnl: float | None = None
     updated_at: float = field(default_factory=time)
 
     @property
@@ -161,8 +201,10 @@ class Position:
 
     @property
     def unrealized_pnl(self) -> float:
-        # PnL of an open position relative to its weighted entry. For shorts
-        # the sign of (mark - entry) flips because qty is negative.
+        if self.exchange_unrealized_pnl is not None:
+            return self.exchange_unrealized_pnl
+        # Fallback: PnL of an open position relative to its weighted entry.
+        # For shorts the sign of (mark - entry) flips because qty is negative.
         return (self.mark_price - self.avg_entry_price) * self.qty
 
     @property

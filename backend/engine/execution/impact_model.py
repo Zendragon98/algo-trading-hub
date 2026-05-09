@@ -1,32 +1,8 @@
-"""Synthetic market impact for testnet fills.
+"""Square-root impact estimator (optional).
 
-Binance Futures Testnet has paper-thin liquidity *configured* but in
-practice the matching engine fills almost everything at the touch, so
-the dashboard's PnL is unrealistically rosy. This module estimates the
-impact cost a real-world mainnet fill of the same size would have
-incurred, and lets the engine bake that cost into recorded fill prices
-so the PnL preview matches reality.
-
-Model
------
-We use the textbook square-root impact model:
-
-    impact_bps = k * sqrt(qty / consumable_depth) * 10_000
-
-where:
-    qty                 is the fill quantity (base asset)
-    consumable_depth    is the resting size on the touched side of the
-                        book at the time of the fill, summed over the
-                        top-N levels we'd reasonably sweep through.
-    k                   is a calibration constant (typically 0.1 - 1.0).
-
-This is the same functional form Almgren-Chriss falls out to under a
-constant-volatility assumption, and matches what every sell-side TCA
-desk uses as a sanity baseline.
-
-The model is sign-aware: a BUY pays *more* than the venue price (impact
-pushes the price up against you), a SELL receives *less*. A "simulated
-fill price" can be obtained from `apply` for downstream PnL accounting.
+The production `Engine` records venue fill prices as-is. This module remains
+for experiments and unit tests; construct `ImpactModel` with an explicit
+`ImpactConfig(enabled=True)` if you want the textbook calibration offline.
 """
 
 from __future__ import annotations
@@ -50,17 +26,9 @@ class ImpactConfig:
 
     @classmethod
     def from_settings(cls, settings) -> "ImpactConfig":
-        # Synthetic impact is a paper-trading aid: it makes testnet PnL
-        # look like mainnet would. In LIVE mode the impact is real and
-        # already baked into the venue's fill price, so we hard-disable
-        # the model regardless of `IMPACT_MODEL_ENABLED`.
-        enabled = settings.impact_model_enabled and not settings.is_live
-        return cls(
-            enabled=enabled,
-            k=settings.impact_k,
-            min_depth=settings.impact_min_depth,
-            top_n=settings.imbalance_top_n,
-        )
+        """The production engine does not apply this model; tests may opt in explicitly."""
+        _ = settings
+        return cls(enabled=False)
 
 
 class ImpactModel:

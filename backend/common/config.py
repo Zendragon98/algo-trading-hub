@@ -1,9 +1,12 @@
 """Runtime configuration.
 
-All knobs are loaded from `backend/.env` (or actual environment variables)
-via `pydantic-settings`. Nothing else in the codebase should call
-`os.getenv` directly; depend on `Settings` instead so defaults and
-validation live in one place.
+Every tunable default lives on `Settings` below. Operators override values
+via `backend/.env` or real environment variables (`pydantic-settings`); the
+`.env.example` file is intentionally minimal — copy it to `.env` and only
+set secrets or knobs you change from defaults.
+
+Nothing else in the codebase should call `os.getenv` directly; depend on
+`Settings` / `get_settings()` instead.
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ class Settings(BaseSettings):
     # --- Venue selection + trading mode ---
     # `venue` picks the gateway adapter (`gateways/factory.py`).
     # `trading_mode` is venue-agnostic and controls cross-venue safety
-    # behaviour (synthetic impact, log volume, kill-switch sensitivity).
+    # behaviour (log volume, kill-switch sensitivity).
     venue: str = "binance"
     trading_mode: TradingMode = TradingMode.PAPER
 
@@ -49,6 +52,10 @@ class Settings(BaseSettings):
     binance_testnet: bool = True
     binance_rest_base: str = "https://testnet.binancefuture.com"
     binance_ws_base: str = "wss://stream.binancefuture.com"
+    # Client-side REST pacing + HTTP 429 handling (see BinanceRestClient).
+    binance_rest_min_interval_ms: int = 50
+    binance_rest_429_default_backoff_sec: float = 60.0
+    binance_rest_pause_buffer_sec: float = 0.5
 
     # --- IBKR (Interactive Brokers) ---
     # Defaults match the canonical paper-trading IB Gateway / TWS port (7497).
@@ -66,13 +73,108 @@ class Settings(BaseSettings):
         default_factory=lambda: ["BTCUSDT", "BTCUSDC"]
     )
     base_currency: str = "USDT"
+    engine_autostart: bool = False
+    # Which strategy set to run. Supported: "pairs" | "sma".
+    strategy: str = "pairs"
 
     # --- Risk ---
+    # `max_risk_pct` is the hard ceiling on per-leg notional (% of equity).
+    # `risk_per_trade_pct` is the *primary* sizing input: the fraction of
+    # equity the engine is willing to lose if `default_stop_loss_pct` is
+    # hit. Position size is then `(equity * risk_per_trade_pct) / stop_pct`,
+    # which is the canonical "size by stop" rule traders use on futures.
     max_risk_pct: float = 0.35
+    risk_per_trade_pct: float = 0.005
     max_gross_notional: float = 50_000.0
     max_drawdown_pct: float = 0.10
     default_stop_loss_pct: float = 0.005
     default_take_profit_pct: float = 0.010
+
+    # --- Failsafes (circuit breakers) ---
+    # Pre-trade gates
+    max_tick_age_sec: float = 5.0           # stale-tick veto threshold
+    max_entry_spread_bps: float = 25.0      # wide-spread veto threshold
+    max_symbol_notional_pct: float = 0.20   # per-symbol exposure cap
+    min_free_margin_pct: float = 0.10       # equity headroom required to enter
+    # In-flight execution
+    max_open_parents: int = 8               # max simultaneous in-flight parents
+    submit_rate_per_sec: float = 5.0        # global REST submit throttle
+    reject_cooldown_sec: float = 30.0       # symbol pause after K rejects
+    max_consecutive_rejects: int = 3
+    # Portfolio guards
+    daily_loss_kill_pct: float = 0.05       # MAJOR: daily-loss kill
+    max_consecutive_losses: int = 5         # MAJOR: streak kill
+    hwm_drawdown_kill_pct: float = 0.15     # MAJOR: high-water-mark drawdown
+    exec_quality_kill_bps: float = 50.0     # MAJOR: rolling slippage kill
+    exec_quality_window: int = 10           # number of completed parents to avg
+    # System-level
+    ws_stale_pause_sec: float = 30.0        # auto-pause on WS silence
+    # Mid priming: wait for ``bookTicker`` before falling back to REST ``/depth``.
+    prime_ws_timeout_sec: float = 10.0
+    reconcile_interval_sec: float = 60.0    # gateway-state reconcile cadence
+    reconcile_qty_tolerance: float = 1e-6   # qty mismatch threshold
+    # When True, periodic reconcile skips GET /account + /positionRisk while the
+    # user-data stream (ORDER_TRADE_UPDATE, ACCOUNT_UPDATE) was active within
+    # ``reconcile_user_data_fresh_sec`` — same live path Binance recommends
+    # instead of REST polling. Set False to always verify via REST.
+    reconcile_skip_rest_when_user_data_fresh: bool = True
+    reconcile_user_data_fresh_sec: float = 120.0
+    flatten_on_stop: bool = True            # market-out residuals on engine.stop()
+    flatten_timeout_sec: float = 30.0
+    # Breaker lifecycle
+    breaker_minor_cooldown_sec: float = 60.0
+
+    # --- Pairs-trading risk (basis-spread space) ---
+    # The pairs strategy enters when |z| >= pair_entry_z, takes profit
+    # when |z| <= pair_exit_z (basis converged), and stops out when |z|
+    # diverges past pair_stop_z against the open direction.
+    #
+    # These are the *natural* risk knobs for a basis trade: a pair's
+    # actual P&L is driven by the basis spread, not the individual legs'
+    # absolute moves. Because of this the per-leg fixed-% SL/TP above
+    # (`default_stop_loss_pct` / `default_take_profit_pct`) is bypassed
+    # for symbols owned by a pairs strategy — see
+    # `engine.risk.stop_loss.StopLossMonitor` and
+    # `engine.strategies.strategy_base.StrategyBase.manages_own_risk`.
+    pair_entry_z: float = 2.0
+    pair_exit_z: float = 0.5
+    pair_stop_z: float = 4.0
+    # Rolling window for historical z-score estimation (seconds).
+    pair_z_window_sec: int = 600
+    # Anti-churn guards. These exist to prevent "flip-flop" trading when z
+    # oscillates around the entry/exit thresholds or when partial fills arrive
+    # across multiple ticks.
+    pair_min_hold_sec: int = 30
+    pair_cooldown_sec: int = 15
+    pair_pending_timeout_sec: int = 120
+    # Hybrid-sizing ceiling for pairs entries. The strategy scales qty
+    # linearly with |z|/entry_z above the entry floor, capped at this
+    # multiplier so a transient z-spike can't blow up the leg notional.
+    pair_size_scale_cap: float = 2.0
+    # Prefer Binance public WS ``!ticker@arr`` for 24h quote volume instead of
+    # polling REST ``/ticker/24hr``. When False, periodic refresh always uses REST.
+    pair_volume_from_websocket: bool = True
+    # How often the volume-weight refresh loop runs. With ``pair_volume_from_websocket``,
+    # REST is used only for symbols still missing from WS (or the whole set if False).
+    pair_volume_refresh_sec: int = 1800
+    # Extra GET /fapi/v2/account polls behind the live ACCOUNT_UPDATE stream.
+    # ``0`` disables this loop so balances refresh only via
+    # ``RECONCILE_INTERVAL_SEC`` + WS (avoids doubling REST load with the
+    # reconciler). Set e.g. ``300`` if you want an additional safety net.
+    balance_resync_sec: int = 0
+
+    # --- Futures leverage ---
+    # Applied per symbol via the venue's `set_leverage` hook on engine
+    # start. Leverage doesn't change the dollar-loss-at-stop (that's
+    # bounded by `risk_per_trade_pct`); it only relaxes the margin
+    # requirement so the stop-loss-sized notional fits in the wallet.
+    leverage: int = 10
+    # Binance: caps per symbol come from GET /fapi/v1/leverageBracket.
+    # Cached under backend/data/cache/ so later starts skip the REST call.
+    # `0` = no time-based refresh (only refetch if file missing or
+    # BINANCE_REST_BASE changes). Set >0 (seconds) to periodically refresh.
+    leverage_bracket_cache_path: str = "data/cache/binance_leverage_brackets.json"
+    leverage_bracket_cache_ttl_sec: int = 0
 
     # --- Execution ---
     vwap_duration_sec: int = 60
@@ -80,18 +182,29 @@ class Settings(BaseSettings):
     imbalance_top_n: int = 10
     trade_tape_window_sec: int = 300
 
-    # --- Synthetic market impact (testnet only) ---
-    # Testnet liquidity is paper-thin, so real fills look unrealistically clean.
-    # When enabled, the engine adjusts each recorded fill price by an estimated
-    # impact cost so the dashboard's PnL reflects what mainnet would look like.
-    # Real testnet orders still execute; only the in-engine accounting changes.
-    impact_model_enabled: bool = True
-    impact_k: float = 0.5            # square-root model coefficient
-    impact_min_depth: float = 1e-9   # floor on consumable depth to avoid div-by-zero
+    # --- SMA crossover strategy (multi-symbol scanner) ---
+    # SMA_SYMBOLS supports a CSV list ("BTCUSDT,ETHUSDT") or the literal
+    # "AUTO" to discover every USDT perpetual on the venue at boot.
+    # SMA_SYMBOL is kept as a backwards-compat shim — when sma_symbols is
+    # empty, main.py falls back to a single-symbol list of [sma_symbol].
+    sma_symbols: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+    )
+    sma_symbol: str = "BTCUSDT"
+    sma_fast_window: int = 10
+    sma_slow_window: int = 30
+    # Per-symbol equity slice spent on each SMA entry. Default 0.5%.
+    # Falls back to ``sma_qty`` when equity is unavailable (e.g. boot
+    # before the first ``fetch_balance`` lands).
+    sma_risk_per_trade_pct: float = 0.005
+    sma_qty: float = 0.001
+    sma_cooldown_sec: int = 15
 
     # --- API ---
     api_host: str = "127.0.0.1"
     api_port: int = 8000
+    # GET /api/klines dedupes identical upstream REST calls within this TTL (seconds).
+    klines_cache_ttl_sec: float = 60.0
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )
@@ -107,7 +220,7 @@ class Settings(BaseSettings):
     log_file_max_bytes: int = 10_000_000  # 10 MB before rotation
     log_file_backup_count: int = 5
 
-    @field_validator("symbols", "cors_origins", mode="before")
+    @field_validator("symbols", "sma_symbols", "cors_origins", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:
         # pydantic-settings hands us a raw string from the .env file; split
@@ -150,7 +263,8 @@ class Settings(BaseSettings):
         """
         usdt = {s.removesuffix("USDT"): s for s in self.symbols if s.endswith("USDT")}
         usdc = {s.removesuffix("USDC"): s for s in self.symbols if s.endswith("USDC")}
-        return [(usdt[base], usdc[base]) for base in usdt.keys() & usdc.keys()]
+        bases = sorted(usdt.keys() & usdc.keys())
+        return [(usdt[base], usdc[base]) for base in bases]
 
 
 @lru_cache(maxsize=1)

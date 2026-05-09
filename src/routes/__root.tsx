@@ -72,15 +72,15 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "ALPHA-7 - Algo Trading Console" },
+      { title: "Algo Trading Console" },
       {
         name: "description",
-        content: "Live console for the ALPHA-7 algo trading engine.",
+        content: "Live console for the trading engine.",
       },
-      { property: "og:title", content: "ALPHA-7 - Algo Trading Console" },
+      { property: "og:title", content: "Algo Trading Console" },
       {
         property: "og:description",
-        content: "Live console for the ALPHA-7 algo trading engine.",
+        content: "Live console for the trading engine.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
@@ -100,11 +100,11 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootShell({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
       </head>
-      <body>
+      <body suppressHydrationWarning>
         {children}
         <Scripts />
       </body>

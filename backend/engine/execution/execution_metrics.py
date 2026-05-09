@@ -2,11 +2,10 @@
 
 For each `ParentOrder` in flight we record:
     - arrival_price       mid at parent submission time
-    - vwap_price          volume-weighted average of all child fills
+    - vwap_price          volume-weighted average of venue fill prices
     - slippage_bps        adverse move from arrival -> vwap, signed so
                           positive = bad for the trader
-    - impact_bps          accumulated synthetic-impact cost from
-                          ImpactModel (also signed, same convention)
+    - impact_bps          legacy field (always zero); TCA uses slippage above
     - fill_ratio          filled_qty / requested_qty
     - duration_sec        time from submit to last fill (or now if open)
 
@@ -41,7 +40,7 @@ class ExecutionReport:
     arrival_price: float = 0.0
     vwap_price: float = 0.0
     slippage_bps: float = 0.0
-    impact_bps: float = 0.0
+    impact_bps: float = 0.0  # reserved for API compatibility; use slippage_bps for TCA
     fill_ratio: float = 0.0
     duration_sec: float = 0.0
     algo_mode: str | None = None

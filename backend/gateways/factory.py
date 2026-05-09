@@ -36,16 +36,17 @@ def _build_binance(settings: Settings) -> GatewayInterface:
     # users of another.
     from .binance.binance_gateway import BinanceGateway
 
+    # In LIVE mode we must not allow a synthetic/testnet balance to seed
+    # the portfolio. Fail fast if config points at testnet/sandbox.
     if settings.is_live and settings.binance_testnet:
-        logger.warning(
-            "TRADING_MODE=live but BINANCE_TESTNET=true — engine will hit "
-            "the testnet host with live mode safety. Set BINANCE_TESTNET=false "
-            "and switch BINANCE_REST_BASE / BINANCE_WS_BASE to mainnet to actually trade live."
+        raise ValueError(
+            "TRADING_MODE=live requires BINANCE_TESTNET=false so the engine seeds "
+            "cash/equity from your real account balance."
         )
     if not settings.is_live and not settings.binance_testnet:
         logger.warning(
             "TRADING_MODE=paper but BINANCE_TESTNET=false — engine will hit "
-            "the live host with paper-mode synthetic-impact accounting. Recheck your config."
+            "the live host while TRADING_MODE still gates logging/risk policy. Recheck your config."
         )
     return BinanceGateway(settings)
 
@@ -56,11 +57,9 @@ def _build_ibkr(settings: Settings) -> GatewayInterface:
     # Standard IB convention: paper account = port 7497, live = 7496.
     paper_port, live_port = 7497, 7496
     if settings.is_live and settings.ibkr_port == paper_port:
-        logger.warning(
-            "TRADING_MODE=live but IBKR_PORT=%d (the paper port). "
-            "Switch to %d to actually trade live.",
-            settings.ibkr_port,
-            live_port,
+        raise ValueError(
+            f"TRADING_MODE=live requires IBKR_PORT={live_port} (got {settings.ibkr_port}) "
+            "so the engine seeds cash/equity from your real account balance."
         )
     if not settings.is_live and settings.ibkr_port == live_port:
         logger.warning(

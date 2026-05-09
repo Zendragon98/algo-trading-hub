@@ -1,22 +1,30 @@
 import { useMemo } from "react";
 
+function normalizeSeries(values: number[]): number[] {
+  if (values.length >= 2) return values;
+  if (values.length === 1) return [values[0]!, values[0]!];
+  return [0, 0];
+}
+
 export function EquityChart({ data }: { data: number[] }) {
+  const series = useMemo(() => normalizeSeries(data), [data]);
+
   const { path, area, min, max, last, first } = useMemo(() => {
-    const min = Math.min(...data);
-    const max = Math.max(...data);
+    const min = Math.min(...series);
+    const max = Math.max(...series);
     const range = max - min || 1;
     const w = 100;
     const h = 100;
-    const step = w / (data.length - 1);
-    const pts = data.map((v, i) => {
+    const step = w / (series.length - 1);
+    const pts = series.map((v, i) => {
       const x = i * step;
       const y = h - ((v - min) / range) * h;
       return [x, y] as const;
     });
     const path = pts.map(([x, y], i) => (i === 0 ? `M${x},${y}` : `L${x},${y}`)).join(" ");
     const area = `${path} L${w},${h} L0,${h} Z`;
-    return { path, area, min, max, last: data[data.length - 1], first: data[0] };
-  }, [data]);
+    return { path, area, min, max, last: series[series.length - 1]!, first: series[0]! };
+  }, [series]);
 
   const up = last >= first;
   const stroke = up ? "var(--bull)" : "var(--bear)";

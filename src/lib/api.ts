@@ -1,22 +1,41 @@
-// REST + WebSocket client for the ALPHA-7 backend (FastAPI on :8000).
+// REST + WebSocket client for the trading backend (FastAPI on :8000).
 //
 // All payload shapes are dictated by `backend/api/schemas.py` and mirror
-// the types that already live in `src/components/algo/mockData.ts`. Keep
-// the two in sync — the dashboard binds directly to these shapes.
+// the types in `src/components/algo/types.ts`. Keep the two in sync —
+// the dashboard binds directly to these shapes.
 
 import type {
   AlgoStatus,
   ExecutionAggregate,
   ExecutionParent,
+  Kline,
   LogEntry,
   Position,
+  StrategyInfo,
   Trade,
   WorkingOrder,
-} from "@/components/algo/mockData";
+} from "@/components/algo/types";
 
 const RAW_BASE = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE;
-export const API_BASE = (RAW_BASE ?? "http://127.0.0.1:8000").replace(/\/$/, "");
-const WS_BASE = API_BASE.replace(/^http/, "ws");
+// In Vite dev, same-origin + `vite.config` proxy avoids CORS entirely (empty default).
+const DEFAULT_BASE = import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
+export const API_BASE = (RAW_BASE ?? DEFAULT_BASE).replace(/\/$/, "");
+
+function httpToWsBase(httpOrEmpty: string): string {
+  if (!httpOrEmpty) {
+    if (typeof window === "undefined") {
+      return "ws://127.0.0.1:8000";
+    }
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}`;
+  }
+  return httpOrEmpty.replace(/^http/, "ws");
+}
+
+/** Event stream URL — call from the browser (useEffect); resolves relative to page when API_BASE is "". */
+export function getAlgoWsUrl(): string {
+  return `${httpToWsBase(API_BASE)}/ws`;
+}
 
 export type StatusDTO = { status: AlgoStatus; uptime_sec: number; paper_mode: boolean };
 
@@ -90,8 +109,27 @@ export type OrdersDTO = {
   working: ChildOrderDTO[];
 };
 
+export type StrategyInfoDTO = {
+  name: string;
+  label: string;
+  description: string;
+  active: boolean;
+};
+
+export type KlineDTO = {
+  open_time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  close_time: number;
+};
+
 export type StateDTO = {
   status: StatusDTO;
+  strategy: StrategyInfoDTO | null;
+  strategies: StrategyInfoDTO[];
   kpi: KpiDTO;
   equity: EquityDTO;
   positions: Position[];
@@ -106,7 +144,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!response.ok) {
-    throw new Error(`API ${path} failed: ${response.status} ${response.statusText}`);
+    // FastAPI returns JSON `{ "detail": "..." }` for HTTPException; surface
+    // that to the user instead of a generic "500 Internal Server Error".
+    let detail = "";
+    try {
+      const body = await response.clone().json();
+      if (body && typeof body.detail === "string") {
+        detail = body.detail;
+      } else if (body) {
+        detail = JSON.stringify(body);
+      }
+    } catch {
+      try {
+        detail = await response.text();
+      } catch {
+        detail = "";
+      }
+    }
+    const suffix = detail ? ` — ${detail}` : "";
+    throw new Error(`API ${path} failed: ${response.status} ${response.statusText}${suffix}`);
   }
   return (await response.json()) as T;
 }
@@ -119,6 +175,10 @@ export const api = {
   logs: (limit = 60) => request<LogEntry[]>(`/api/logs?limit=${limit}`),
   orders: () => request<OrdersDTO>("/api/orders"),
   execution: () => request<ExecutionStatsDTO>("/api/execution"),
+  klines: (symbol: string, interval: string, limit = 120) =>
+    request<KlineDTO[]>(
+      `/api/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${limit}`,
+    ),
 
   start: () => request<StatusDTO>("/api/control/start", { method: "POST" }),
   pause: () => request<StatusDTO>("/api/control/pause", { method: "POST" }),
@@ -129,6 +189,11 @@ export const api = {
     request<StatusDTO>("/api/control/risk", {
       method: "PATCH",
       body: JSON.stringify({ max_risk_pct }),
+    }),
+  setStrategy: (name: string) =>
+    request<StatusDTO>("/api/control/strategy", {
+      method: "POST",
+      body: JSON.stringify({ name }),
     }),
 };
 
@@ -155,8 +220,6 @@ export type WsEvent =
   | { type: "equity"; ts: number; data: { equity: number; cash: number; ts: number } }
   | { type: "log"; ts: number; data: { level: LogEntry["level"]; msg: string; logger?: string } }
   | { type: "status"; ts: number; data: { status: AlgoStatus; uptime_sec: number } };
-
-export const wsUrl = `${WS_BASE}/ws`;
 
 // --- camelCase mappers (DTO -> view model) ---
 
@@ -205,5 +268,21 @@ export function toExecutionAggregate(d: ExecutionAggregateDTO): ExecutionAggrega
     avgFillRatio: d.avg_fill_ratio,
     avgDurationSec: d.avg_duration_sec,
     totalTradedNotional: d.total_traded_notional,
+  };
+}
+
+export function toStrategyInfo(d: StrategyInfoDTO): StrategyInfo {
+  return { name: d.name, label: d.label, description: d.description, active: d.active };
+}
+
+export function toKline(d: KlineDTO): Kline {
+  return {
+    openTime: d.open_time,
+    open: d.open,
+    high: d.high,
+    low: d.low,
+    close: d.close,
+    volume: d.volume,
+    closeTime: d.close_time,
   };
 }

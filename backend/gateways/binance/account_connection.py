@@ -22,17 +22,44 @@ class AccountConnection:
         self._rest = rest
         self._base_currency = base_currency.upper()
 
-    async def fetch_balance(self) -> float:
-        """Return the wallet balance in the configured base currency."""
+    async def fetch_balances(self) -> dict[str, float]:
+        """Return wallet balance per asset (e.g. ``{"USDT": 100.0, "USDC": 50.0}``).
+
+        Binance USDT-M futures can expose multiple wallet assets. We return
+        every reported asset so the engine can merge per-asset
+        ``ACCOUNT_UPDATE`` messages without losing the unreported legs.
+
+        Wallet balance excludes unrealized PnL; realized PnL is reflected in
+        the wallet as trades settle.
+        """
         data = await self._rest.account()
-        for asset in data.get("assets", []):
-            if asset.get("asset", "").upper() == self._base_currency:
-                # walletBalance is the realised cash; availableBalance excludes
-                # margin held by open positions. We surface the wallet for
-                # the equity card on the dashboard.
-                return float(asset.get("walletBalance", 0.0))
-        logger.warning("base currency %s not found in account", self._base_currency)
-        return 0.0
+        assets = data.get("assets", [])
+
+        out: dict[str, float] = {}
+        for asset in assets:
+            sym = str(asset.get("asset", "")).upper()
+            if not sym:
+                continue
+            out[sym] = _asset_balance(asset)
+        return out
+
+    async def fetch_balance(self) -> float:
+        """Return the summed wallet balance used to seed the portfolio.
+
+        For ``USDT`` / ``USDC`` we sum both stablecoin wallets so users with
+        split balances see their real account value. Other base currencies
+        return that asset's wallet directly.
+        """
+        balances = await self.fetch_balances()
+        if self._base_currency in {"USDT", "USDC"}:
+            total = balances.get("USDT", 0.0) + balances.get("USDC", 0.0)
+            if total == 0.0 and "USDT" not in balances and "USDC" not in balances:
+                logger.warning("neither USDT nor USDC found in account assets")
+            return total
+        if self._base_currency not in balances:
+            logger.warning("base currency %s not found in account", self._base_currency)
+            return 0.0
+        return balances[self._base_currency]
 
     async def fetch_positions(self) -> list[Position]:
         rows = await self._rest.position_risk()
@@ -47,7 +74,23 @@ class AccountConnection:
                     qty=qty,
                     avg_entry_price=float(row.get("entryPrice", 0.0)),
                     mark_price=float(row.get("markPrice", 0.0)),
-                    realized_pnl=0.0,  # Binance doesn't return this on positionRisk
+                    realized_pnl=0.0,  # walletBalance already reflects realized PnL
+                    exchange_unrealized_pnl=float(
+                        row.get("unRealizedProfit", row.get("unrealizedProfit", 0.0)) or 0.0
+                    ),
                 )
             )
         return positions
+
+
+def _asset_balance(asset: dict) -> float:
+    """Pick the wallet balance from a Binance Futures account ``assets`` row.
+
+    Falls back to ``marginBalance - unrealizedProfit`` for older / partial
+    payloads so the seeded cash never includes unrealized PnL.
+    """
+    if asset.get("walletBalance") is not None:
+        return float(asset.get("walletBalance", 0.0))
+    if asset.get("marginBalance") is not None:
+        return float(asset.get("marginBalance", 0.0)) - float(asset.get("unrealizedProfit", 0.0))
+    return 0.0

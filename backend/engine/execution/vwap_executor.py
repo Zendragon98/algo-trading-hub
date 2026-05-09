@@ -19,8 +19,10 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from common.config import Settings
-from common.enums import OrderStatus, OrderType
+from common.enums import AlgoMode, OrderStatus, OrderType
 from common.types import ChildOrder, ParentOrder
+
+from gateways.gateway_interface import GatewayInterface, SymbolFilters
 
 from ..market_data.feature_store import FeatureStore
 from ..orders.order_manager import OrderManager, new_client_order_id
@@ -32,6 +34,11 @@ logger = logging.getLogger(__name__)
 # A small adapter so the executor can ask "what's the current top-of-book
 # for SYM?" without depending directly on the OrderBookStore.
 PriceProvider = Callable[[str], float | None]
+# Notified once per parent when its run task ends — for any reason (full
+# fill, partial fill, slice rejection, operator cancel). Lets the
+# ExecutionTracker close out the report so the OMS panel doesn't pile
+# up parents that the venue refused on the first slice.
+ParentDoneCallback = Callable[[str], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -46,12 +53,15 @@ class VwapExecutor:
     def __init__(
         self,
         order_manager: OrderManager,
+        gateway: GatewayInterface,
         features: FeatureStore,
         price_provider: PriceProvider,
         settings: Settings,
         config: ExecutorConfig | None = None,
+        on_parent_done: ParentDoneCallback | None = None,
     ) -> None:
         self._om = order_manager
+        self._gateway = gateway
         self._features = features
         self._price = price_provider
         self._cfg = config or ExecutorConfig(
@@ -59,18 +69,14 @@ class VwapExecutor:
             n_slices=settings.vwap_num_slices,
         )
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._on_parent_done = on_parent_done
 
     # --- Public ---
 
     async def execute(self, parent: ParentOrder) -> None:
         if parent.algo_mode is None:
             raise ValueError(f"parent {parent.id} missing algo_mode")
-        schedule = build_schedule(
-            mode=parent.algo_mode,
-            total_qty=parent.qty,
-            duration_sec=self._cfg.duration_sec,
-            n_slices=self._cfg.n_slices,
-        )
+        schedule = self._build_viable_schedule(parent)
         self._om.register_parent(parent)
         task = asyncio.create_task(
             self._run_parent(parent, schedule), name=f"vwap-{parent.id}"
@@ -97,6 +103,59 @@ class VwapExecutor:
 
     # --- Internal ---
 
+    def _build_viable_schedule(self, parent: ParentOrder) -> list[Slice]:
+        """Shrink the slice count until every child satisfies venue filters.
+
+        Uses `GatewayInterface.get_symbol_filters` (cached at connect()
+        time) to enforce step size, min qty, and min notional. Falls back
+        to a single-slice parent when even that won't satisfy the venue;
+        the caller can still abort cleanly when `place_order` rejects.
+        """
+        algo_mode = parent.algo_mode
+        if algo_mode is None:
+            raise ValueError(f"parent {parent.id} missing algo_mode")
+        filters = self._gateway.get_symbol_filters(parent.symbol)
+        ref_price = self._price(parent.symbol)
+        requested = self._cfg.n_slices
+        schedule: list[Slice] | None = None
+        for n in range(requested, 0, -1):
+            candidate = build_schedule(
+                mode=algo_mode,
+                total_qty=parent.qty,
+                duration_sec=self._cfg.duration_sec,
+                n_slices=n,
+            )
+            if all(
+                _slice_satisfies(s.qty, filters, ref_price, reduce_only=parent.reduce_only)
+                for s in candidate
+            ):
+                schedule = candidate
+                break
+        if schedule is None:
+            schedule = build_schedule(
+                mode=algo_mode,
+                total_qty=parent.qty,
+                duration_sec=self._cfg.duration_sec,
+                n_slices=1,
+            )
+        # When venue constraints force us down to a single slice, still use
+        # the same orderbook-driven mode (front/backload) to time *when* we
+        # place the parent-sized order so we can compare vs arrival/VWAP.
+        if len(schedule) == 1 and requested > 1:
+            schedule = [
+                Slice(index=0, qty=schedule[0].qty, delay_sec=_single_shot_delay(algo_mode, self._cfg.duration_sec))
+            ]
+        if len(schedule) < requested:
+            logger.info(
+                "VWAP %s slice count reduced %d -> %d (%s qty=%.8f; venue filters)",
+                parent.id,
+                requested,
+                len(schedule),
+                parent.symbol,
+                parent.qty,
+            )
+        return schedule
+
     async def _run_parent(self, parent: ParentOrder, schedule: list[Slice]) -> None:
         logger.info(
             "VWAP %s %s %.6f %s mode=%s slices=%d",
@@ -104,25 +163,53 @@ class VwapExecutor:
             parent.algo_mode.value if parent.algo_mode else "-",
             len(schedule),
         )
-        last_delay = 0.0
-        for slc in schedule:
-            wait = slc.delay_sec - last_delay
-            if wait > 0:
-                await asyncio.sleep(wait)
-            last_delay = slc.delay_sec
+        try:
+            last_delay = 0.0
+            for slc in schedule:
+                wait = slc.delay_sec - last_delay
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                last_delay = slc.delay_sec
 
-            try:
-                await self._submit_slice(parent, slc)
-            except Exception:  # noqa: BLE001
-                logger.exception("slice %d failed; aborting parent %s", slc.index, parent.id)
-                await self._om.cancel_parent(parent.id)
-                return
+                try:
+                    await self._submit_slice(parent, slc)
+                except Exception as exc:  # noqa: BLE001
+                    # Include exception text because the UI log stream does not show tracebacks.
+                    logger.exception(
+                        "slice %d failed; aborting parent %s: %s",
+                        slc.index,
+                        parent.id,
+                        exc,
+                    )
+                    await self._om.cancel_parent(parent.id)
+                    return
 
-        logger.info("VWAP %s schedule exhausted", parent.id)
+            logger.info("VWAP %s schedule exhausted", parent.id)
+        finally:
+            # Always close the parent on the tracker, regardless of how
+            # the run ended: full fill (no-op, already complete), partial
+            # fill, slice rejection, or operator cancel. Without this the
+            # ExecutionTracker's open set grows unboundedly and the OMS
+            # panel keeps showing parents whose first slice was rejected.
+            if self._on_parent_done is not None:
+                try:
+                    await self._on_parent_done(parent.id)
+                except Exception:  # noqa: BLE001
+                    logger.exception("on_parent_done failed for %s", parent.id)
 
     async def _submit_slice(self, parent: ParentOrder, slc: Slice) -> None:
         price = self._passive_price(parent)
         order_type = OrderType.LIMIT if price is not None else OrderType.MARKET
+        # Re-validate the child against venue constraints right before submit.
+        # This prevents hard REST rejections (e.g. MIN_NOTIONAL) from bubbling
+        # out of the gateway and spamming logs.
+        filters = self._gateway.get_symbol_filters(parent.symbol)
+        ref_price = price if price is not None else self._price(parent.symbol)
+        if not _slice_satisfies(slc.qty, filters, ref_price, reduce_only=parent.reduce_only):
+            raise ValueError(
+                f"slice qty violates venue filters (symbol={parent.symbol} qty={slc.qty:.10f} "
+                f"ref_price={'-' if ref_price is None else f'{ref_price:.8f}'} filters={filters})"
+            )
         child = ChildOrder(
             id=new_client_order_id(),
             parent_id=parent.id,
@@ -131,15 +218,52 @@ class VwapExecutor:
             qty=slc.qty,
             price=price,
             order_type=order_type,
+            reduce_only=parent.reduce_only,
         )
-        placed = await self._om.submit_child(child)
+        try:
+            placed = await self._om.submit_child(child)
+        except Exception:
+            # If the passive LIMIT is rejected (or REST submit fails), fall back to
+            # a MARKET order for the slice so the strategy continues to function
+            # under exchange realities (partial/no fill/reject).
+            if order_type is OrderType.LIMIT and self._cfg.market_fallback:
+                market = ChildOrder(
+                    id=new_client_order_id(),
+                    parent_id=parent.id,
+                    symbol=parent.symbol,
+                    side=parent.side,
+                    qty=slc.qty,
+                    price=None,
+                    order_type=OrderType.MARKET,
+                    reduce_only=parent.reduce_only,
+                )
+                placed = await self._om.submit_child(market)
+                await self._await_terminal(placed.id)
+                return
+            raise
 
         if order_type is OrderType.MARKET:
-            return  # market orders fill immediately, nothing to babysit
+            await self._await_terminal(placed.id)
+            return
 
-        await self._await_fill_or_market(placed)
+        await self._await_fill_or_market(placed.id)
 
-    async def _await_fill_or_market(self, child: ChildOrder) -> None:
+    async def _await_terminal(self, child_id: str) -> None:
+        """Wait briefly for the exchange to terminalise the order."""
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + self._cfg.slice_timeout_sec
+        poll = min(0.1, self._cfg.slice_timeout_sec / 2)
+        while True:
+            child = self._om.child(child_id)
+            if child is None:
+                return
+            if child.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
+                return
+            if loop.time() >= deadline:
+                return
+            await asyncio.sleep(poll)
+
+    async def _await_fill_or_market(self, child_id: str) -> None:
         """Wait up to `slice_timeout_sec` for the limit to fill; market the residual."""
         loop = asyncio.get_event_loop()
         deadline = loop.time() + self._cfg.slice_timeout_sec
@@ -149,6 +273,9 @@ class VwapExecutor:
         # body will catch FILLED on its first iteration in that case.
         poll = min(0.1, self._cfg.slice_timeout_sec / 2)
         while True:
+            child = self._om.child(child_id)
+            if child is None:
+                return
             if child.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
                 return
             if loop.time() >= deadline:
@@ -157,20 +284,25 @@ class VwapExecutor:
         if not self._cfg.market_fallback:
             return
 
-        await self._om.cancel(child.id)
-        residual = max(0.0, child.qty - child.filled_qty)
+        await self._om.cancel(child_id)
+        # Re-read after cancel request so residual is based on the latest
+        # exchange-reported filled_qty (partial fills can race the cancel).
+        child_after = self._om.child(child_id) or child
+        residual = max(0.0, child_after.qty - child_after.filled_qty)
         if residual <= 0:
             return
         market = ChildOrder(
             id=new_client_order_id(),
-            parent_id=child.parent_id,
-            symbol=child.symbol,
-            side=child.side,
+            parent_id=child_after.parent_id,
+            symbol=child_after.symbol,
+            side=child_after.side,
             qty=residual,
             price=None,
             order_type=OrderType.MARKET,
+            reduce_only=child_after.reduce_only,
         )
-        await self._om.submit_child(market)
+        placed = await self._om.submit_child(market)
+        await self._await_terminal(placed.id)
 
     def _passive_price(self, parent: ParentOrder) -> float | None:
         """Pick a passive limit price on the resting side of the book.
@@ -184,3 +316,51 @@ class VwapExecutor:
         # Use the live top-of-book from the price provider for tighter pegging.
         last = self._price(parent.symbol)
         return last if last is not None else feat.mid
+
+
+def _slice_satisfies(
+    qty: float,
+    filters: SymbolFilters | None,
+    ref_price: float | None,
+    *,
+    reduce_only: bool = False,
+) -> bool:
+    """Return True if `qty` clears the venue's per-order constraints.
+
+    When ``reduce_only`` is set the venue waives the MIN_NOTIONAL floor
+    (Binance Futures explicitly: "Order's notional must be no smaller
+    than 50 (unless you choose reduce only)."), so an SL/TP that closes
+    a sub-min-notional position must be allowed through.
+    """
+    if filters is None:
+        return True
+    if filters.step_size is not None and filters.step_size > 0:
+        # Floor to step; a qty smaller than one step rounds to zero.
+        if qty + 1e-12 < filters.step_size:
+            return False
+    if filters.min_qty is not None and qty + 1e-12 < filters.min_qty:
+        return False
+    if (
+        not reduce_only
+        and filters.min_notional is not None
+        and ref_price is not None
+        and qty * ref_price + 1e-9 < filters.min_notional
+    ):
+        return False
+    return True
+
+
+def _single_shot_delay(mode: AlgoMode, duration_sec: float) -> float:
+    """Delay used when we can't slice and must place one parent-sized child.
+
+    FRONTLOAD => as early as possible
+    BACKLOAD  => as late as possible (but before the schedule ends)
+    NORMAL    => midpoint
+    """
+    if duration_sec <= 0:
+        return 0.0
+    if mode is AlgoMode.FRONTLOAD:
+        return 0.0
+    if mode is AlgoMode.BACKLOAD:
+        return max(0.0, duration_sec * 0.9)
+    return max(0.0, duration_sec * 0.5)

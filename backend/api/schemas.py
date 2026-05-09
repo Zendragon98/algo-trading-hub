@@ -1,7 +1,7 @@
 """Pydantic DTOs that mirror the React console's TypeScript types.
 
 The shape of every payload here is dictated by
-`src/components/algo/mockData.ts` so the frontend can consume live data
+`src/components/algo/types.ts` so the frontend can consume live data
 without any client-side adaptation step.
 """
 
@@ -39,7 +39,24 @@ class LogDTO(BaseModel):
 class StatusDTO(BaseModel):
     status: Literal["running", "paused", "stopped"]
     uptime_sec: float
-    paper_mode: bool = False    # reserved for future paper-trading toggle
+    # Mirrors `Settings.trading_mode`; the dashboard renders a PAPER badge
+    # when this is true so the operator never confuses a paper run with live.
+    paper_mode: bool = False
+
+
+class StrategyInfoDTO(BaseModel):
+    """Identity of a strategy registered with the engine.
+
+    Surfaced on the initial `/api/state` hydrate so the dashboard can list
+    every loaded strategy in its hot-swap toggle. ``active`` flags the one
+    currently emitting signals; switching is done via
+    ``POST /api/control/strategy``.
+    """
+
+    name: str
+    label: str
+    description: str
+    active: bool = False
 
 
 class EquityDTO(BaseModel):
@@ -133,10 +150,24 @@ class OrdersDTO(BaseModel):
     working: list[ChildOrderDTO]
 
 
+class KlineDTO(BaseModel):
+    """One OHLCV candle. Times are seconds since epoch (UTC)."""
+
+    open_time: float
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    close_time: float
+
+
 class StateDTO(BaseModel):
     """Full snapshot used for the initial dashboard hydrate."""
 
     status: StatusDTO
+    strategy: StrategyInfoDTO | None
+    strategies: list[StrategyInfoDTO]
     kpi: KpiDTO
     equity: EquityDTO
     positions: list[PositionDTO]
@@ -147,3 +178,35 @@ class StateDTO(BaseModel):
 
 class RiskUpdateDTO(BaseModel):
     max_risk_pct: float
+
+
+class BreakerStatusDTO(BaseModel):
+    """Live state of one circuit-breaker breach.
+
+    Mirrors `engine.risk.circuit_breaker.BreakerStatus.to_dict()` so the
+    React console can render the safety state without translation.
+    """
+
+    code: str
+    scope: Literal["engine", "symbol", "parent"]
+    severity: Literal["minor", "major"]
+    target: str | None = None
+    state: Literal["armed", "tripped", "cooldown", "latched"]
+    tripped_at: float
+    cooldown_until: float | None = None
+    detail: str = ""
+
+
+class BreakerListDTO(BaseModel):
+    active: list[BreakerStatusDTO]
+    history: list[BreakerStatusDTO]
+
+
+class BreakerRearmDTO(BaseModel):
+    """Operator re-arm payload.
+
+    Both fields optional: omitting both clears every latched breach.
+    """
+
+    code: str | None = None
+    target: str | None = None

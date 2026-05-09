@@ -1,5 +1,5 @@
 @echo off
-REM Convenience launcher for the ALPHA-7 trading backend on Windows.
+REM Convenience launcher for the algo trading backend on Windows.
 REM Creates a venv on first run, installs deps, then starts main.py which
 REM runs the trading engine and the FastAPI server in the same event loop.
 
@@ -18,7 +18,7 @@ if not exist .venv (
 )
 
 if not exist .env (
-    echo [run.bat] No .env found. Copy .env.example to .env and fill in your testnet keys.
+    echo [run.bat] No .env found. Copy .env.example to .env and set BINANCE_API_KEY / SECRET ^(other knobs default in common/config.py^).
     goto :error
 )
 

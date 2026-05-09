@@ -8,38 +8,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import type { Position } from "./mockData";
-
-function seeded(seed: number) {
-  let s = seed;
-  return () => {
-    s = (s * 9301 + 49297) % 233280;
-    return s / 233280;
-  };
-}
-
-function hash(str: string) {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
-  return Math.abs(h);
-}
+import { api, toKline } from "@/lib/api";
+import type { Kline, Position } from "./types";
 
 type TF = "1m" | "5m" | "15m" | "1h" | "4h";
 const TIMEFRAMES: TF[] = ["1m", "5m", "15m", "1h", "4h"];
-
-function makeSeries(symbol: string, tf: TF, mark: number, n = 120) {
-  const r = seeded(hash(symbol + tf));
-  const vol = mark * 0.012 * (tf === "1m" ? 0.4 : tf === "5m" ? 0.7 : tf === "15m" ? 1 : tf === "1h" ? 1.6 : 2.4);
-  const out: number[] = [];
-  let v = mark - vol * (n / 8);
-  for (let i = 0; i < n; i++) {
-    v += (r() - 0.48) * vol;
-    out.push(v);
-  }
-  // Anchor the last point near current mark
-  const drift = mark - out[out.length - 1];
-  return out.map((p, i) => p + (drift * i) / (n - 1));
-}
 
 export function PositionChartDialog({
   position,
@@ -51,15 +24,42 @@ export function PositionChartDialog({
   onOpenChange: (o: boolean) => void;
 }) {
   const [tf, setTf] = useState<TF>("15m");
+  const [bars, setBars] = useState<Kline[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) setTf("15m");
   }, [open, position?.symbol]);
 
-  const data = useMemo(
-    () => (position ? makeSeries(position.symbol, tf, position.mark) : []),
-    [position, tf],
-  );
+  // Fetch real OHLCV history every time the dialog opens or the
+  // operator switches timeframe. The backend pulls fresh candles from
+  // the active venue via `/api/klines`, so dev sees real prices too.
+  useEffect(() => {
+    if (!open || !position) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    api
+      .klines(position.symbol, tf, 120)
+      .then((rows) => {
+        if (cancelled) return;
+        setBars(rows.map(toKline));
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "klines fetch failed");
+        setBars([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, position, tf]);
+
+  const closes = useMemo(() => bars.map((b) => b.close), [bars]);
 
   if (!position) return null;
 
@@ -67,19 +67,27 @@ export function PositionChartDialog({
   const pnl = (position.mark - position.entry) * position.size * dir;
   const pnlPct = ((position.mark - position.entry) / position.entry) * 100 * dir;
   const positive = pnl >= 0;
+  const stroke = positive ? "var(--bull)" : "var(--bear)";
 
-  const min = Math.min(...data, position.entry);
-  const max = Math.max(...data, position.entry);
+  // Need ≥2 points to draw a line; pad to two-of-the-same so the SVG
+  // still renders a flat segment instead of erroring on the path math.
+  const series =
+    closes.length >= 2
+      ? closes
+      : closes.length === 1
+        ? [closes[0]!, closes[0]!]
+        : [position.mark, position.mark];
+  const min = Math.min(...series, position.entry);
+  const max = Math.max(...series, position.entry);
   const range = max - min || 1;
   const W = 100;
   const H = 100;
-  const step = W / (data.length - 1);
+  const step = W / (series.length - 1);
   const yFor = (v: number) => H - ((v - min) / range) * H;
-  const path = data
+  const path = series
     .map((v, i) => `${i === 0 ? "M" : "L"}${(i * step).toFixed(2)},${yFor(v).toFixed(2)}`)
     .join(" ");
   const area = `${path} L${W},${H} L0,${H} Z`;
-  const stroke = positive ? "var(--bull)" : "var(--bear)";
   const entryY = yFor(position.entry);
   const markY = yFor(position.mark);
 
@@ -145,6 +153,16 @@ export function PositionChartDialog({
 
         {/* Chart */}
         <div className="relative h-[340px] w-full bg-background/40 px-3 py-2">
+          {loading && (
+            <div className="absolute right-3 top-3 text-[10px] uppercase tracking-wider text-muted-foreground">
+              loading {tf}…
+            </div>
+          )}
+          {error && !loading && (
+            <div className="absolute inset-0 grid place-items-center px-6 text-center text-xs text-bear">
+              {error}
+            </div>
+          )}
           <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full">
             <defs>
               <linearGradient id="posFill" x1="0" x2="0" y1="0" y2="1">
@@ -175,7 +193,6 @@ export function PositionChartDialog({
               strokeLinejoin="round"
               strokeLinecap="round"
             />
-            {/* Entry line */}
             <line
               x1="0"
               x2="100"
@@ -186,7 +203,6 @@ export function PositionChartDialog({
               strokeDasharray="1 1"
               vectorEffect="non-scaling-stroke"
             />
-            {/* Mark dot */}
             <circle cx="100" cy={markY} r="0.9" fill={stroke} vectorEffect="non-scaling-stroke" />
           </svg>
 

@@ -1,13 +1,13 @@
 """Public market-data WebSocket consumer.
 
-Maintains a single combined-stream subscription per process. For each
-symbol we subscribe to:
-    - <sym>@bookTicker  (top-of-book ticks, ~10/sec under load)
-    - <sym>@aggTrade    (aggregated trades, used by the trade tape)
-    - <sym>@depth@100ms (L2 diffs, applied to the local order book)
+Maintains a single combined-stream subscription per process:
+    - !ticker@arr       (all-symbol 24h stats — drives volume weights without REST)
+Per subscribed symbol:
+    - <sym>@bookTicker  (top-of-book ticks)
+    - <sym>@aggTrade    (aggregated trades for the trade tape)
+    - <sym>@depth@100ms (L2 diffs for the local order book)
 
-The connection auto-reconnects with exponential backoff. Subscribers
-are notified via callbacks supplied at `start()` time.
+The connection auto-reconnects with exponential backoff.
 """
 
 from __future__ import annotations
@@ -23,7 +23,13 @@ from websockets.exceptions import ConnectionClosed
 from common.enums import Side
 from common.types import TapeTrade, Tick
 
-from ..gateway_interface import DepthCallback, DepthDiff, TickCallback, TradeCallback
+from ..gateway_interface import (
+    DepthCallback,
+    DepthDiff,
+    QuoteVolume24hCallback,
+    TickCallback,
+    TradeCallback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +43,7 @@ class MarketConnection:
         self._on_tick: TickCallback | None = None
         self._on_depth: DepthCallback | None = None
         self._on_trade: TradeCallback | None = None
+        self._on_quote_vol: QuoteVolume24hCallback | None = None
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
 
@@ -46,11 +53,15 @@ class MarketConnection:
         on_tick: TickCallback,
         on_depth: DepthCallback,
         on_trade: TradeCallback,
+        *,
+        on_quote_volume_24h: QuoteVolume24hCallback | None = None,
     ) -> None:
         self._symbols = [s.lower() for s in symbols]
+        self._wanted = set(self._symbols)
         self._on_tick = on_tick
         self._on_depth = on_depth
         self._on_trade = on_trade
+        self._on_quote_vol = on_quote_volume_24h
         self._stop.clear()
         self._task = asyncio.create_task(self._run(), name="binance-market-ws")
 
@@ -67,17 +78,25 @@ class MarketConnection:
     async def _run(self) -> None:
         # Combined stream lets us multiplex many symbols on one socket and
         # avoids hitting the 5/sec subscribe rate limit.
-        streams = "/".join(
+        # ``!ticker@arr`` delivers all-symbol 24h stats in one stream — avoids
+        # one REST ``/ticker/24hr`` poll per refresh for volume weights.
+        stream_parts = ["!ticker@arr"]
+        stream_parts.extend(
             f"{sym}@{kind}"
             for sym in self._symbols
             for kind in ("bookTicker", "aggTrade", "depth@100ms")
         )
+        streams = "/".join(stream_parts)
         url = f"{self._ws_base}/stream?streams={streams}"
 
         backoff = 1.0
         while not self._stop.is_set():
             try:
-                logger.info("market_ws connecting (%d streams)", len(self._symbols) * 3)
+                n_sym_streams = len(self._symbols) * 3
+                logger.info(
+                    "market_ws connecting (!ticker@arr + %d symbol streams)",
+                    n_sym_streams,
+                )
                 async with websockets.connect(url, ping_interval=15, ping_timeout=20) as ws:
                     backoff = 1.0
                     await self._read_loop(ws)
@@ -97,14 +116,38 @@ class MarketConnection:
                 continue
 
             stream: str | None = message.get("stream")
-            data: dict | None = message.get("data")
-            if stream is None or data is None:
+            data = message.get("data")
+            if stream == "!ticker@arr" and isinstance(data, list):
+                try:
+                    await self._dispatch_ticker_arr(data)
+                except Exception:  # noqa: BLE001
+                    logger.exception("market_ws ticker@arr handler raised")
+                continue
+
+            if stream is None or data is None or not isinstance(data, dict):
                 continue
 
             try:
                 await self._dispatch(stream, data)
             except Exception:  # noqa: BLE001 -- never let a handler kill the socket
                 logger.exception("market_ws handler raised")
+
+    async def _dispatch_ticker_arr(self, rows: list[dict]) -> None:
+        """Fan out 24h quote volume from the all-markets ticker array."""
+        if self._on_quote_vol is None:
+            return
+        for row in rows:
+            sym = str(row.get("s", "")).lower()
+            if sym not in self._wanted:
+                continue
+            q_raw = row.get("q")
+            if q_raw is None:
+                continue
+            try:
+                qv = float(q_raw)
+            except (TypeError, ValueError):
+                continue
+            await self._on_quote_vol(sym.upper(), qv)
 
     async def _dispatch(self, stream: str, data: dict) -> None:
         # Stream names look like "btcusdt@bookTicker". Split once on '@'.

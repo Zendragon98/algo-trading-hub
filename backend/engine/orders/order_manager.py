@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time as _time
 import uuid
 from dataclasses import asdict
-from typing import Iterable
+from typing import Iterable, Protocol
 
 from common.enums import EventType, OrderStatus
 from common.events import Event, EventBus
@@ -23,6 +24,20 @@ from common.types import ChildOrder, Fill, ParentOrder
 from gateways.gateway_interface import GatewayInterface
 
 logger = logging.getLogger(__name__)
+
+
+class _SubmitGuardLike(Protocol):
+    """Minimal surface OrderManager needs from SubmitGuard.
+
+    Kept as a Protocol so the OMS can stay testable without importing
+    the execution package (which depends on OMS in turn).
+    """
+
+    async def gate_child(
+        self, symbol: str, *, reduce_only: bool
+    ) -> tuple[bool, str]: ...
+
+    def record_status(self, symbol: str, status: OrderStatus) -> None: ...
 
 
 def new_client_order_id(prefix: str = "ALPHA7") -> str:
@@ -46,6 +61,27 @@ class OrderManager:
         # which only carry the client id.
         self._child_to_parent: dict[str, str] = {}
         self._lock = asyncio.Lock()
+        self._submit_guard: _SubmitGuardLike | None = None
+        # Wall-clock timestamp of the most recent user-data signal (order
+        # update or fill). Consumed by ConnectionMonitor to detect a
+        # silent user-data stream so the engine can auto-pause.
+        self._last_user_data_ts: float = 0.0
+
+    def attach_submit_guard(self, guard: _SubmitGuardLike) -> None:
+        """Bind the submission rate-limit / breaker guard.
+
+        Wired by the engine after construction so the OMS doesn't have to
+        know about CircuitBreaker directly.
+        """
+        self._submit_guard = guard
+
+    @property
+    def last_user_data_ts(self) -> float:
+        return self._last_user_data_ts
+
+    def touch_user_data_activity(self) -> None:
+        """Mark the user-data stream as recently active (fills, orders, or account)."""
+        self._last_user_data_ts = _time.time()
 
     # --- Submission ---
 
@@ -58,16 +94,46 @@ class OrderManager:
         Returns the order with `venue_order_id` populated. Raises only on
         hard rejection so callers (the VWAP executor) can decide whether
         to retry or abort the parent.
+
+        When a SubmitGuard is attached the call may be (briefly) blocked
+        by the global token-bucket throttle, or fast-rejected when an
+        engine/symbol-scope breaker is latched.
         """
+        if self._submit_guard is not None:
+            allowed, reason = await self._submit_guard.gate_child(
+                child.symbol, reduce_only=child.reduce_only,
+            )
+            if not allowed:
+                child.status = OrderStatus.REJECTED
+                logger.warning(
+                    "submit_child gated for %s (symbol=%s reason=%s)",
+                    child.id, child.symbol, reason,
+                )
+                await self._publish_order(child)
+                raise RuntimeError(f"submit gated: {reason}")
+
         async with self._lock:
             self._children[child.id] = child
             self._child_to_parent[child.id] = child.parent_id
 
         try:
             placed = await self._gateway.place_order(child)
-        except Exception:
-            logger.exception("place_order failed for %s", child.id)
+        except Exception as exc:
+            # `logger.exception(...)` prints a traceback in console logs, but the UI log
+            # stream only surfaces the formatted message. Include the exception text.
+            logger.exception(
+                "place_order failed for %s (symbol=%s side=%s qty=%.10f type=%s price=%s): %s",
+                child.id,
+                child.symbol,
+                child.side.value,
+                child.qty,
+                child.order_type.value,
+                "-" if child.price is None else f"{child.price:.10f}",
+                exc,
+            )
             child.status = OrderStatus.REJECTED
+            if self._submit_guard is not None:
+                self._submit_guard.record_status(child.symbol, OrderStatus.REJECTED)
             await self._publish_order(child)
             raise
 
@@ -75,6 +141,8 @@ class OrderManager:
         async with self._lock:
             self._children[child.id] = placed
 
+        if self._submit_guard is not None:
+            self._submit_guard.record_status(placed.symbol, placed.status)
         await self._publish_order(placed)
         return placed
 
@@ -82,6 +150,7 @@ class OrderManager:
 
     async def on_order_update(self, update: ChildOrder) -> None:
         """Merge a venue-side order update into our state."""
+        self.touch_user_data_activity()
         async with self._lock:
             existing = self._children.get(update.id)
             if existing is None:
@@ -97,11 +166,14 @@ class OrderManager:
                     existing.venue_order_id = update.venue_order_id
                 merged = existing
 
+        if self._submit_guard is not None:
+            self._submit_guard.record_status(merged.symbol, merged.status)
         await self._publish_order(merged)
 
     async def on_fill(self, fill: Fill) -> None:
         # Resolve parent if we know it; the gateway can't because the
         # ORDER_TRADE_UPDATE payload doesn't carry the parent id.
+        self.touch_user_data_activity()
         async with self._lock:
             fill.parent_id = self._child_to_parent.get(fill.child_id)
 
@@ -143,6 +215,10 @@ class OrderManager:
     def children_of(self, parent_id: str) -> list[ChildOrder]:
         return [c for c in self._children.values() if c.parent_id == parent_id]
 
+    def child(self, child_id: str) -> ChildOrder | None:
+        """Return the latest OMS view of `child_id` (exchange-updated)."""
+        return self._children.get(child_id)
+
     # --- Internal ---
 
     async def _publish_order(self, order: ChildOrder) -> None:
@@ -163,7 +239,6 @@ def _order_to_dict(order: ChildOrder) -> dict:
 def _fill_to_dict(fill: Fill) -> dict:
     d = asdict(fill)
     d["side"] = fill.side.value
-    # Surface both the venue price (audit) and the engine-effective price
-    # (after synthetic impact) so the dashboard can display both.
+    # Surface venue price explicitly for API payloads (matches effective fill price).
     d["venue_price"] = fill.venue_price or fill.price
     return d

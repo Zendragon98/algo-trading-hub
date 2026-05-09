@@ -1,6 +1,8 @@
-# ALPHA-7 trading backend
+# Algo trading backend
 
-Python backend that powers the React console at the repo root. Runs locally, connects to the Binance USDT-M Futures Testnet, executes a pluggable pairs-trading strategy across the USDT vs USDC perps, applies a VWAP algo wheel for execution, and enforces real-time risk.
+Python backend that powers the React console at the repo root. Runs locally, connects to the Binance USDT-M Futures Testnet, scans every USDT/USDC perp listed on the venue, applies a VWAP algo wheel for execution, and enforces real-time risk.
+
+The engine is multi-strategy: it loads every registered `StrategyBase` (currently `PairsTradingStrategy` and `SmaCrossoverStrategy`) at boot and only one is *active* at a time. Operators hot-swap from the dashboard via `POST /api/control/strategy` — no engine restart, no config edit. The active strategy's metadata (name, label, description, `active=true`) is exposed at `GET /api/state` so the frontend always shows the correct label without any hardcoded branding.
 
 ## Architecture
 
@@ -27,7 +29,7 @@ flowchart TB
         direction TB
         MarketData["market_data<br/>OrderBook + TradeTape"]
         Features["FeatureStore"]
-        Strategy["strategies/<br/>PairsTrading — cross-coin USDT/USDC basis"]
+        Strategy["strategies/<br/>PairsTrading (active) · SmaCrossover (multi-symbol)"]
         Risk["risk/<br/>RiskManager (pre-trade)"]
         Router["execution/<br/>ExecutionRouter"]
         Wheel["execution/<br/>AlgoWheel — FRONTLOAD · NORMAL · BACKLOAD"]
@@ -93,7 +95,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 copy .env.example .env
-# edit .env and paste your Binance Futures Testnet API key + secret
+# edit .env: paste Binance testnet API key + secret (other overrides optional)
 
 python main.py
 ```
@@ -115,6 +117,8 @@ The single Windows convenience script `run.bat` does the venv bootstrap + depend
 
 The console is then served at `http://127.0.0.1:8000` (REST + WS). Start the React frontend in a second terminal from the repo root:
 
+By default, the backend boots with the engine stopped (no trading) — start it from the UI (or via `POST /api/control/start`). To auto-start on boot, set `ENGINE_AUTOSTART=true` in `backend/.env` (or run `python main.py --engine`).
+
 ```bash
 bun install
 bun run dev   # http://localhost:5173
@@ -130,9 +134,9 @@ backend/
   pyproject.toml             pytest + ruff config
   README.md                  this file
   AGENTS.md                  commenting / style guide
-  .env.example
+  .env.example               minimal env template (defaults live in common/config.py)
 
-  common/                    config, EventBus, enums, shared dataclasses
+  common/                    config (`Settings`), EventBus, enums, shared dataclasses
   gateways/                  abstract venue interface + concrete adapters
     gateway_interface.py     ABC every venue must implement
     factory.py               create_gateway(settings) selects venue by VENUE env var
@@ -154,7 +158,7 @@ backend/
     position/                PositionTracker (mark-to-market + realised PnL)
     portfolio/               Portfolio (cash + equity curve)
     risk/                    Limits + PnLTracker + StopLossMonitor + RiskManager
-    strategies/              StrategyBase + PairsTradingStrategy
+    strategies/              StrategyBase + PairsTradingStrategy + SmaCrossoverStrategy
     performance/             PerformanceTracker (win rate + trade history)
     persistence/             EventRecorder (per-run JSONL archive of the EventBus)
     main_engine.py           CLI to run the engine without the API
@@ -167,7 +171,7 @@ backend/
 
   api/                       FastAPI surface
     server.py                app factory + lifespan + CORS
-    schemas.py               Pydantic DTOs that mirror src/components/algo/mockData.ts
+    schemas.py               Pydantic DTOs that mirror src/components/algo/types.ts
     routes/                  status, positions, trades, orders, execution, logs, control
     ws.py                    /ws WebSocket pump
 
@@ -178,21 +182,21 @@ backend/
 
 ## Trading mode (paper vs live)
 
-`TRADING_MODE` is a venue-agnostic safety flag, separate from any per-venue testnet/live toggle. It's the *only* knob you should flip to graduate from a sandbox account to real money. Two consequences are wired into the engine:
+`TRADING_MODE` is a venue-agnostic safety flag, separate from any per-venue testnet/live toggle. It's the *only* knob you should flip to graduate from a sandbox account to real money. Consequences wired into the engine include startup banners and logging strictness:
 
-| `TRADING_MODE`    | Synthetic impact model | Startup banner               |
-| ----------------- | ---------------------- | ---------------------------- |
-| `paper` (default) | enabled (if `IMPACT_MODEL_ENABLED=true`) | one-line INFO line           |
-| `live`            | **force-disabled** regardless of env var | hard-to-miss WARN banner     |
+| `TRADING_MODE`    | Startup banner               |
+| ----------------- | ---------------------------- |
+| `paper` (default) | one-line INFO line           |
+| `live`            | hard-to-miss WARN banner     |
 
-The model is a paper-trading aid — testnet liquidity is unrealistic so we bake estimated mainnet slippage into the recorded fill price. In LIVE mode the venue's fill *is* the real impact, so the model is hard-disabled to avoid double-counting (see `ImpactConfig.from_settings`).
+PnL and TCA use **exchange-reported** fill prices (including partial fills). Post-trade quality uses arrival mid vs VWAP of venue fills (`slippage_bps`).
 
 When you flip to LIVE you also need to point the gateway at its live endpoints:
 
 - Binance: set `BINANCE_TESTNET=false` and switch `BINANCE_REST_BASE` / `BINANCE_WS_BASE` to mainnet hosts.
 - IBKR: set `IBKR_PORT=7496` (TWS / IB Gateway live port).
 
-The factory warns on inconsistent combos (e.g. `TRADING_MODE=live` but `BINANCE_TESTNET=true`) without hard-failing, so a CI smoke test on testnet can keep `TRADING_MODE=paper` while pointed at the real testnet host.
+In **LIVE** mode the gateway **fails fast** if you accidentally point at a sandbox (e.g. `TRADING_MODE=live` but `BINANCE_TESTNET=true`, or `IBKR_PORT=7497`). This guarantees the portfolio is seeded from your **real account balance** rather than a user-controlled/demo balance.
 
 ## Adding a new gateway
 
@@ -203,12 +207,14 @@ The engine never imports a venue. It calls `create_gateway(settings)` from `gate
    | Method                   | Purpose                                                           |
    | ------------------------ | ----------------------------------------------------------------- |
    | `connect / disconnect`   | open/close the venue connection (REST + WS)                       |
-   | `subscribe_market_data`  | wire ticks + L2 depth + tape into the engine callbacks            |
+   | `subscribe_market_data`  | ticks + L2 depth + tape + optional WS 24h volumes (`on_quote_volume_24h`) |
    | `subscribe_user_data`    | wire fills + order updates into the engine callbacks              |
    | `place_order`            | translate a `ChildOrder` into a venue order; return with `venue_order_id` |
    | `cancel_order`           | cancel by `client_order_id`                                       |
    | `fetch_positions`        | `list[Position]` snapshot (in `Settings.base_currency`)           |
    | `fetch_balance`          | wallet balance in `Settings.base_currency`                        |
+   | `fetch_balances`         | per-asset wallet map (`{"USDT": 100.0, "USDC": 50.0, ...}`); default sums to `fetch_balance` |
+   | `fetch_24h_volumes`      | per-symbol 24h notional volume (used by liquidity-weighted strategies); default `{}` |
    | `book_snapshot`          | REST L2 snapshot in `{lastUpdateId, bids, asks}` shape            |
 
 2. **Register it.** Add a one-liner to `_REGISTRY` in `gateways/factory.py`:
@@ -239,6 +245,7 @@ Offline calibration (in `analytics/`):
 
 ```bash
 python -m analytics.data_loader --symbols BTCUSDT,BTCUSDC --interval 1m --days 7
+python -m analytics.data_loader --symbols AUTO --interval 1m --days 7
 python -m analytics.pair_analyzer --base BTC --interval 1m --window 60
 python -m analytics.orderbook_analyzer --symbol BTCUSDT --window-sec 300
 ```
@@ -285,15 +292,9 @@ Wheel decision rule (mirrors `engine/execution/algo_wheel.py`):
 
 Slicer weights are uniform for `NORMAL`, exponential decay for `FRONTLOAD`, reverse exponential for `BACKLOAD`. Total qty is conserved exactly — rounding drift folds into the last child.
 
-#### Synthetic market impact (testnet only)
+#### Optional square-root impact helper
 
-Binance Futures Testnet has unrealistically deep books, so live fills look way too clean for honest TCA. `engine/execution/impact_model.py` adjusts every recorded fill price by an estimated mainnet cost so the dashboard's PnL preview matches reality:
-
-```
-impact_bps = k * sqrt(qty / consumable_depth) * 10_000
-```
-
-`k` defaults to `0.5` (`IMPACT_K` in `.env`). The adjustment is sign-aware (BUY pays more, SELL receives less) and applied at `Engine._on_fill`. The raw venue price is preserved on `Fill.venue_price` for the audit trail; only `Fill.price` (the engine-effective price used by `PositionTracker`) is shifted. Set `IMPACT_MODEL_ENABLED=false` to disable and use raw fills.
+`engine/execution/impact_model.py` implements a textbook square-root calibration for offline experiments only; the production `Engine` does **not** adjust fill prices. Metrics use venue executions as-is.
 
 #### Execution-quality tracking
 
@@ -304,11 +305,13 @@ impact_bps = k * sqrt(qty / consumable_depth) * 10_000
 | `arrival_price` | Mid at the moment `ExecutionRouter.submit` is called          |
 | `vwap_price`    | Volume-weighted average of all child fills (uses venue price) |
 | `slippage_bps`  | `(vwap - arrival) / arrival * 10000 * sign(side)` — positive = adverse |
-| `impact_bps`    | qty-weighted aggregate from `ImpactModel`                     |
+| `impact_bps`    | retained as zero (API compatibility); use `slippage_bps` for TCA       |
 | `fill_ratio`    | `filled_qty / requested_qty`                                  |
 | `duration_sec`  | Submit → final fill                                           |
 
 Reports stream live on `EventType.PARENT_UPDATE` and `EventType.EXECUTION_REPORT`, and aggregate stats are exposed at `GET /api/execution`. The dashboard's "Execution Quality" panel renders the rolling 100-parent history.
+
+A parent is moved from the open set to history when *any* of: (a) `fill_ratio` reaches 1.0, (b) `ExecutionRouter.cancel` is invoked, or (c) the `VwapExecutor` run task terminates — including the slice-rejected and partial-fill cases. The last condition is wired via `VwapExecutor(on_parent_done=tracker.close_parent)` and prevents failed parents from accumulating in the OMS panel.
 
 ### Strategy — `engine/strategies/pairs_trading.py`
 
@@ -320,31 +323,129 @@ BTC = BTCUSDT * USDT = BTCUSDC * USDC
 => basis_i = log(coinUSDC.mid) - log(coinUSDT.mid)   for each coin i
 ```
 
-`basis_i` is the per-coin implied log(USDT/USDC). Pooling across all configured pairs gives a consensus rate that captures the *actual* stablecoin direction the user wants to track:
+`basis_i` is the per-coin implied log(USDT/USDC). Pooling across all configured pairs gives a consensus rate that captures the *actual* stablecoin direction the user wants to track. We weight the consensus by per-symbol 24h notional volume: by default the public WebSocket `!ticker@arr` stream updates `quoteVolume` live (no REST), and the refresh loop only calls `fetch_24h_volumes` to backfill symbols that have not arrived yet.
 
 ```
-reference   = mean(basis_i)
+w_i         = volume(coinUSDT) + volume(coinUSDC) + 1.0   # +1 floor keeps cold-start pairs in
+reference   = SUM_i (w_i * basis_i) / SUM_i w_i
 deviation_i = basis_i - reference
 z_i         = (deviation_i - rolling_mean(deviation_i)) / rolling_std
 ```
+
+When the volume cache is empty (boot, REST hiccup) the `+1.0` floor collapses to equal weights, so cold-start behaviour matches the unweighted strategy.
 
 Trade rule per coin:
 
 - `z_i >= +entry_z` (default `2.0`) → USDC leg unusually rich → **SHORT coinUSDC, LONG coinUSDT**
 - `z_i <= -entry_z`                  → USDT leg unusually rich → **LONG  coinUSDC, SHORT coinUSDT**
-- `|z_i| <= exit_z` (default `0.5`)  → unwind on convergence
+- `|z_i| <= exit_z` (default `0.5`)  → **take profit** on convergence
+- `|z_i| >= stop_z` (default `4.0`) against the open direction → **stop loss** on basis divergence
+
+The pair's risk lives in basis-spread space, not in either leg's absolute price move. A normal correlated tick (both coins drop 0.5%) leaves the basis untouched and the trade healthy, so the strategy bypasses the engine's per-leg fixed-% `StopLossMonitor` (`StrategyBase.manages_own_risk()` returns True) and is responsible for emitting its own SL/TP exits — both keyed off `z`. Portfolio-level safeguards (drawdown kill-switch, gross/per-trade notional caps) still apply.
 
 This is more robust than naively trading `BTCUSDT - BTCUSDC` because a real USDT/USDC move (which lifts the basis on every coin) is absorbed by the reference mean instead of triggering false entries.
 
 `PairsTradingStrategy.reference_basis()` exposes the live consensus for offline calibration.
 
+#### Sizing — stop-loss-budgeted, leverage-enabled, atomically paired
+
+Futures pair-trading needs three things the spot version doesn't:
+
+1. **Hybrid stop-loss-budgeted sizing** — the strategy reads live `equity`
+   (via an injected provider) and sizes each leg using `DEFAULT_STOP_LOSS_PCT`
+   as a conservative *budget proxy* for the worst-case per-leg adverse move,
+   then scales by `|z|/entry_z` so bigger conviction = bigger size:
+
+   ```
+   floor_notional = (equity * RISK_PER_TRADE_PCT) / DEFAULT_STOP_LOSS_PCT
+   scale          = clamp(|z|/entry_z, 1.0, PAIR_SIZE_SCALE_CAP)
+   leg_qty        = scale * floor_notional / max(usdt_mid, usdc_mid)
+   ```
+
+   At `|z| == entry_z` we trade the floor (1.0x); at `|z| == 2 * entry_z`
+   we trade 2.0x; anything beyond `PAIR_SIZE_SCALE_CAP` (default `2.0`)
+   stays clamped so a transient z-spike can't blow up the leg notional.
+   Both legs share `leg_qty` so the trade is dollar-neutral, and the
+   opening qty is remembered per group so the unwind flattens *exactly*
+   what was opened.
+
+   Note: `DEFAULT_STOP_LOSS_PCT` is reused here purely as the sizing
+   denominator; the *trigger* that closes the trade is `PAIR_STOP_Z`
+   (basis divergence in z-space), not a per-leg fixed-% bracket.
+
+2. **Leverage** — `LEVERAGE` is applied per symbol via the gateway's
+   `set_leverage` hook on engine start. Leverage doesn't change the
+   dollar-loss-at-stop (that's bounded by `RISK_PER_TRADE_PCT`); it
+   only relaxes the margin requirement so a stop-loss-sized notional
+   actually fits inside the wallet. On Binance USDT-M Futures this
+   issues `POST /fapi/v1/leverage` for every subscribed symbol.
+
+3. **Atomic pair submission** — every paired entry/exit emits both
+   legs with the same `Signal.group_id`. `Engine._dispatch_group`
+   bumps the qty up to whichever leg has the strictest venue floor
+   (so `MIN_NOTIONAL` for the more expensive USDC leg can't reject
+   one side), runs the risk gate against *every* leg, and either
+   submits all legs at the agreed qty or rejects the whole group.
+   You never end up with a "naked" leg because one side cleared a
+   filter the other failed.
+
+### Strategy — `engine/strategies/sma_crossover.py`
+
+A multi-symbol fast/slow simple-moving-average crossover scanner. Whenever the fast SMA crosses above the slow SMA on coin X we go long X; when it flips back below we flip short. Each symbol carries its own deque of mids and its own cooldown so a flap on BTC never interferes with an ETH crossover.
+
+Universe is configured via `SMA_SYMBOLS` (CSV or `AUTO` to pull every USDT perpetual on the venue) — the legacy single-symbol `SMA_SYMBOL` is honoured as a fallback when `SMA_SYMBOLS` is empty.
+
+Sizing is equity-budgeted: each entry risks `SMA_RISK_PER_TRADE_PCT` of equity, sized via `DEFAULT_STOP_LOSS_PCT` so a stop-out costs the same dollar amount regardless of price. A static `SMA_QTY` fallback is used while equity is unavailable (boot, REST hiccup) so the strategy can still smoke-test the OMS.
+
+Unlike pairs trading, the SMA strategy does **not** manage its own SL/TP — `manages_own_risk()` returns False so the engine's per-leg `StopLossMonitor` stays armed for every coin it trades. Strategy hot-swap (`POST /api/control/strategy { name: "sma_crossover" }`) atomically rotates the externally-managed set: pairs symbols stop bypassing the bracket and SMA symbols pick up a fresh per-leg stop on the next tick.
+
 ### Risk module — `engine/risk/` + `engine/portfolio/` + `engine/position/`
 
-Pre-trade gate (`RiskManager.check`): caps signal qty at `max_risk_pct` of equity, rejects on `max_gross_notional` breach, returns either an approved (possibly downscaled) qty or a veto with a reason.
+Pre-trade gate (`RiskManager.check`): caps signal qty at `max_risk_pct` of equity, rejects on `max_gross_notional` breach, returns either an approved (possibly downscaled) qty or a veto with a reason. Additional pre-trade vetoes flow through `MarketDataGuard` (stale tick, wide spread) and `ExposureTracker` (per-symbol notional cap, free-margin floor).
 
-Live monitor (`RiskManager.monitor_tick`): per tick, evaluates the position's `StopBracket` (configured from `default_stop_loss_pct` / `default_take_profit_pct`) and emits an `ExitIntent` when the bid/ask crosses a threshold. A drawdown breach trips the kill switch and flattens.
+Live monitor (`RiskManager.monitor_tick`): per tick, evaluates the position's `StopBracket` (configured from `default_stop_loss_pct` / `default_take_profit_pct`) and emits an `ExitIntent` when the bid/ask crosses a threshold. A drawdown breach trips the kill switch and flattens. A separate high-water-mark drawdown (`hwm_drawdown_kill_pct`) catches the give-back-from-peak scenario the session-start drawdown can miss.
 
-`PositionTracker` folds fills into a per-symbol weighted-entry position, splits realised PnL on partial closes, and handles flips (short → long) cleanly. `Portfolio` sits on top: cash + positions + equity curve, all read by the dashboard.
+Symbols owned by a strategy whose `manages_own_risk()` returns True (e.g. pairs trading) are listed in `StopLossMonitor.externally_managed` and bypass per-leg fixed-% brackets entirely — `arm()` is a no-op and `evaluate()` always returns None for those symbols. The strategy is then solely responsible for emitting SL/TP signals in its own risk space (z-score basis divergence/convergence for pairs). Portfolio-level safeguards (drawdown kill-switch, per-trade and gross notional caps) still apply via `RiskManager`.
+
+Risk-driven exits (SL, TP, max-drawdown, operator flatten) are submitted with `reduce_only=True` so the venue waives MIN_NOTIONAL — a sub-$50 BTCUSDT position can still close cleanly on Binance Futures testnet, where naked orders below the notional floor are rejected with code `-4164`. The slicer mirrors the waiver: `_slice_satisfies` skips MIN_NOTIONAL for reduce-only parents. To prevent the 1 Hz clock from re-emitting the same exit while a closing order is in flight, `StopLossMonitor` applies a per-symbol cooldown (default 5 s). A re-arm caused by a *scale-in* fill (position grew or flipped sign) clears the cooldown so a fresh bracket can fire immediately; a re-arm caused by a *closing* fill (position shrunk) preserves the cooldown so the SL doesn't cascade duplicate exits while the in-flight closer is still working.
+
+`PositionTracker` folds fills into a per-symbol weighted-entry position, splits realised PnL on partial closes, and handles flips (short → long) cleanly. A venue-side close (`pa==0` row in `ACCOUNT_UPDATE`) pops the symbol so the dashboard never holds a stale long.
+
+`Portfolio` sits on top: cash + positions + equity curve, all read by the dashboard. Cash is held as a per-asset wallet map (`{"USDT": 100.0, "USDC": 50.0, ...}`) so a partial `ACCOUNT_UPDATE` event — Binance only ships the assets that *changed* — merges cleanly without zeroing out unreported wallets. The single-number `cash` view sums the USDT + USDC stablecoin wallets when `BASE_CURRENCY` is one of them. Wallet and position figures are applied live from the user-data WebSocket (`ACCOUNT_UPDATE`). Periodic reconcile uses REST (`GET /account`, `GET /positionRisk`) only when user-data has been idle longer than `RECONCILE_USER_DATA_FRESH_SEC` (or when `RECONCILE_SKIP_REST_WHEN_USER_DATA_FRESH=false`), which matches Binance’s guidance to prefer the stream over polling. Optional `BALANCE_RESYNC_SEC` > 0 adds another GET `/account` loop (default `0`).
+
+### Failsafes — circuit-breaker matrix
+
+Every safety trip flows through one shared `CircuitBreaker` (`engine/risk/circuit_breaker.py`). Each breach has a **scope** (`engine` | `symbol` | `parent`), a **severity** (`minor` auto-resumes after a cooldown; `major` is latched until operator re-arm), and is fanned out on the EventBus as `EventType.BREAKER` so the React console renders an audit log.
+
+| Code | Severity | Scope | Trip on | Action |
+| ---- | -------- | ----- | ------- | ------ |
+| `stale_tick` | minor | symbol | tick age > `MAX_TICK_AGE_SEC` | veto entries; auto-resume |
+| `wide_spread` | minor | symbol | spread bps > `MAX_ENTRY_SPREAD_BPS` | veto entries; auto-resume |
+| `repeat_reject` | minor | symbol | `MAX_CONSECUTIVE_REJECTS` rejects in a row | pause symbol for `REJECT_COOLDOWN_SEC` |
+| `slippage_breach` | minor | parent | realised vs arrival > `parent.max_slippage_bps` | cancel parent |
+| `stale_market_data` | minor | engine | tick stream silent > `WS_STALE_PAUSE_SEC` | pause new orders |
+| `stale_user_data` | minor | engine | user-data silent > `WS_STALE_PAUSE_SEC` | pause new orders |
+| `max_drawdown` | major | engine | session-start drawdown >= `MAX_DRAWDOWN_PCT` | flatten + latch |
+| `hwm_drawdown` | major | engine | drawdown from peak equity >= `HWM_DRAWDOWN_KILL_PCT` | flatten + latch |
+| `daily_loss` | major | engine | equity drop since UTC midnight >= `DAILY_LOSS_KILL_PCT` | flatten + latch |
+| `consecutive_losses` | major | engine | `MAX_CONSECUTIVE_LOSSES` losing trades in a row | flatten + latch |
+| `exec_quality` | major | engine | rolling avg slippage > `EXEC_QUALITY_KILL_BPS` | flatten + latch |
+| `reconcile_mismatch` | major | engine | venue vs local qty diff > `RECONCILE_QTY_TOLERANCE` | flatten + latch |
+
+Pre-submit guards (`SubmitGuard`) enforce three additional ceilings without tripping a recorded breach:
+
+- `MAX_OPEN_PARENTS` — caps simultaneous in-flight parents.
+- `SUBMIT_RATE_PER_SEC` — global token-bucket throttle on REST submits, so a runaway loop cannot spam the venue and earn a ban.
+- Reduce-only orders bypass both engine- and symbol-scope breakers so flattens / SL exits always reach the venue.
+
+Engine `stop()` market-outs residuals before disconnect when `FLATTEN_ON_STOP=true` (default) and waits up to `FLATTEN_TIMEOUT_SEC` for positions to clear.
+
+Operator endpoints:
+
+```
+GET  /api/control/breakers                    # active + history
+POST /api/control/breakers/rearm              # body: {code?, target?}; clears latched majors
+```
 
 ### Code structure & quality
 
@@ -357,7 +458,9 @@ See `AGENTS.md`. Highlights:
 
 ## Configuration reference
 
-Loaded from `backend/.env` via `pydantic-settings` in `common/config.py`. Defaults shown.
+Defaults are defined on the `Settings` class in `common/config.py` (single source of truth). Override via `backend/.env` or environment variables only where needed — `.env.example` is a minimal template, not a full list.
+
+Loaded via `pydantic-settings`. Defaults shown below.
 
 | Key                          | Default                              | Effect |
 | ---------------------------- | ------------------------------------ | ------ |
@@ -368,23 +471,40 @@ Loaded from `backend/.env` via `pydantic-settings` in `common/config.py`. Defaul
 | `BINANCE_TESTNET`            | `true`                               | Pin to testnet endpoints |
 | `BINANCE_REST_BASE`          | `https://testnet.binancefuture.com`  | REST host |
 | `BINANCE_WS_BASE`            | `wss://stream.binancefuture.com`     | WS host |
+| `BINANCE_REST_MIN_INTERVAL_MS` | `50`                               | Minimum spacing between REST calls (client-side throttle) |
+| `BINANCE_REST_429_DEFAULT_BACKOFF_SEC` | `60`                        | HTTP 429 pause when ``Retry-After`` header is absent |
+| `BINANCE_REST_PAUSE_BUFFER_SEC` | `0.5`                           | Extra seconds added to ``Retry-After`` / ban backoff |
 | `IBKR_HOST` / `IBKR_PORT`    | `127.0.0.1` / `7497`                 | TWS / IB Gateway address (7497 paper, 7496 live) |
 | `IBKR_CLIENT_ID`             | `7`                                  | IB API client id |
 | `IBKR_ACCOUNT`               | empty                                | Specific account to trade (empty = default) |
-| `SYMBOLS`                    | `BTCUSDT,BTCUSDC,...`                | Subscribed symbols (must include both legs of each pair) |
-| `BASE_CURRENCY`              | `USDT`                               | Equity / PnL denomination |
-| `MAX_RISK_PCT`               | `0.35`                               | Max equity fraction risked per signal (UI slider) |
+| `SYMBOLS`                    | `AUTO`                               | Subscribed symbols. CSV (`BTCUSDT,BTCUSDC,...`) or `AUTO` to auto-discover every USDT/USDC perp pair on the venue at boot |
+| `STRATEGY`                   | `pairs`                              | Boot default: `pairs` (volume-weighted basis) or `sma` (multi-symbol crossover). Hot-swappable via `POST /api/control/strategy` |
+| `BASE_CURRENCY`              | `USDT`                               | Equity / PnL denomination (if `USDT`/`USDC`, the engine sums **USDT+USDC** wallets) |
+| `MAX_RISK_PCT`               | `0.35`                               | Per-leg notional ceiling as % of equity (hard cap; UI slider) |
+| `RISK_PER_TRADE_PCT`         | `0.005`                              | Stop-loss-budgeted sizing: equity fraction lost if SL fires |
+| `LEVERAGE`                   | `10`                                 | Futures leverage target per symbol; Binance clamps to each symbol's max (`GET /fapi/v1/leverageBracket` then `POST /fapi/v1/leverage`) |
+| `LEVERAGE_BRACKET_CACHE_PATH` | `data/cache/binance_leverage_brackets.json` | Backend-relative JSON cache for bracket caps (skip GET after first successful fetch) |
+| `LEVERAGE_BRACKET_CACHE_TTL_SEC` | `0`                               | Seconds before refetching brackets (`0` = only refresh when cache missing or `BINANCE_REST_BASE` changes) |
 | `MAX_GROSS_NOTIONAL`         | `50000`                              | Hard cap on total open notional |
 | `MAX_DRAWDOWN_PCT`           | `0.10`                               | Drawdown that trips the kill switch |
-| `DEFAULT_STOP_LOSS_PCT`      | `0.005`                              | Per-position SL distance |
+| `DEFAULT_STOP_LOSS_PCT`      | `0.005`                              | Per-position SL distance (also the sizing denominator) |
 | `DEFAULT_TAKE_PROFIT_PCT`    | `0.010`                              | Per-position TP distance |
+| `PAIR_ENTRY_Z` / `PAIR_EXIT_Z` / `PAIR_STOP_Z` | `2.0` / `0.5` / `4.0`     | Pairs entry / take-profit / stop thresholds in z-space |
+| `PAIR_SIZE_SCALE_CAP`        | `2.0`                                | Hybrid sizing ceiling: scale floor by `min(\|z\|/entry_z, cap)` |
+| `PRIME_WS_TIMEOUT_SEC`       | `10.0`                               | Boot: wait for `bookTicker` mids this long before REST `/depth` fallback per symbol |
+| `PAIR_VOLUME_FROM_WEBSOCKET` | `true`                             | Rolling 24h quote volume from WS `!ticker@arr` instead of REST `/ticker/24hr` |
+| `PAIR_VOLUME_REFRESH_SEC`    | `1800`                               | Volume loop period; with WS mode REST only backfills symbols still missing |
+| `BALANCE_RESYNC_SEC`         | `0`                                  | Extra GET `/account` cadence (0 = off; balances still refresh on `RECONCILE_INTERVAL_SEC` + WS) |
+| `SMA_SYMBOLS`                | `AUTO`                               | Universe for the SMA scanner. CSV or `AUTO` to pull every USDT perp; empty falls back to `SMA_SYMBOL` |
+| `SMA_FAST_WINDOW` / `SMA_SLOW_WINDOW` | `10` / `30`                | Fast / slow SMA windows |
+| `SMA_RISK_PER_TRADE_PCT`     | `0.005`                              | Equity slice per SMA entry (uses `DEFAULT_STOP_LOSS_PCT` as the sizing denominator) |
+| `SMA_QTY` / `SMA_COOLDOWN_SEC` | `0.001` / `15`                     | Static fallback qty + per-symbol cooldown |
 | `VWAP_DURATION_SEC`          | `60`                                 | Parent-order duration |
 | `VWAP_NUM_SLICES`            | `6`                                  | Children per parent |
 | `IMBALANCE_TOP_N`            | `10`                                 | L2 levels per side for imbalance |
 | `TRADE_TAPE_WINDOW_SEC`      | `300`                                | Rolling window for hit-ratios |
-| `IMPACT_MODEL_ENABLED`       | `true`                               | Bake synthetic mainnet impact into recorded fill prices |
-| `IMPACT_K`                   | `0.5`                                | Square-root impact coefficient |
 | `API_HOST` / `API_PORT`      | `127.0.0.1` / `8000`                 | FastAPI bind |
+| `KLINES_CACHE_TTL_SEC`       | `60.0`                               | Dedupe `GET /api/klines` upstream REST calls within this TTL (seconds) |
 | `CORS_ORIGINS`               | `http://localhost:5173,...`          | Allowed origins for the frontend |
 | `PERSIST_ENABLED`            | `true`                               | Tee every event into the per-run JSONL archive |
 | `PERSIST_DIR`                | `data/runs`                          | Base folder for run archives (relative paths anchored at `backend/`) |
@@ -392,6 +512,27 @@ Loaded from `backend/.env` via `pydantic-settings` in `common/config.py`. Defaul
 | `LOG_FILE_ENABLED`           | `true`                               | Write `app.log` into the run archive |
 | `LOG_FILE_MAX_BYTES`         | `10000000`                           | Rotate `app.log` at this size |
 | `LOG_FILE_BACKUP_COUNT`      | `5`                                  | Keep N rotated `app.log` backups |
+| `MAX_TICK_AGE_SEC`           | `5.0`                                | Stale-tick veto threshold (per symbol) |
+| `MAX_ENTRY_SPREAD_BPS`       | `25.0`                               | Wide-spread veto threshold (per symbol) |
+| `MAX_SYMBOL_NOTIONAL_PCT`    | `0.20`                               | Per-symbol exposure cap (fraction of equity) |
+| `MIN_FREE_MARGIN_PCT`        | `0.10`                               | Equity headroom required to enter a new position |
+| `MAX_OPEN_PARENTS`           | `8`                                  | Cap on simultaneous in-flight parents |
+| `SUBMIT_RATE_PER_SEC`        | `5.0`                                | Global REST submit throttle (token bucket) |
+| `MAX_CONSECUTIVE_REJECTS`    | `3`                                  | K rejects -> minor symbol pause |
+| `REJECT_COOLDOWN_SEC`        | `30.0`                               | Symbol-pause cooldown after repeat rejects |
+| `DAILY_LOSS_KILL_PCT`        | `0.05`                               | Equity drop since UTC midnight (MAJOR latch) |
+| `MAX_CONSECUTIVE_LOSSES`     | `5`                                  | Losing-trade streak (MAJOR latch) |
+| `HWM_DRAWDOWN_KILL_PCT`      | `0.15`                               | Drawdown from running peak equity (MAJOR latch) |
+| `EXEC_QUALITY_KILL_BPS`      | `50.0`                               | Rolling avg slippage blowout (MAJOR latch) |
+| `EXEC_QUALITY_WINDOW`        | `10`                                 | Number of completed parents in the avg |
+| `WS_STALE_PAUSE_SEC`         | `30.0`                               | Auto-pause threshold for WS / user-data silence |
+| `RECONCILE_INTERVAL_SEC`     | `60.0`                               | Reconcile timer; REST snapshot runs only when user-data WS idle (see below) |
+| `RECONCILE_SKIP_REST_WHEN_USER_DATA_FRESH` | `true`                  | Skip GET `/account` + `/positionRisk` while fills / orders / `ACCOUNT_UPDATE` were recent |
+| `RECONCILE_USER_DATA_FRESH_SEC` | `120.0`                           | Max age (seconds) for last user-data activity to treat WS as authoritative |
+| `RECONCILE_QTY_TOLERANCE`    | `1e-6`                               | Qty mismatch above this trips MAJOR `reconcile_mismatch` |
+| `FLATTEN_ON_STOP`            | `true`                               | Market-out residuals before `engine.stop()` disconnects |
+| `FLATTEN_TIMEOUT_SEC`        | `30.0`                               | Max wait for `flatten()` to clear positions |
+| `BREAKER_MINOR_COOLDOWN_SEC` | `60.0`                               | Default cooldown for minor scoped breaches |
 
 ## Run archive
 
@@ -427,23 +568,25 @@ Persistence is opt-out (`PERSIST_ENABLED=false`); the rotating `app.log` is inde
 
 ## REST + WebSocket contract
 
-All payloads use the same field names as `src/components/algo/mockData.ts` so the frontend binds without translation.
+All payloads use the same field names as `src/components/algo/types.ts` so the frontend binds without translation.
 
-| Method | Path                       | Body / Query        | Returns                              |
-| ------ | -------------------------- | ------------------- | ------------------------------------ |
-| GET    | `/api/state`               |                     | Full hydrate (status + KPI + equity + positions + trades + orders + execution) |
-| GET    | `/api/status`              |                     | `{status, uptime_sec}`               |
-| GET    | `/api/equity`              |                     | `{equity[], last_ts}`                |
-| GET    | `/api/positions`           |                     | `Position[]`                         |
-| GET    | `/api/trades`              | `?limit=40`         | `Trade[]`                            |
-| GET    | `/api/orders`              |                     | `{working: ChildOrderDTO[]}` for the OMS panel |
-| GET    | `/api/execution`           |                     | `{working[], history[], aggregate}` for execution quality |
-| GET    | `/api/logs`                | `?limit=60`         | `LogEntry[]`                         |
+| Method | Path                       | Body / Query                                    | Returns                              |
+| ------ | -------------------------- | ----------------------------------------------- | ------------------------------------ |
+| GET    | `/api/state`               |                                                 | Full hydrate (status + active strategy + every loaded strategy with `active` flag + KPI + equity + positions + trades + orders + execution) |
+| GET    | `/api/status`              |                                                 | `{status, uptime_sec, paper_mode}`   |
+| GET    | `/api/equity`              |                                                 | `{equity[], last_ts}`                |
+| GET    | `/api/positions`           |                                                 | `Position[]`                         |
+| GET    | `/api/trades`              | `?limit=40`                                     | `Trade[]`                            |
+| GET    | `/api/orders`              |                                                 | `{working: ChildOrderDTO[]}` for the OMS panel |
+| GET    | `/api/execution`           |                                                 | `{working[], history[], aggregate}` for execution quality |
+| GET    | `/api/klines`              | `?symbol=&interval=&limit=`                     | `KlineDTO[]` OHLCV bars (for the position chart) |
+| GET    | `/api/logs`                | `?limit=60`                                     | `LogEntry[]`                         |
 | POST   | `/api/control/start`       |                     | new `StatusDTO`                      |
 | POST   | `/api/control/pause`       |                     | new `StatusDTO`                      |
 | POST   | `/api/control/resume`      |                     | new `StatusDTO`                      |
 | POST   | `/api/control/stop`        |                     | new `StatusDTO`                      |
 | POST   | `/api/control/flatten`     |                     | new `StatusDTO`                      |
+| POST   | `/api/control/strategy`    | `{name}`            | Hot-swap the active strategy (400 on unknown name) |
 | PATCH  | `/api/control/risk`        | `{max_risk_pct}`    | new `StatusDTO`                      |
 | WS     | `/ws`                      |                     | stream of `{type, ts, data}` events  |
 
@@ -463,9 +606,11 @@ Highlights:
 - `test_trade_tape.py` covers eviction + ratios.
 - `test_algo_wheel.py` exercises every branch of the mode-selection rule.
 - `test_slicer.py` checks weight monotonicity + total-qty conservation.
-- `test_position_tracker.py` covers weighted entries, partial closes, and flips.
+- `test_position_tracker.py` covers weighted entries, partial closes, flips, and venue-side closures (qty=0 ACCOUNT_UPDATE rows pop the symbol).
 - `test_risk_manager.py` covers qty caps, kill switch, and the no-position monitor path.
-- `test_pairs_trading.py` confirms paired signal emission on cross-coin deviation + reference-basis tracking.
+- `test_pairs_trading.py` confirms paired signal emission on cross-coin deviation, reference-basis tracking, the volume-weighted reference, and the hybrid `|z|/entry_z` sizing scale.
+- `test_portfolio_balance_merge.py` pins per-asset wallet merge: a partial `ACCOUNT_UPDATE` must not zero out unreported assets, and `seed_balances` / `update_balances` / `update_asset_balance` keep the per-asset map intact.
+- `test_strategy_toggle.py` covers `Engine.set_active_strategy` (only the active strategy ticks + receives fills), `StopLossMonitor.set_externally_managed` (newly-managed symbols disarm), and the multi-symbol SMA scanner (per-symbol state + equity-budgeted sizing).
 - `test_vwap_executor.py` runs the executor end-to-end against an in-test `MockGateway`.
 - `test_impact_model.py` covers sign convention + square-root scaling of synthetic impact.
 - `test_execution_metrics.py` covers per-parent slippage, vwap, and the completion lifecycle.
@@ -474,8 +619,11 @@ Highlights:
 
 ## Troubleshooting
 
-- **"Signature for this request is not valid"** — usually a clock-skew issue on Windows. The signed REST client uses `time.time()`; sync the system clock with `w32tm /resync`.
+- **`Timestamp for this request was ... ahead of the server's time` (REST `-1021`)** — your OS clock is faster than Binance's. `BinanceGateway.connect()` calls `sync_server_time()` so signed requests use an offset from `/fapi/v1/time`. If you still see `-1021`, force-sync Windows time (`w32tm /resync`).
+- **"Signature for this request is not valid"** — wrong API secret or corrupted signing payload; confirm keys and that params match the HMAC input order.
 - **WebSocket disconnects every ~24h** — Binance enforces a 24h max per stream connection. The `MarketConnection` reconnect loop handles it transparently; you'll see one `WARN market_ws disconnected` followed by a successful reconnect.
 - **`listenKey` expired** — `OrderConnection` refreshes every 30 minutes (Binance expires at 60). If the keepalive task crashes you'll see WARN logs and an automatic re-fetch on the next iteration.
-- **Order rejected with code -2019 (Margin is insufficient)** — check `MAX_RISK_PCT` and your testnet wallet balance. The pre-trade gate caps qty by equity but does not (yet) account for required initial margin at high leverage.
+- **Order rejected with code -2019 (Margin is insufficient)** — raise `LEVERAGE` (the engine sets it per symbol on start) or lower `RISK_PER_TRADE_PCT`. With `LEVERAGE=10`, equity=$10k, `RISK_PER_TRADE_PCT=0.005`, `DEFAULT_STOP_LOSS_PCT=0.005` you need ~$2k margin per pair (~$20k total notional / 10x). Multiple concurrent pairs multiply that.
+- **Log shows `group ... aborted: leg ... notional=X > per-trade cap=Y`** — your stop-loss-budgeted sizing implies a larger per-leg notional than the risk ceiling allows. The sizing target is \( \text{leg\_notional} = \text{equity} \times \frac{\text{RISK\_PER\_TRADE\_PCT}}{\text{DEFAULT\_STOP\_LOSS\_PCT}} \) while the cap is \( \text{cap} = \text{equity} \times \text{MAX\_RISK\_PCT} \). For entries to be possible you need \( \frac{\text{RISK\_PER\_TRADE\_PCT}}{\text{DEFAULT\_STOP\_LOSS\_PCT}} \le \text{MAX\_RISK\_PCT} \). Fix by lowering `RISK_PER_TRADE_PCT`, widening `DEFAULT_STOP_LOSS_PCT`, or increasing `MAX_RISK_PCT` (and ensure `MAX_GROSS_NOTIONAL` still makes sense if multiple pairs can open).
+- **Order rejected with code -4164 (`Order's notional must be no smaller than X`)** — your sizing is below the venue's `MIN_NOTIONAL` for that symbol. The engine bumps the pair qty up to whichever leg has the strictest floor, but if even that breaches `MAX_RISK_PCT * equity` it aborts the whole group rather than send a naked leg. Check the dashboard log for `group ... aborted: leg ... notional=X > per-trade cap=Y` and either lift `MAX_RISK_PCT` or raise `RISK_PER_TRADE_PCT` so the natural sizing already clears the venue floor.
 - **Engine boots but no signals fire** — pairs-trading needs ~30 samples to compute a z-score; with 1Hz ticks expect ~30s of warm-up before any entry signals. Confirm both legs of a pair appear in `SYMBOLS`.

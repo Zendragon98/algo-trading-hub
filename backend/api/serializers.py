@@ -13,6 +13,7 @@ from engine.core.engine import Engine
 from engine.core.state import EngineSnapshot
 from engine.execution.execution_metrics import ExecutionReport
 from engine.performance.performance_tracker import TradeRecord
+from engine.strategies.strategy_base import StrategyBase
 
 from .schemas import (
     ChildOrderDTO,
@@ -27,6 +28,7 @@ from .schemas import (
     PositionDTO,
     StateDTO,
     StatusDTO,
+    StrategyInfoDTO,
     TradeDTO,
 )
 
@@ -135,10 +137,34 @@ def execution_stats_dto(engine: Engine) -> ExecutionStatsDTO:
     )
 
 
+def strategy_to_dto(strategy: StrategyBase, *, active: bool = False) -> StrategyInfoDTO:
+    # Fall back to the machine name when a strategy hasn't set its own
+    # display copy yet — better than leaking an empty string to the UI.
+    label = strategy.display_label or strategy.name
+    return StrategyInfoDTO(
+        name=strategy.name,
+        label=label,
+        description=strategy.description,
+        active=active,
+    )
+
+
 def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
     open_pnl = sum(p.unrealized_pnl for p in snapshot.positions)
+    active_name = engine.active_strategy_name
+    strategies = [strategy_to_dto(s, active=s.name == active_name) for s in engine.strategies]
+    # ``StateDTO.strategy`` is the *active* one (not the first registered)
+    # so legacy frontends that only read this field still see what the
+    # engine is actually running after a hot-swap.
+    active_dto = next((dto for dto in strategies if dto.active), strategies[0] if strategies else None)
     return StateDTO(
-        status=StatusDTO(status=snapshot.status.value, uptime_sec=snapshot.uptime_sec),
+        status=StatusDTO(
+            status=snapshot.status.value,
+            uptime_sec=snapshot.uptime_sec,
+            paper_mode=not engine.settings.is_live,
+        ),
+        strategy=active_dto,
+        strategies=strategies,
         kpi=KpiDTO(
             equity=snapshot.equity,
             open_pnl=open_pnl,

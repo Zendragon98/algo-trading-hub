@@ -20,7 +20,11 @@ router = APIRouter(prefix="/api", tags=["status"])
 @router.get("/status", response_model=StatusDTO)
 def status(engine: Engine = Depends(get_engine)) -> StatusDTO:
     snap = engine.snapshot()
-    return StatusDTO(status=snap.status.value, uptime_sec=snap.uptime_sec)
+    return StatusDTO(
+        status=snap.status.value,
+        uptime_sec=snap.uptime_sec,
+        paper_mode=not engine.settings.is_live,
+    )
 
 
 @router.get("/equity", response_model=EquityDTO)

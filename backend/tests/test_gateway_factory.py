@@ -46,17 +46,15 @@ def test_factory_rejects_unknown_venue() -> None:
     assert "binance" in msg
 
 
-def test_impact_model_disabled_in_live_mode() -> None:
-    """Impact must auto-disable in LIVE regardless of IMPACT_MODEL_ENABLED."""
-    live = _settings(trading_mode=TradingMode.LIVE, impact_model_enabled=True)
-    config = ImpactConfig.from_settings(live)
-    assert config.enabled is False
-
-    paper = _settings(trading_mode=TradingMode.PAPER, impact_model_enabled=True)
-    assert ImpactConfig.from_settings(paper).enabled is True
+def test_impact_config_from_settings_is_always_disabled() -> None:
+    """Production wiring does not enable the optional square-root model."""
+    live = _settings(trading_mode=TradingMode.LIVE)
+    paper = _settings(trading_mode=TradingMode.PAPER)
+    assert ImpactConfig.from_settings(live).enabled is False
+    assert ImpactConfig.from_settings(paper).enabled is False
 
 
-def test_impact_model_apply_is_passthrough_in_live_mode() -> None:
+def test_impact_model_explicit_enabled_can_adjust_price() -> None:
     from common.enums import Side
     from engine.market_data.orderbook import OrderBook
 
@@ -66,12 +64,11 @@ def test_impact_model_apply_is_passthrough_in_live_mode() -> None:
         asks=[(100.5, 100.0)] * 3,
         last_update_id=1,
     )
-    live = _settings(trading_mode=TradingMode.LIVE, impact_model_enabled=True, impact_k=10.0)
-    model = ImpactModel(ImpactConfig.from_settings(live))
+    model = ImpactModel(ImpactConfig(enabled=True, k=0.5, top_n=3))
 
     price, bps = model.apply(Side.BUY, qty=50.0, raw_price=100.5, book=book)
-    assert price == 100.5
-    assert bps == 0.0
+    assert bps > 0.0
+    assert price > 100.5
 
 
 @pytest.mark.asyncio

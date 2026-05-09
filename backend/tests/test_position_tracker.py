@@ -65,3 +65,30 @@ async def test_add_to_long_weights_entry() -> None:
     # Weighted entry = (1*100 + 3*110)/4 = 107.5
     assert pytest.approx(pos.avg_entry_price) == 107.5
     assert pos.realized_pnl == 0.0
+
+
+@pytest.mark.asyncio
+async def test_apply_exchange_positions_drops_zero_qty_rows() -> None:
+    """A venue-side close (qty=0 in ACCOUNT_UPDATE) must pop the symbol.
+
+    Mirrors the production bug where ``BinanceOrderConnection`` filtered
+    qty==0 rows: the local tracker held a stale long forever, inflating
+    gross_notional and unrealized_pnl on the dashboard.
+    """
+    from common.types import Position
+
+    bus = EventBus()
+    tracker = PositionTracker(bus)
+
+    # Seed an open long.
+    await tracker.apply_exchange_positions([
+        Position(symbol="BTCUSDT", qty=0.5, avg_entry_price=100.0, mark_price=101.0),
+    ])
+    assert tracker.get("BTCUSDT") is not None
+
+    # Venue closes it; qty=0 must propagate.
+    await tracker.apply_exchange_positions([
+        Position(symbol="BTCUSDT", qty=0.0, avg_entry_price=0.0, mark_price=0.0),
+    ])
+    assert tracker.get("BTCUSDT") is None
+    assert tracker.all() == []

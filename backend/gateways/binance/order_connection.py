@@ -11,13 +11,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+from collections.abc import Awaitable, Callable
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any
 
 import websockets
 from websockets.exceptions import ConnectionClosed
 
 from common.enums import OrderStatus, OrderType, Side
-from common.types import ChildOrder, Fill
+from common.types import ChildOrder, Fill, Position
 
 from ..gateway_interface import FillCallback, OrderUpdateCallback
 from .rest_client import BinanceRestClient
@@ -37,12 +40,63 @@ class OrderConnection:
         self._listen_key: str | None = None
         self._on_fill: FillCallback | None = None
         self._on_order: OrderUpdateCallback | None = None
+        self._on_account: Callable[[dict], Awaitable[None]] | None = None
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task[None]] = []
+        # symbol -> (step_size, tick_size)
+        self._filters: dict[str, tuple[Decimal | None, Decimal | None]] = {}
 
-    async def start(self, on_fill: FillCallback, on_order: OrderUpdateCallback) -> None:
+    def load_exchange_info(self, info: dict) -> None:
+        """Cache symbol lot/tick sizes from Binance exchangeInfo."""
+        symbols = info.get("symbols") or []
+        out: dict[str, tuple[Decimal | None, Decimal | None]] = {}
+        for sym in symbols:
+            symbol = str(sym.get("symbol", "")).upper()
+            if not symbol:
+                continue
+            step: Decimal | None = None
+            tick: Decimal | None = None
+            for f in sym.get("filters", []) or []:
+                ft = f.get("filterType")
+                if ft in ("LOT_SIZE", "MARKET_LOT_SIZE"):
+                    ss = f.get("stepSize")
+                    if ss is not None:
+                        step = Decimal(str(ss))
+                elif ft == "PRICE_FILTER":
+                    ts = f.get("tickSize")
+                    if ts is not None:
+                        tick = Decimal(str(ts))
+            out[symbol] = (step, tick)
+        self._filters = out
+
+    def _quantize_qty(self, symbol: str, qty: float) -> str:
+        step, _tick = self._filters.get(symbol.upper(), (None, None))
+        if step is None or step <= 0:
+            return _fmt_qty(qty)
+        q = Decimal(str(qty))
+        # floor to a multiple of stepSize
+        n = (q / step).to_integral_value(rounding=ROUND_FLOOR)
+        adj = n * step
+        if adj <= 0:
+            return "0"
+        # avoid scientific notation
+        return format(adj.normalize(), "f").rstrip("0").rstrip(".") or "0"
+
+    def _quantize_price(self, symbol: str, price: float, side: Side) -> str:
+        _step, tick = self._filters.get(symbol.upper(), (None, None))
+        if tick is None or tick <= 0:
+            return _fmt_price(price)
+        p = Decimal(str(price))
+        # buy: floor to tick; sell: ceil to tick
+        rounding = ROUND_FLOOR if side is Side.BUY else ROUND_CEILING
+        n = (p / tick).to_integral_value(rounding=rounding)
+        adj = n * tick
+        return format(adj.normalize(), "f").rstrip("0").rstrip(".") or "0"
+
+    async def start(self, on_fill: FillCallback, on_order: OrderUpdateCallback, on_account=None) -> None:
         self._on_fill = on_fill
         self._on_order = on_order
+        self._on_account = on_account
         self._stop.clear()
         self._listen_key = await self._rest.listen_key()
         self._tasks = [
@@ -69,19 +123,27 @@ class OrderConnection:
         We always pass `newClientOrderId` so we can correlate the user-data
         stream's ORDER_TRADE_UPDATE back to our internal `ChildOrder.id`.
         """
+        qty_str = self._quantize_qty(order.symbol, order.qty)
+        if qty_str == "0":
+            raise ValueError(f"order {order.id} qty rounds to 0 (symbol={order.symbol} qty={order.qty})")
         params: dict[str, Any] = {
             "symbol": order.symbol,
             "side": order.side.value.upper(),
             "type": order.order_type.value,
-            "quantity": _fmt_qty(order.qty),
+            "quantity": qty_str,
             "newClientOrderId": order.id,
         }
         if order.order_type is OrderType.LIMIT:
             if order.price is None:
                 raise ValueError(f"LIMIT order {order.id} missing price")
-            params["price"] = _fmt_price(order.price)
+            params["price"] = self._quantize_price(order.symbol, order.price, order.side)
             # GTX = post-only; we use GTC so child orders cross when needed.
             params["timeInForce"] = "GTC"
+        if order.reduce_only:
+            # Binance Futures expects the literal string "true". Reduce-only
+            # orders are also exempt from MIN_NOTIONAL, which is how a tiny
+            # SL/TP on a sub-$50 position can still close out cleanly.
+            params["reduceOnly"] = "true"
 
         response = await self._rest.new_order(**params)
         order.venue_order_id = str(response.get("orderId", ""))
@@ -150,8 +212,55 @@ class OrderConnection:
         et = event.get("e")
         if et == "ORDER_TRADE_UPDATE":
             await self._handle_order_trade_update(event["o"])
-        # ACCOUNT_UPDATE and other events aren't needed by the engine; the
-        # PositionTracker rebuilds state from fills.
+        elif et == "ACCOUNT_UPDATE":
+            await self._handle_account_update(event.get("a") or {})
+
+    async def _handle_account_update(self, payload: dict) -> None:
+        if self._on_account is None:
+            return
+
+        balances = payload.get("B") or []
+        positions = payload.get("P") or []
+
+        # Wallet balance is realized PnL inclusive. For USDT-M futures,
+        # `wb` is the wallet balance for the asset.
+        wallet_by_asset: dict[str, float] = {}
+        for b in balances:
+            asset = str(b.get("a", "")).upper()
+            if not asset:
+                continue
+            try:
+                wallet_by_asset[asset] = float(b.get("wb", 0.0))
+            except (TypeError, ValueError):
+                continue
+
+        out_positions: list[Position] = []
+        for p in positions:
+            symbol = str(p.get("s", "")).upper()
+            if not symbol:
+                continue
+            try:
+                qty = float(p.get("pa", 0.0))
+            except (TypeError, ValueError):
+                qty = 0.0
+            # IMPORTANT: keep zero-qty rows. ACCOUNT_UPDATE only ships the
+            # positions that *changed*, so ``pa=0`` means the symbol was
+            # just closed (ADL, manual flatten, opposite fill). Filtering
+            # it here would leave a stale long/short on the local tracker
+            # forever; ``PositionTracker.apply_exchange_positions`` knows
+            # to pop those rows when qty==0.
+            out_positions.append(
+                Position(
+                    symbol=symbol,
+                    qty=qty,
+                    avg_entry_price=float(p.get("ep", 0.0) or 0.0),
+                    mark_price=float(p.get("mp", 0.0) or 0.0),
+                    realized_pnl=0.0,
+                    exchange_unrealized_pnl=float(p.get("up", 0.0) or 0.0),
+                )
+            )
+
+        await self._on_account({"wallet_by_asset": wallet_by_asset, "positions": out_positions})
 
     async def _handle_order_trade_update(self, order: dict) -> None:
         # Fields documented at
@@ -183,6 +292,8 @@ class OrderConnection:
             await self._on_order(update)
 
         if last_filled > 0 and self._on_fill is not None:
+            trade_id = str(order.get("t", "")) or None
+            realized_pnl = _safe_float(order.get("rp"))
             fill = Fill(
                 child_id=client_id,
                 parent_id=None,
@@ -192,6 +303,8 @@ class OrderConnection:
                 price=last_price,
                 fee=float(order.get("n", 0.0)),
                 fee_asset=str(order.get("N", "")),
+                trade_id=trade_id,
+                realized_pnl=realized_pnl,
             )
             await self._on_fill(fill)
 

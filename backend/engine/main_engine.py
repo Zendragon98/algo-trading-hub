@@ -22,6 +22,7 @@ from gateways.factory import create_gateway
 from .core.engine import Engine
 from .persistence.event_recorder import EventRecorder, RecorderConfig, make_run_dir
 from .strategies.pairs_trading import PairsTradingStrategy
+from .strategies.sma_crossover import SmaCrossoverStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +51,12 @@ async def run() -> None:
     )
     if settings.trading_mode is TradingMode.LIVE:
         logger.warning(
-            "TRADING_MODE=LIVE venue=%s — REAL MONEY. synthetic impact disabled.",
+            "TRADING_MODE=LIVE venue=%s — REAL MONEY.",
             settings.venue,
         )
     else:
         logger.info(
-            "TRADING_MODE=paper venue=%s — synthetic impact enabled.",
+            "TRADING_MODE=paper venue=%s (testnet/demo).",
             settings.venue,
         )
     if run_dir is not None:
@@ -73,7 +74,11 @@ async def run() -> None:
         await recorder.start()
 
     gateway = create_gateway(settings)
-    strategies = [PairsTradingStrategy(settings)]
+    strategy_name = (settings.strategy or "pairs").strip().lower()
+    if strategy_name == "sma":
+        strategies = [SmaCrossoverStrategy(settings)]
+    else:
+        strategies = [PairsTradingStrategy(settings)]
     engine = Engine(settings=settings, bus=bus, gateway=gateway, strategies=strategies)
 
     await engine.start()

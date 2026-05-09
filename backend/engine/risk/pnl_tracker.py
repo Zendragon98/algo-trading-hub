@@ -4,6 +4,11 @@ Most of the heavy lifting already happens in `PositionTracker`; this
 module is a thin facade that lets the risk manager and the dashboard
 ask "what's my PnL right now?" without needing to know the position
 schema.
+
+In addition to the session-start drawdown number used by the existing
+`MAX_DRAWDOWN_PCT` kill switch, this tracker also maintains a live
+high-water-mark so a session that profits and then gives back equity
+trips a HWM-drawdown breaker before cumulative loss exceeds limits.
 """
 
 from __future__ import annotations
@@ -26,6 +31,9 @@ class PnLSnapshot:
 class PnLTracker:
     def __init__(self, portfolio: Portfolio) -> None:
         self._portfolio = portfolio
+        # Lazily initialised on first update so unit tests with a freshly
+        # constructed portfolio don't anchor HWM at zero.
+        self._hwm: float | None = None
 
     def snapshot(self) -> PnLSnapshot:
         snap = self._portfolio.snapshot()
@@ -40,3 +48,28 @@ class PnLTracker:
         if current >= start:
             return 0.0
         return (start - current) / start
+
+    def update(self) -> None:
+        """Refresh the high-water mark. Called once per heartbeat."""
+        equity = self._portfolio.snapshot().equity
+        if equity <= 0:
+            return
+        if self._hwm is None or equity > self._hwm:
+            self._hwm = equity
+
+    def hwm_drawdown_pct(self) -> float:
+        """Drawdown from the running peak equity, in [0, 1).
+
+        Returns 0 until the HWM has been seeded (`update()` called at
+        least once with positive equity).
+        """
+        if self._hwm is None or self._hwm <= 0:
+            return 0.0
+        current = self._portfolio.snapshot().equity
+        if current >= self._hwm:
+            return 0.0
+        return (self._hwm - current) / self._hwm
+
+    @property
+    def hwm(self) -> float:
+        return self._hwm or 0.0

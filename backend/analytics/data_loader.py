@@ -20,6 +20,7 @@ import pandas as pd
 
 from common.config import get_settings
 from gateways.binance.rest_client import BinanceRestClient
+from gateways.binance.universe import discover_usdt_usdc_pairs
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,13 @@ async def _run(args: argparse.Namespace) -> None:
     start_ms = end_ms - args.days * 86_400_000
 
     try:
-        for symbol in args.symbols:
+        symbols = args.symbols
+        if len(symbols) == 1 and symbols[0].upper() == "AUTO":
+            info = await rest.exchange_info()
+            symbols = discover_usdt_usdc_pairs(info)
+            logger.info("symbols=AUTO -> discovered %d symbols", len(symbols))
+
+        for symbol in symbols:
             logger.info("fetching klines %s interval=%s days=%d", symbol, args.interval, args.days)
             df = await fetch_klines(rest, symbol, args.interval, start_ms, end_ms)
             path = _DATA_DIR / f"klines_{symbol}_{args.interval}.parquet"
@@ -99,7 +106,7 @@ def main() -> None:
         "--symbols",
         type=lambda s: [x.strip().upper() for x in s.split(",") if x.strip()],
         required=True,
-        help="Comma-separated list, e.g. BTCUSDT,BTCUSDC",
+        help="Comma-separated list, e.g. BTCUSDT,BTCUSDC (or AUTO)",
     )
     parser.add_argument("--interval", default="1m", help="Kline interval (default: 1m)")
     parser.add_argument("--days", type=int, default=7, help="Lookback in days (default: 7)")

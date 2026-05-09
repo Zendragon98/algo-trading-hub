@@ -12,6 +12,10 @@ to the caller.
 
 The risk manager *never* places orders directly; it returns intent and
 lets the engine route through the execution layer like any other order.
+
+All breach decisions (kill switch, stale tick, spread blowout, exposure
+cap, etc.) are recorded on a shared `CircuitBreaker` so the API/UI can
+observe a single source of truth for safety state.
 """
 
 from __future__ import annotations
@@ -24,7 +28,15 @@ from common.config import Settings
 from common.types import Fill, Position, Signal, Tick
 
 from ..portfolio.portfolio import Portfolio
+from .circuit_breaker import (
+    Breach,
+    BreakerScope,
+    BreakerSeverity,
+    CircuitBreaker,
+)
+from .exposure_tracker import ExposureTracker
 from .limits import Limits
+from .market_data_guard import MarketDataGuard
 from .pnl_tracker import PnLTracker
 from .stop_loss import StopLossMonitor
 
@@ -57,21 +69,50 @@ class RiskManager:
         portfolio: Portfolio,
         pnl: PnLTracker,
         stop_monitor: StopLossMonitor,
+        breaker: CircuitBreaker | None = None,
+        market_data_guard: MarketDataGuard | None = None,
+        exposure_tracker: ExposureTracker | None = None,
     ) -> None:
         self._settings = settings
         self._limits = Limits.from_settings(settings)
         self._portfolio = portfolio
         self._pnl = pnl
         self._stops = stop_monitor
-        self._kill_switch = False  # tripped by max-drawdown breach
+        self._breaker = breaker or CircuitBreaker()
+        self._md_guard = market_data_guard or MarketDataGuard.from_settings(settings)
+        self._exposure = exposure_tracker or ExposureTracker.from_settings(
+            settings, portfolio,
+        )
 
     @property
     def kill_switch(self) -> bool:
-        return self._kill_switch
+        """Back-compat: True iff any ENGINE-scope breach is active."""
+        return self._breaker.is_blocked(BreakerScope.ENGINE)
+
+    @property
+    def breaker(self) -> CircuitBreaker:
+        return self._breaker
 
     @property
     def limits(self) -> Limits:
         return self._limits
+
+    def evaluate_market_data(
+        self,
+        *,
+        symbol: str,
+        tick_ts: float | None,
+        spread_bps: float | None,
+    ) -> "Breach | None":
+        """Public wrapper around the market-data guard.
+
+        Used by the engine's group-dispatch path so a stale leg can short
+        -circuit the all-or-none submission and trip the symbol breaker
+        before the partner leg is also vetted.
+        """
+        return self._md_guard.evaluate(
+            symbol=symbol, tick_ts=tick_ts, spread_bps=spread_bps,
+        )
 
     def update_max_risk_pct(self, value: float) -> None:
         """Allow the UI risk slider to adjust per-trade risk live."""
@@ -86,12 +127,30 @@ class RiskManager:
 
     # --- Pre-trade gate ---
 
-    def check(self, signal: Signal, mid_price: float) -> RiskDecision:
-        if self._kill_switch:
+    def check(
+        self,
+        signal: Signal,
+        mid_price: float,
+        *,
+        tick_ts: float | None = None,
+        spread_bps: float | None = None,
+    ) -> RiskDecision:
+        # Engine- or symbol-scope breach blocks every entry path.
+        if self._breaker.is_blocked(BreakerScope.ENGINE):
             return RiskDecision(False, reason="kill_switch active")
+        if self._breaker.is_blocked(BreakerScope.SYMBOL, signal.symbol):
+            return RiskDecision(False, reason="symbol breaker active")
 
         if mid_price <= 0:
             return RiskDecision(False, reason="no mid price for symbol")
+
+        # Market-data freshness + spread blowout (minor symbol-scope trips).
+        md_breach = self._md_guard.evaluate(
+            symbol=signal.symbol, tick_ts=tick_ts, spread_bps=spread_bps,
+        )
+        if md_breach is not None:
+            self._breaker.trip(md_breach)
+            return RiskDecision(False, reason=md_breach.code)
 
         snap = self._portfolio.snapshot()
         equity = snap.equity
@@ -113,8 +172,19 @@ class RiskManager:
         else:
             qty = signal.qty
 
+        notional = qty * mid_price
+
+        # Per-symbol exposure cap (in addition to the global gross cap below).
+        if not self._exposure.symbol_ok(signal.symbol, notional):
+            return RiskDecision(False, reason="symbol_exposure_cap")
+
+        # Free-margin floor: refuse to open new exposure if equity headroom
+        # is already thin.
+        if not self._exposure.margin_ok(notional):
+            return RiskDecision(False, reason="free_margin_floor")
+
         # Reject if the post-trade gross would exceed the hard ceiling.
-        projected_gross = snap.gross_notional + qty * mid_price
+        projected_gross = snap.gross_notional + notional
         if projected_gross > self._limits.max_gross_notional:
             return RiskDecision(False, reason="max_gross_notional breach")
 
@@ -142,18 +212,25 @@ class RiskManager:
         tick: Tick,
         positions: Iterable[Position],
     ) -> ExitIntent | None:
-        # Drawdown guard takes precedence; if breached, trip the kill
-        # switch and ask the engine to flatten everything.
+        # Two MAJOR engine-scope guards take precedence over per-position
+        # SL/TP: session-start drawdown (legacy) and high-water-mark
+        # drawdown. Either trip latches the breaker; the engine flattens
+        # and stays paused until operator re-arm.
         dd = self._pnl.drawdown_pct()
-        if dd >= self._limits.max_drawdown_pct and not self._kill_switch:
-            self._kill_switch = True
-            logger.error("MAX DRAWDOWN breached (%.2f%%); kill switch armed", dd * 100)
-            # Emit a synthetic exit for the symbol of this tick so the
-            # engine starts unwinding immediately. The engine will iterate
-            # remaining positions on subsequent ticks.
+        if dd >= self._limits.max_drawdown_pct:
+            self._maybe_trip_drawdown("max_drawdown", dd)
             position = next((p for p in positions if p.symbol == tick.symbol), None)
             if position is not None and position.qty != 0:
                 return _exit_intent(position, "max_drawdown")
+            return None
+
+        hwm_dd = self._pnl.hwm_drawdown_pct()
+        hwm_kill = getattr(self._settings, "hwm_drawdown_kill_pct", 0.0)
+        if hwm_kill > 0 and hwm_dd >= hwm_kill:
+            self._maybe_trip_drawdown("hwm_drawdown", hwm_dd)
+            position = next((p for p in positions if p.symbol == tick.symbol), None)
+            if position is not None and position.qty != 0:
+                return _exit_intent(position, "hwm_drawdown")
             return None
 
         position = next((p for p in positions if p.symbol == tick.symbol), None)
@@ -164,6 +241,20 @@ class RiskManager:
             return None
         logger.info("%s triggered on %s @ %.4f", reason, tick.symbol, tick.mid)
         return _exit_intent(position, reason)
+
+    # --- Internal ---
+
+    def _maybe_trip_drawdown(self, code: str, dd: float) -> None:
+        if self._breaker.is_blocked(BreakerScope.ENGINE):
+            return
+        self._breaker.trip(
+            Breach(
+                code=code,
+                scope=BreakerScope.ENGINE,
+                severity=BreakerSeverity.MAJOR,
+                detail=f"dd={dd * 100:.2f}%",
+            )
+        )
 
 
 def _exit_intent(position: Position, reason: str) -> ExitIntent:

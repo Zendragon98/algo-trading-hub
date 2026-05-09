@@ -58,7 +58,32 @@ class PositionTracker:
         if position.mark_price == tick.mid:
             return
         position.mark_price = tick.mid
+        # If we're in exchange-driven PnL mode (ACCOUNT_UPDATE), our local
+        # mark ticks should not reintroduce derived PnL; keep unrealized
+        # PnL as last reported by the venue.
         await self._publish(position)
+
+    async def apply_exchange_positions(self, positions: Iterable[Position]) -> None:
+        """Replace tracked positions with exchange-reported state.
+
+        Used by venue adapters that provide ACCOUNT_UPDATE / position
+        snapshots. Zero-qty rows pop the symbol so a venue-side close
+        (ADL, manual flatten, opposite fill) propagates to the dashboard
+        instead of leaving a stale row in the OPEN POSITIONS panel.
+        """
+        # Materialise once so the publish pass below sees the same data
+        # the lock-guarded apply pass mutated.
+        snapshot = list(positions)
+        async with self._lock:
+            for p in snapshot:
+                if p.qty == 0:
+                    self._positions.pop(p.symbol, None)
+                    continue
+                self._positions[p.symbol] = p
+        for p in snapshot:
+            # Always publish, including the qty==0 close, so the WS hook
+            # in the frontend can drop the symbol from the position panel.
+            await self._publish(p)
 
     # --- Read-only ---
 

@@ -43,7 +43,7 @@ from __future__ import annotations
 import logging
 
 from common.config import Settings
-from common.types import ChildOrder, Position
+from common.types import ChildOrder, Kline, Position
 
 from ..gateway_interface import (
     DepthCallback,
@@ -104,6 +104,8 @@ class IBKRGateway(GatewayInterface):
         on_tick: TickCallback,
         on_depth: DepthCallback,
         on_trade: TradeCallback,
+        *,
+        on_quote_volume_24h=None,
     ) -> None:
         # TODO: build IB Contract objects from `symbols`, call reqMktData /
         # reqMktDepth / reqTickByTickData, attach ib.pendingTickersEvent,
@@ -118,6 +120,7 @@ class IBKRGateway(GatewayInterface):
         self,
         on_fill: FillCallback,
         on_order_update: OrderUpdateCallback,
+        on_account_update=None,
     ) -> None:
         # TODO: ib.execDetailsEvent += <translate to Fill> and forward
         # via on_fill; ib.orderStatusEvent += <translate to ChildOrder>
@@ -155,4 +158,11 @@ class IBKRGateway(GatewayInterface):
         # response into {"lastUpdateId": <seq>, "bids": [[p, q], ...],
         # "asks": [...]} so the engine's incremental loop can consume it
         # without caring it came from IBKR.
+        raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
+
+    async def klines(self, symbol: str, interval: str, limit: int = 200) -> list[Kline]:
+        # TODO: ib.reqHistoricalData(contract, endDateTime="", durationStr=...,
+        # barSizeSetting=<map interval>, whatToShow="MIDPOINT") then translate
+        # each bar into a Kline (date -> epoch seconds, open/high/low/close
+        # straight, volume in base units).
         raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
