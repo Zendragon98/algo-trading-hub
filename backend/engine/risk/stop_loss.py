@@ -179,6 +179,10 @@ class StopLossMonitor:
             self._last_trigger_ts[tick.symbol] = _time.monotonic()
         return reason
 
+    def replace_limits(self, limits: Limits) -> None:
+        """Apply updated SL/TP fractions after runtime ``Settings`` patch."""
+        self._limits = limits
+
 
 def _sign(x: float) -> int:
     if x > 0:

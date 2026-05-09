@@ -36,6 +36,24 @@ class ExposureTracker:
             min_free_margin_pct=settings.min_free_margin_pct,
         )
 
+    def symbol_additional_budget(self, symbol: str) -> float:
+        """Max additional notional at this symbol without breaching the per-symbol cap.
+
+        Returns ``+inf`` when the per-symbol cap is disabled.
+        """
+        if self._symbol_pct <= 0:
+            return float("inf")
+        snap = self._portfolio.snapshot()
+        equity = snap.equity
+        if equity <= 0:
+            return 0.0
+        cap = equity * self._symbol_pct
+        existing = next(
+            (p.notional for p in snap.positions if p.symbol == symbol),
+            0.0,
+        )
+        return max(0.0, cap - existing)
+
     def symbol_ok(self, symbol: str, additional_notional: float) -> bool:
         """True iff `symbol` can carry an additional `additional_notional`.
 
@@ -45,16 +63,7 @@ class ExposureTracker:
         """
         if self._symbol_pct <= 0:
             return True
-        snap = self._portfolio.snapshot()
-        equity = snap.equity
-        if equity <= 0:
-            return False
-        cap = equity * self._symbol_pct
-        existing = next(
-            (p.notional for p in snap.positions if p.symbol == symbol),
-            0.0,
-        )
-        return (existing + additional_notional) <= cap + 1e-9
+        return additional_notional <= self.symbol_additional_budget(symbol) + 1e-9
 
     def margin_ok(self, additional_notional: float) -> bool:
         """True iff the post-trade free-margin ratio is above the floor.

@@ -33,6 +33,10 @@ class Features:
     imbalance_topn: float = 0.0
     bid_hit_ratio: float = 0.0
     ask_hit_ratio: float = 0.0
+    # Aggressor trade counts in the rolling tape window (`trade_tape_window_sec`,
+    # default 300s): bid hits = sellers lifted bids; ask hits = buyers lifted offers.
+    tape_bid_hit_count: int = 0
+    tape_ask_hit_count: int = 0
     last_price: float | None = None
 
 
@@ -49,6 +53,9 @@ class FeatureStore:
         self._tape = tape
         self._top_n = settings.imbalance_top_n
 
+    def apply_settings(self, settings: Settings) -> None:
+        self._top_n = settings.imbalance_top_n
+
     def snapshot(self, symbol: str) -> Features:
         book = self._books.get(symbol)
         stats = self._tape.stats(symbol, now=time())
@@ -58,6 +65,8 @@ class FeatureStore:
                 symbol=symbol,
                 bid_hit_ratio=stats.bid_hit_ratio,
                 ask_hit_ratio=stats.ask_hit_ratio,
+                tape_bid_hit_count=stats.bid_hit_count,
+                tape_ask_hit_count=stats.ask_hit_count,
             )
 
         return Features(
@@ -68,4 +77,6 @@ class FeatureStore:
             imbalance_topn=book.imbalance(self._top_n),
             bid_hit_ratio=stats.bid_hit_ratio,
             ask_hit_ratio=stats.ask_hit_ratio,
+            tape_bid_hit_count=stats.bid_hit_count,
+            tape_ask_hit_count=stats.ask_hit_count,
         )

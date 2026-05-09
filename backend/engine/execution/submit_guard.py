@@ -85,6 +85,12 @@ class SubmitGuard:
         self._bucket = _TokenBucket(submit_rate_per_sec)
         self._reject_streak: dict[str, int] = defaultdict(int)
 
+    def apply_settings(self, settings: Settings) -> None:
+        self._max_open_parents = max(0, int(settings.max_open_parents))
+        self._max_rejects = max(1, int(settings.max_consecutive_rejects))
+        self._reject_cooldown_sec = max(0.0, settings.reject_cooldown_sec)
+        self._bucket = _TokenBucket(settings.submit_rate_per_sec)
+
     @classmethod
     def from_settings(
         cls,

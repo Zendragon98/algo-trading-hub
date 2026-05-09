@@ -126,6 +126,14 @@ export type KlineDTO = {
   close_time: number;
 };
 
+/** Full backend `Settings` model as JSON (GET/PATCH /api/settings). */
+export type SettingsDTO = Record<string, unknown>;
+
+export type SettingsPayloadDTO = {
+  settings: SettingsDTO;
+  ok?: boolean;
+};
+
 export type StateDTO = {
   status: StatusDTO;
   strategy: StrategyInfoDTO | null;
@@ -138,22 +146,39 @@ export type StateDTO = {
   execution: ExecutionStatsDTO;
 };
 
+function formatApiErrorDetail(body: unknown): string {
+  if (!body || typeof body !== "object") return "";
+  const d = (body as { detail?: unknown }).detail;
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) {
+    return d
+      .map((item) => {
+        if (item && typeof item === "object" && "msg" in item) {
+          const msg = (item as { msg?: unknown }).msg;
+          const loc = (item as { loc?: unknown }).loc;
+          const bits = [Array.isArray(loc) ? loc.join(".") : "", String(msg ?? "")].filter(Boolean);
+          return bits.join(": ") || JSON.stringify(item);
+        }
+        return JSON.stringify(item);
+      })
+      .join("; ");
+  }
+  if (d !== undefined) return JSON.stringify(d);
+  return "";
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
     ...init,
   });
   if (!response.ok) {
-    // FastAPI returns JSON `{ "detail": "..." }` for HTTPException; surface
-    // that to the user instead of a generic "500 Internal Server Error".
+    // FastAPI: `{ "detail": "..." }` or validation `[{ loc, msg, type }]`.
     let detail = "";
     try {
       const body = await response.clone().json();
-      if (body && typeof body.detail === "string") {
-        detail = body.detail;
-      } else if (body) {
-        detail = JSON.stringify(body);
-      }
+      detail = formatApiErrorDetail(body);
+      if (!detail && body) detail = JSON.stringify(body);
     } catch {
       try {
         detail = await response.text();
@@ -184,6 +209,8 @@ export const api = {
   pause: () => request<StatusDTO>("/api/control/pause", { method: "POST" }),
   resume: () => request<StatusDTO>("/api/control/resume", { method: "POST" }),
   stop: () => request<StatusDTO>("/api/control/stop", { method: "POST" }),
+  /** Stop engine and exit the backend process (same as killing `python main.py`). */
+  shutdown: () => request<StatusDTO>("/api/control/shutdown", { method: "POST" }),
   flatten: () => request<StatusDTO>("/api/control/flatten", { method: "POST" }),
   setRisk: (max_risk_pct: number) =>
     request<StatusDTO>("/api/control/risk", {
@@ -194,6 +221,13 @@ export const api = {
     request<StatusDTO>("/api/control/strategy", {
       method: "POST",
       body: JSON.stringify({ name }),
+    }),
+
+  getSettings: () => request<SettingsPayloadDTO>("/api/settings"),
+  patchSettings: (patch: SettingsDTO) =>
+    request<SettingsPayloadDTO>("/api/settings", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
     }),
 };
 

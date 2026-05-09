@@ -1,13 +1,12 @@
 """Public market-data WebSocket consumer.
 
-Maintains a single combined-stream subscription per process:
-    - !ticker@arr       (all-symbol 24h stats — drives volume weights without REST)
-Per subscribed symbol:
-    - <sym>@bookTicker  (top-of-book ticks)
-    - <sym>@aggTrade    (aggregated trades for the trade tape)
-    - <sym>@depth@100ms (L2 diffs for the local order book)
+Binance allows **at most 1024 streams per combined WebSocket**. Beyond that,
+subscriptions fail or stall — bookTicker never arrives and startup falls back
+to hundreds of REST ``/depth`` calls (slow).
 
-The connection auto-reconnects with exponential backoff.
+We shard large universes across multiple sockets:
+    - Shard 0: ``!ticker@arr`` + first chunk of symbols (bookTicker, aggTrade, depth)
+    - Further shards: remaining symbol chunks only (no duplicate ``!ticker@arr``).
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 
 import websockets
@@ -33,9 +33,41 @@ from ..gateway_interface import (
 
 logger = logging.getLogger(__name__)
 
+# Binance Futures combined stream hard limit (streams count, not URL chars).
+_MAX_STREAMS_PER_CONNECTION = 1024
+
+
+def _shard_symbols_for_streams(symbols: list[str]) -> list[tuple[list[str], bool]]:
+    """Split ``symbols`` into chunks that fit under the 1024-stream cap.
+
+    Each symbol adds three streams (bookTicker, aggTrade, depth). The first
+    chunk also carries ``!ticker@arr`` (+1 stream).
+
+    Returns list of ``(symbol_chunk, include_ticker_arr)``.
+    """
+    if not symbols:
+        return []
+
+    first_cap = (_MAX_STREAMS_PER_CONNECTION - 1) // 3
+    rest_cap = _MAX_STREAMS_PER_CONNECTION // 3
+
+    chunks: list[tuple[list[str], bool]] = []
+    pos = 0
+    # First shard: reserve one slot for !ticker@arr
+    take = min(len(symbols), first_cap)
+    chunks.append((symbols[pos : pos + take], True))
+    pos += take
+
+    while pos < len(symbols):
+        take = min(rest_cap, len(symbols) - pos)
+        chunks.append((symbols[pos : pos + take], False))
+        pos += take
+
+    return chunks
+
 
 class MarketConnection:
-    """Handles the public Futures market-data stream."""
+    """Handles the public Futures market-data stream (possibly sharded)."""
 
     def __init__(self, ws_base: str) -> None:
         self._ws_base = ws_base.rstrip("/")
@@ -44,7 +76,7 @@ class MarketConnection:
         self._on_depth: DepthCallback | None = None
         self._on_trade: TradeCallback | None = None
         self._on_quote_vol: QuoteVolume24hCallback | None = None
-        self._task: asyncio.Task[None] | None = None
+        self._tasks: list[asyncio.Task[None]] = []
         self._stop = asyncio.Event()
 
     async def start(
@@ -63,45 +95,85 @@ class MarketConnection:
         self._on_trade = on_trade
         self._on_quote_vol = on_quote_volume_24h
         self._stop.clear()
-        self._task = asyncio.create_task(self._run(), name="binance-market-ws")
+
+        shards = _shard_symbols_for_streams(self._symbols)
+        self._tasks = []
+        for idx, (chunk, include_arr) in enumerate(shards):
+            self._tasks.append(
+                asyncio.create_task(
+                    self._run_shard(shard_id=idx, symbols=chunk, include_ticker_arr=include_arr),
+                    name=f"binance-market-ws-{idx}",
+                ),
+            )
+        total_streams = sum(
+            (1 if inc else 0) + len(ch) * 3 for ch, inc in shards
+        )
+        logger.info(
+            "market_ws starting %d shard(s), ~%d total streams, %d symbols",
+            len(shards),
+            total_streams,
+            len(self._symbols),
+        )
 
     async def stop(self) -> None:
         self._stop.set()
-        if self._task is not None:
-            self._task.cancel()
+        for task in self._tasks:
+            task.cancel()
+        for task in self._tasks:
             try:
-                await self._task
+                await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-            self._task = None
+        self._tasks.clear()
 
-    async def _run(self) -> None:
-        # Combined stream lets us multiplex many symbols on one socket and
-        # avoids hitting the 5/sec subscribe rate limit.
-        # ``!ticker@arr`` delivers all-symbol 24h stats in one stream — avoids
-        # one REST ``/ticker/24hr`` poll per refresh for volume weights.
-        stream_parts = ["!ticker@arr"]
+    async def _run_shard(
+        self,
+        *,
+        shard_id: int,
+        symbols: list[str],
+        include_ticker_arr: bool,
+    ) -> None:
+        stream_parts: list[str] = []
+        if include_ticker_arr:
+            stream_parts.append("!ticker@arr")
         stream_parts.extend(
             f"{sym}@{kind}"
-            for sym in self._symbols
+            for sym in symbols
             for kind in ("bookTicker", "aggTrade", "depth@100ms")
         )
+        n_streams = len(stream_parts)
+        if n_streams > _MAX_STREAMS_PER_CONNECTION:
+            logger.error(
+                "market_ws shard %d: %d streams > limit %d — logic bug",
+                shard_id,
+                n_streams,
+                _MAX_STREAMS_PER_CONNECTION,
+            )
+            return
+
         streams = "/".join(stream_parts)
         url = f"{self._ws_base}/stream?streams={streams}"
 
         backoff = 1.0
         while not self._stop.is_set():
             try:
-                n_sym_streams = len(self._symbols) * 3
                 logger.info(
-                    "market_ws connecting (!ticker@arr + %d symbol streams)",
-                    n_sym_streams,
+                    "market_ws shard %d connecting (%d streams, %d symbols%s)",
+                    shard_id,
+                    n_streams,
+                    len(symbols),
+                    ", !ticker@arr" if include_ticker_arr else "",
                 )
                 async with websockets.connect(url, ping_interval=15, ping_timeout=20) as ws:
                     backoff = 1.0
                     await self._read_loop(ws)
             except (ConnectionClosed, OSError) as exc:
-                logger.warning("market_ws disconnected: %s; retry in %.1fs", exc, backoff)
+                logger.warning(
+                    "market_ws shard %d disconnected: %s; retry in %.1fs",
+                    shard_id,
+                    exc,
+                    backoff,
+                )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
 
@@ -164,12 +236,14 @@ class MarketConnection:
 
 def _parse_book_ticker(symbol: str, data: dict) -> Tick:
     # bookTicker payload uses single-letter keys: b/B/a/A for bid/qty/ask/qty.
-    return Tick(
-        symbol=symbol,
-        bid=float(data["b"]),
-        ask=float(data["a"]),
-        ts=float(data.get("E", 0)) / 1000.0 or None,  # event time in ms
-    )
+    e_raw = data.get("E", 0)
+    try:
+        e_ms = float(e_raw) if e_raw is not None else 0.0
+    except (TypeError, ValueError):
+        e_ms = 0.0
+    # Avoid `0.0 or None` (falsy) dropping ts; missing E -> receive time.
+    ts = (e_ms / 1000.0) if e_ms > 0 else time.time()
+    return Tick(symbol=symbol, bid=float(data["b"]), ask=float(data["a"]), ts=ts)
 
 
 def _parse_agg_trade(symbol: str, data: dict) -> TapeTrade:

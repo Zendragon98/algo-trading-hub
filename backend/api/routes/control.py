@@ -1,4 +1,4 @@
-"""POST /api/control/{start|pause|resume|stop|flatten|strategy}, PATCH /api/control/risk,
+"""POST /api/control/{start|pause|resume|stop|shutdown|flatten|strategy}, PATCH /api/control/risk,
 GET/POST circuit-breaker controls."""
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from engine.core.engine import Engine
@@ -93,6 +93,33 @@ async def resume(engine: Engine = Depends(get_engine)) -> StatusDTO:
 @router.post("/stop", response_model=StatusDTO)
 async def stop(engine: Engine = Depends(get_engine)) -> StatusDTO:
     await _run_or_500("stop", engine.stop)
+    return _status(engine)
+
+
+@router.post("/shutdown", response_model=StatusDTO)
+async def shutdown(
+    background_tasks: BackgroundTasks,
+    request: Request,
+    engine: Engine = Depends(get_engine),
+) -> StatusDTO:
+    """Stop the engine and exit the Python process (same path as SIGINT).
+
+    Used by the dashboard Kill control when the API is embedded in
+    ``backend/main.py``. Unit tests that mount ``create_app`` without
+    ``request_shutdown`` receive HTTP 501.
+    """
+    fn = getattr(request.app.state, "request_shutdown", None)
+    if fn is None:
+        raise HTTPException(
+            status_code=501,
+            detail="shutdown is not wired for this server instance",
+        )
+
+    async def _after_response() -> None:
+        logger.info("shutdown requested via API")
+        fn()
+
+    background_tasks.add_task(_after_response)
     return _status(engine)
 
 

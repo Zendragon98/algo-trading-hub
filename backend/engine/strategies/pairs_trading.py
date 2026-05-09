@@ -204,6 +204,29 @@ class PairsTradingStrategy(StrategyBase):
                 "PairsTradingStrategy enabled but no USDT/USDC pairs found in SYMBOLS"
             )
 
+    def refresh_settings(self, settings: Settings) -> None:
+        self._settings = settings
+        self._pairs = [
+            PairConfig(
+                usdt_symbol=usdt,
+                usdc_symbol=usdc,
+                z_window_sec=settings.pair_z_window_sec,
+                entry_z=settings.pair_entry_z,
+                exit_z=settings.pair_exit_z,
+                stop_z=settings.pair_stop_z,
+            )
+            for usdt, usdc in settings.pair_legs()
+        ]
+        new_stats: dict[str, _DeviationStats] = {}
+        for p in self._pairs:
+            key = self._key(p)
+            prev = self._stats.get(key)
+            if prev is not None and prev.window_sec == p.z_window_sec:
+                new_stats[key] = prev
+            else:
+                new_stats[key] = _DeviationStats(window_sec=p.z_window_sec)
+        self._stats = new_stats
+
     def attach_equity_provider(self, provider: EquityProvider) -> None:
         """Wire the equity callback after engine construction.
 

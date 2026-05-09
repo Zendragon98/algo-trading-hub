@@ -19,9 +19,9 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
-from typing import Iterable
+from typing import Any, Iterable
 
-from common.config import Settings
+from common.config import Settings, normalize_strategy_name
 from common.enums import EngineStatus, EventType, Side
 from common.events import Event, EventBus
 from common.types import Fill, Position, Signal, TapeTrade, Tick
@@ -234,6 +234,9 @@ class Engine:
         # True while an auto-flatten is dispatched in response to a
         # MAJOR engine breach; prevents duplicate flattens stacking up.
         self._auto_flatten_in_progress: bool = False
+        # Futures venues: symbols we've already POSTed configured leverage for
+        # this session (lazy — avoids N REST calls at startup for every subscribe).
+        self._leverage_applied_symbols: set[str] = set()
 
     def _reconcile_should_skip_rest(self) -> bool:
         """True when periodic reconcile should rely on user-data WS, not REST."""
@@ -300,6 +303,45 @@ class Engine:
         self._stop_monitor.set_externally_managed(self._compute_externally_managed())
         logger.info("strategy hot-swap: %s -> %s", previous or "<none>", normalised)
 
+    def apply_settings_patch(self, patch: dict[str, Any]) -> Settings:
+        """Merge ``patch`` into runtime ``Settings`` and refresh subsystems.
+
+        Secrets omitted from the patch (empty / ``***``) keep their previous
+        values. Some venue binds (e.g. ``api_host`` / ``api_port``) only take
+        effect after an API server restart.
+        """
+        cur = self._settings.model_dump(mode="json")
+        clean = dict(patch)
+        for key in ("binance_api_key", "binance_api_secret"):
+            val = clean.get(key)
+            if val in (None, "", "***"):
+                clean.pop(key, None)
+        if isinstance(clean.get("strategy"), str):
+            clean["strategy"] = normalize_strategy_name(clean["strategy"])
+        merged = {**cur, **clean}
+        new_settings = Settings.model_validate(merged)
+        self._apply_runtime_settings(new_settings)
+        return new_settings
+
+    def _apply_runtime_settings(self, s: Settings) -> None:
+        prev_leverage = self._settings.leverage
+        self._settings = s
+        if s.leverage != prev_leverage:
+            self._leverage_applied_symbols.clear()
+        self._risk.apply_settings(s)
+        self._stop_monitor.replace_limits(Limits.from_settings(s))
+        self._features.apply_settings(s)
+        self._tape.set_window_sec(s.trade_tape_window_sec)
+        self._executor.apply_settings(s)
+        self._submit_guard.apply_settings(s)
+        self._slippage_guard.set_cooldown_sec(s.breaker_minor_cooldown_sec)
+        self._loss_tracker.apply_settings(s)
+        self._exec_quality_guard.apply_settings(s)
+        self._connection_monitor.apply_settings(s)
+        self._reconciler.apply_settings(s)
+        for strat in self._strategies:
+            strat.refresh_settings(s)
+
     def _compute_externally_managed(self) -> set[str]:
         """Return the set of symbols whose risk the active strategy owns.
 
@@ -363,20 +405,9 @@ class Engine:
         await self._prime_symbol_prices()
 
         # Seed cash + positions from REST once; live updates use user-data WS.
-        balances = await self._gateway.fetch_balances()
+        balances, positions = await self._gateway.fetch_balances_and_positions()
         self._portfolio.seed_balances(balances)
-        positions = await self._gateway.fetch_positions()
         self._positions.seed(positions)
-
-        # Configure futures leverage per symbol *before* placing any order
-        # so the stop-loss-budgeted notional fits the available margin.
-        # Skipped silently on venues whose `set_leverage` is a no-op
-        # (spot, IBKR, mock test gateways).
-        if self._settings.leverage and self._settings.leverage > 1:
-            await asyncio.gather(
-                *(self._gateway.set_leverage(sym, self._settings.leverage) for sym in self._symbols),
-                return_exceptions=True,
-            )
 
         await self._gateway.subscribe_user_data(
             on_fill=self._on_fill,
@@ -623,8 +654,20 @@ class Engine:
     # --- Market data callbacks ---
 
     async def _on_tick(self, tick: Tick) -> None:
-        self._latest_tick[tick.symbol] = tick
-        self._state.last_tick_ts = tick.ts
+        # Wall-clock receive time for `Tick.ts`: Binance `E` is the exchange
+        # time of the last *BBO change*. With an unchanged best bid/ask the
+        # feed can go quiet for minutes while quotes stay valid; using `E`
+        # makes MarketDataGuard think the tick is stale (age vs `time.time()`).
+        recv_ts = time.time()
+        self._latest_tick[tick.symbol] = Tick(
+            symbol=tick.symbol,
+            bid=tick.bid,
+            ask=tick.ask,
+            last=tick.last,
+            ts=recv_ts,
+        )
+        # ConnectionMonitor: any public-WS activity (same reasoning as above).
+        self._state.last_tick_ts = recv_ts
         await self._positions.on_tick(tick)
         await self._bus.publish(
             Event(
@@ -634,6 +677,7 @@ class Engine:
         )
 
     async def _on_depth(self, diff: DepthDiff) -> None:
+        self._state.last_tick_ts = time.time()
         # Lazy snapshot: the first diff for an unseen symbol triggers a
         # REST snapshot fetch; subsequent diffs are folded straight in.
         book = self._books.get(diff.symbol)
@@ -642,6 +686,7 @@ class Engine:
         book.apply_diff(diff)
 
     async def _on_trade(self, trade: TapeTrade) -> None:
+        self._state.last_tick_ts = time.time()
         self._tape.record(trade)
 
     async def _on_quote_volume_24h(self, symbol: str, quote_vol: float) -> None:
@@ -649,6 +694,7 @@ class Engine:
         sym = symbol.upper()
         if sym not in self._symbols:
             return
+        self._state.last_tick_ts = time.time()
         self._volume_weights[sym] = quote_vol
 
     async def _on_fill(self, fill: Fill) -> None:
@@ -850,6 +896,7 @@ class Engine:
                 return
 
         try:
+            await self._ensure_leverage_before_entry(signal.symbol)
             await self._router.submit(
                 symbol=signal.symbol,
                 side=signal.side,
@@ -955,6 +1002,7 @@ class Engine:
         )
         for leg in legs:
             try:
+                await self._ensure_leverage_before_entry(leg.symbol)
                 await self._router.submit(
                     symbol=leg.symbol,
                     side=leg.side,
@@ -969,6 +1017,21 @@ class Engine:
                 return
 
     # --- Helpers ---
+
+    async def _ensure_leverage_before_entry(self, symbol: str) -> None:
+        """POST venue leverage once per symbol before the first opening order.
+
+        Reduce-only exits skip this path. No-op when leverage <= 1 or the
+        gateway does not implement futures leverage (spot / mocks).
+        """
+        lev = self._settings.leverage
+        if not lev or lev <= 1:
+            return
+        sym_u = symbol.upper()
+        if sym_u in self._leverage_applied_symbols:
+            return
+        await self._gateway.set_leverage(sym_u, lev)
+        self._leverage_applied_symbols.add(sym_u)
 
     async def _snapshot_book(self, symbol: str) -> None:
         try:

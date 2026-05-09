@@ -4,9 +4,10 @@ When the user-data WebSocket is active (``ORDER_TRADE_UPDATE``,
 ``ACCOUNT_UPDATE``), local wallet + position state is already driven by
 the same stream Binance recommends instead of REST polling. In that
 mode (``reconcile_skip_rest_when_user_data_fresh``) this reconciler
-skips GET ``/account`` and GET ``/positionRisk`` until user-data has been
-idle longer than ``reconcile_user_data_fresh_sec``, then performs a REST
-snapshot again for drift detection.
+skips the account REST snapshot until user-data has been idle longer
+than ``reconcile_user_data_fresh_sec``, then performs a REST snapshot
+again for drift detection. On Binance USDT-M this is a single
+``GET /fapi/v2/account`` (balances + positions), not two endpoints.
 
 If REST runs: pull authoritative balances + positions, diff qty vs
 ``PositionTracker``, refresh portfolio wallets. Mismatch above
@@ -34,6 +35,16 @@ from ..risk.circuit_breaker import (
 logger = logging.getLogger(__name__)
 
 
+def _log_venue_throttle(kind: str, exc: BaseException, sleep_sec: float) -> None:
+    """Rate limits and bans often expose ``retry_after_sec``; those are expected, not bugs."""
+    logger.warning(
+        "%s failed during reconcile (venue throttle; sleeping %.1fs): %s",
+        kind,
+        sleep_sec,
+        exc,
+    )
+
+
 class Reconciler:
     def __init__(
         self,
@@ -53,6 +64,10 @@ class Reconciler:
         self._qty_tolerance = max(0.0, qty_tolerance)
         self._skip_rest_poll = skip_rest_poll
         self._task: asyncio.Task[None] | None = None
+
+    def apply_settings(self, settings: Settings) -> None:
+        self._interval = max(5.0, float(settings.reconcile_interval_sec))
+        self._qty_tolerance = max(0.0, settings.reconcile_qty_tolerance)
 
     @classmethod
     def from_settings(
@@ -119,25 +134,18 @@ class Reconciler:
             return
 
         try:
-            balances = await self._gateway.fetch_balances()
+            balances, venue_positions = await self._gateway.fetch_balances_and_positions()
         except Exception as exc:  # noqa: BLE001
-            logger.exception("fetch_balances failed during reconcile")
             backoff = getattr(exc, "retry_after_sec", None)
             if backoff is not None:
-                await asyncio.sleep(min(float(backoff) + 1.0, 86_400.0))
+                sleep_sec = min(float(backoff) + 1.0, 86_400.0)
+                _log_venue_throttle("fetch_balances_and_positions", exc, sleep_sec)
+                await asyncio.sleep(sleep_sec)
                 return
-        else:
-            if balances:
-                self._portfolio.update_balances(balances)
-
-        try:
-            venue_positions = await self._gateway.fetch_positions()
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("fetch_positions failed during reconcile")
-            backoff = getattr(exc, "retry_after_sec", None)
-            if backoff is not None:
-                await asyncio.sleep(min(float(backoff) + 1.0, 86_400.0))
+            logger.exception("fetch_balances_and_positions failed during reconcile")
             return
+        if balances:
+            self._portfolio.update_balances(balances)
 
         venue_by_symbol = {p.symbol: p for p in venue_positions}
         local_by_symbol = {p.symbol: p for p in self._positions.all()}

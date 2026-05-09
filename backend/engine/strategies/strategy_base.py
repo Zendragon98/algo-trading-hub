@@ -14,6 +14,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 
+from common.config import Settings
 from common.types import Signal
 
 from ..market_data.feature_store import Features
@@ -78,3 +79,7 @@ class StrategyBase(ABC):
         symbols regardless.
         """
         return False
+
+    def refresh_settings(self, settings: Settings) -> None:
+        """Apply operator updates after ``PATCH /api/settings`` (default no-op)."""
+        pass

@@ -21,12 +21,13 @@ from pathlib import Path
 import uvicorn
 
 from api.server import create_app
-from common.config import get_settings
+from common.config import get_settings, normalize_strategy_name
 from common.enums import TradingMode
 from common.events import EventBus
 from common.logging import configure_logging
 from engine.core.engine import Engine
 from engine.persistence.event_recorder import EventRecorder, RecorderConfig, make_run_dir
+from engine.strategies.market_making import MarketMakingStrategy
 from engine.strategies.pairs_trading import PairsTradingStrategy
 from engine.strategies.sma_crossover import SmaCrossoverStrategy
 from gateways.binance.rest_client import BinanceRestClient
@@ -156,18 +157,17 @@ async def _run() -> None:
     # them at runtime without a restart. ``settings.strategy`` is just the
     # boot default; the operator picks the active one via the toggle in
     # the Control panel.
-    strategies = [PairsTradingStrategy(settings), SmaCrossoverStrategy(settings)]
+    strategies = [
+        PairsTradingStrategy(settings),
+        SmaCrossoverStrategy(settings),
+        MarketMakingStrategy(settings),
+    ]
     known_names = {s.name for s in strategies}
     # Operators usually write the short alias ("pairs" / "sma") in .env;
     # canonicalise it to the strategy's class-level ``name`` so the engine
     # / API agree on the lookup key.
-    aliases: dict[str, str] = {
-        "pairs": PairsTradingStrategy.name,
-        "pairs_trading": PairsTradingStrategy.name,
-        "sma": SmaCrossoverStrategy.name,
-    }
     raw_default = (settings.strategy or "pairs").strip().lower()
-    boot_default = aliases.get(raw_default, raw_default)
+    boot_default = normalize_strategy_name(raw_default)
     if boot_default not in known_names:
         logger.warning(
             "settings.strategy=%r not in %s; falling back to %s",
@@ -189,6 +189,8 @@ async def _run() -> None:
             strat.attach_weight_provider(lambda: engine.volume_weights)
         if isinstance(strat, SmaCrossoverStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
+        if isinstance(strat, MarketMakingStrategy):
+            strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
 
     autostart = bool(settings.engine_autostart)
     if args.engine:
@@ -205,7 +207,13 @@ async def _run() -> None:
                 await recorder.stop()
             return
 
-    app = create_app(engine, bus, settings)
+    stop_event = asyncio.Event()
+
+    def _request_shutdown() -> None:
+        logger.info("shutdown signal received")
+        stop_event.set()
+
+    app = create_app(engine, bus, settings, request_shutdown=_request_shutdown)
 
     config = uvicorn.Config(
         app=app,
@@ -218,12 +226,6 @@ async def _run() -> None:
     )
     server = uvicorn.Server(config)
     server.install_signal_handlers = lambda: None  # type: ignore[assignment]
-
-    stop_event = asyncio.Event()
-
-    def _request_shutdown() -> None:
-        logger.info("shutdown signal received")
-        stop_event.set()
 
     loop = asyncio.get_running_loop()
     for sig_name in ("SIGINT", "SIGTERM"):

@@ -125,8 +125,8 @@ class GatewayInterface(ABC):
 
         No-op on spot venues, IBKR (where leverage is account-wide), and
         test mocks. The Binance USDT-M Futures adapter overrides this to
-        call ``POST /fapi/v1/leverage`` so the engine's stop-loss-budgeted
-        sizing has enough margin headroom to actually place the order.
+        call ``POST /fapi/v1/leverage`` before the first entry order for a
+        symbol so stop-loss-budgeted sizing has enough margin headroom.
         """
         return None
 
@@ -154,6 +154,18 @@ class GatewayInterface(ABC):
 
         balance = await self.fetch_balance()
         return {get_settings().base_currency.upper(): balance}
+
+    async def fetch_balances_and_positions(
+        self,
+    ) -> tuple[dict[str, float], list[Position]]:
+        """Wallet map + open positions in as few REST calls as the venue allows.
+
+        Default chains ``fetch_balances`` + ``fetch_positions``. Binance USDT-M
+        overrides with one ``GET /fapi/v2/account`` to halve reconcile weight.
+        """
+        balances = await self.fetch_balances()
+        positions = await self.fetch_positions()
+        return balances, positions
 
     async def fetch_24h_volumes(self, symbols: list[str]) -> dict[str, float]:
         """Return 24h notional (quote-asset) volume per symbol.

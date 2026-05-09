@@ -33,15 +33,18 @@ class AccountConnection:
         the wallet as trades settle.
         """
         data = await self._rest.account()
-        assets = data.get("assets", [])
+        return _balances_from_assets(data.get("assets", []))
 
-        out: dict[str, float] = {}
-        for asset in assets:
-            sym = str(asset.get("asset", "")).upper()
-            if not sym:
-                continue
-            out[sym] = _asset_balance(asset)
-        return out
+    async def fetch_balances_and_positions(self) -> tuple[dict[str, float], list[Position]]:
+        """One ``GET /fapi/v2/account`` — balances plus ``positions`` (same payload Binance uses for WS).
+
+        Avoids a second ``GET /positionRisk`` on every reconcile / startup, which
+        cuts REST weight and reduces ``-1003`` throttling under burst load.
+        """
+        data = await self._rest.account()
+        balances = _balances_from_assets(data.get("assets", []))
+        positions = _positions_from_rows(data.get("positions", []))
+        return balances, positions
 
     async def fetch_balance(self) -> float:
         """Return the summed wallet balance used to seed the portfolio.
@@ -63,24 +66,46 @@ class AccountConnection:
 
     async def fetch_positions(self) -> list[Position]:
         rows = await self._rest.position_risk()
-        positions: list[Position] = []
-        for row in rows:
-            qty = float(row.get("positionAmt", 0.0))
-            if qty == 0.0:
-                continue
-            positions.append(
-                Position(
-                    symbol=row["symbol"],
-                    qty=qty,
-                    avg_entry_price=float(row.get("entryPrice", 0.0)),
-                    mark_price=float(row.get("markPrice", 0.0)),
-                    realized_pnl=0.0,  # walletBalance already reflects realized PnL
-                    exchange_unrealized_pnl=float(
-                        row.get("unRealizedProfit", row.get("unrealizedProfit", 0.0)) or 0.0
-                    ),
-                )
-            )
-        return positions
+        return _positions_from_rows(rows)
+
+
+def _balances_from_assets(assets: list) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        sym = str(asset.get("asset", "")).upper()
+        if not sym:
+            continue
+        out[sym] = _asset_balance(asset)
+    return out
+
+
+def _position_from_row(row: dict) -> Position | None:
+    qty = float(row.get("positionAmt", 0.0))
+    if qty == 0.0:
+        return None
+    return Position(
+        symbol=row["symbol"],
+        qty=qty,
+        avg_entry_price=float(row.get("entryPrice", 0.0)),
+        mark_price=float(row.get("markPrice", 0.0)),
+        realized_pnl=0.0,
+        exchange_unrealized_pnl=float(
+            row.get("unRealizedProfit", row.get("unrealizedProfit", 0.0)) or 0.0
+        ),
+    )
+
+
+def _positions_from_rows(rows: list) -> list[Position]:
+    positions: list[Position] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        pos = _position_from_row(row)
+        if pos is not None:
+            positions.append(pos)
+    return positions
 
 
 def _asset_balance(asset: dict) -> float:

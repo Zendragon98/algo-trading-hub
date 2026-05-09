@@ -71,6 +71,15 @@ class VwapExecutor:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._on_parent_done = on_parent_done
 
+    def apply_settings(self, settings: Settings) -> None:
+        """Refresh VWAP schedule defaults for *new* parents (in-flight unchanged)."""
+        self._cfg = ExecutorConfig(
+            duration_sec=settings.vwap_duration_sec,
+            n_slices=settings.vwap_num_slices,
+            slice_timeout_sec=self._cfg.slice_timeout_sec,
+            market_fallback=self._cfg.market_fallback,
+        )
+
     # --- Public ---
 
     async def execute(self, parent: ParentOrder) -> None:

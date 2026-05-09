@@ -21,6 +21,7 @@ from gateways.factory import create_gateway
 
 from .core.engine import Engine
 from .persistence.event_recorder import EventRecorder, RecorderConfig, make_run_dir
+from .strategies.market_making import MarketMakingStrategy
 from .strategies.pairs_trading import PairsTradingStrategy
 from .strategies.sma_crossover import SmaCrossoverStrategy
 
@@ -75,11 +76,33 @@ async def run() -> None:
 
     gateway = create_gateway(settings)
     strategy_name = (settings.strategy or "pairs").strip().lower()
-    if strategy_name == "sma":
-        strategies = [SmaCrossoverStrategy(settings)]
+    aliases = {
+        "pairs": PairsTradingStrategy.name,
+        "pairs_trading": PairsTradingStrategy.name,
+        "sma": SmaCrossoverStrategy.name,
+        "mm": MarketMakingStrategy.name,
+        "market_making": MarketMakingStrategy.name,
+    }
+    boot = aliases.get(strategy_name, strategy_name)
+    all_strategies = [
+        PairsTradingStrategy(settings),
+        SmaCrossoverStrategy(settings),
+        MarketMakingStrategy(settings),
+    ]
+    by_name = {s.name: s for s in all_strategies}
+    if boot in by_name:
+        strategies = [by_name[boot]]
     else:
-        strategies = [PairsTradingStrategy(settings)]
+        strategies = [all_strategies[0]]
+        boot = strategies[0].name
+    settings = settings.model_copy(update={"strategy": boot})
     engine = Engine(settings=settings, bus=bus, gateway=gateway, strategies=strategies)
+
+    for strat in strategies:
+        if isinstance(strat, SmaCrossoverStrategy):
+            strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
+        if isinstance(strat, MarketMakingStrategy):
+            strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
 
     await engine.start()
 

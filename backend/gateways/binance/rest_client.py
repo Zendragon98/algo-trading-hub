@@ -153,15 +153,30 @@ class BinanceRestClient:
         if self._client.is_closed:
             self._client = httpx.AsyncClient(base_url=self._base_url, timeout=self._timeout)
 
+    def _sign_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Attach timestamp + HMAC signature. Must run immediately before HTTP send."""
+        send = dict(params)
+        send.setdefault("recvWindow", 5000)
+        send["timestamp"] = int(time.time() * 1000) + self._time_offset_ms
+        query = urlencode(send, doseq=True)
+        send["signature"] = hmac.new(self._api_secret, query.encode(), hashlib.sha256).hexdigest()
+        return send
+
     async def _execute_rate_limited_request(
         self,
         method: str,
         path: str,
         *,
-        cleaned: dict[str, Any],
+        params: dict[str, Any],
+        signed: bool,
         headers: dict[str, str],
     ) -> httpx.Response:
-        """Single-flight HTTP call: pause window, min spacing, then transport."""
+        """Single-flight HTTP call: pause window, min spacing, then transport.
+
+        Signed requests are HMAC'd here (after any throttle sleep) so the
+        timestamp stays inside Binance ``recvWindow`` even when the queue waits
+        seconds between signing and send (otherwise ``code=-1021``).
+        """
         async with self._gate:
             now = time.time()
             if now < self._pause_until:
@@ -176,9 +191,10 @@ class BinanceRestClient:
                 gap = self._last_send_end_at + self._min_interval_sec - time.time()
                 if gap > 0:
                     await asyncio.sleep(gap)
+            send_params = self._sign_params(params) if signed else params
             self._ensure_open()
             try:
-                return await self._client.request(method, path, params=cleaned, headers=headers)
+                return await self._client.request(method, path, params=send_params, headers=headers)
             finally:
                 self._last_send_end_at = time.time()
 
@@ -342,23 +358,15 @@ class BinanceRestClient:
         key_only: bool,
         _skew_retry: bool = False,
     ) -> Any:
-        # Sort to keep HMAC reproducible across Python versions and dicts.
         cleaned = {k: v for k, v in params.items() if v is not None}
         headers: dict[str, str] = {}
-
-        if signed:
-            cleaned.setdefault("recvWindow", 5000)
-            cleaned["timestamp"] = int(time.time() * 1000) + self._time_offset_ms
-            query = urlencode(cleaned, doseq=True)
-            signature = hmac.new(self._api_secret, query.encode(), hashlib.sha256).hexdigest()
-            cleaned["signature"] = signature
 
         if signed or key_only:
             headers["X-MBX-APIKEY"] = self._api_key
 
         try:
             response = await self._execute_rate_limited_request(
-                method, path, cleaned=cleaned, headers=headers,
+                method, path, params=cleaned, signed=signed, headers=headers,
             )
         except httpx.HTTPError as exc:  # network-level failure
             raise BinanceRestError(0, None, f"transport: {exc}") from exc

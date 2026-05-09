@@ -182,4 +182,25 @@
     50% { opacity: 0.4; }
   }
   .ticker-blink { animation: ticker-blink 1s steps(2) infinite; }
+
+  /** Scroll areas that match the dark terminal palette (not OS default grey/white). */
+  .scrollbar-themed {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) var(--muted);
+  }
+  .scrollbar-themed::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-themed::-webkit-scrollbar-track {
+    border-radius: var(--radius-sm);
+    background: var(--muted);
+  }
+  .scrollbar-themed::-webkit-scrollbar-thumb {
+    border-radius: var(--radius-sm);
+    background: var(--border);
+  }
+  .scrollbar-themed::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklch, var(--muted-foreground) 55%, var(--border));
+  }
 }

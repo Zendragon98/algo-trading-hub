@@ -37,6 +37,10 @@ class ExecutionQualityGuard:
         self._kill_bps = max(0.0, kill_bps)
         self._window = max(1, int(window))
 
+    def apply_settings(self, settings: Settings) -> None:
+        self._kill_bps = max(0.0, settings.exec_quality_kill_bps)
+        self._window = max(1, int(settings.exec_quality_window))
+
     @classmethod
     def from_settings(
         cls,

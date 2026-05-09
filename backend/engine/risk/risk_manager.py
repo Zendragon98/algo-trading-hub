@@ -125,6 +125,13 @@ class RiskManager:
         )
         logger.info("max_risk_pct updated to %.2f", self._limits.max_risk_pct)
 
+    def apply_settings(self, settings: Settings) -> None:
+        """Refresh limits + guards after ``PATCH /api/settings``."""
+        self._settings = settings
+        self._limits = Limits.from_settings(settings)
+        self._md_guard.apply_settings(settings)
+        self._exposure = ExposureTracker.from_settings(settings, self._portfolio)
+
     # --- Pre-trade gate ---
 
     def check(
@@ -158,9 +165,12 @@ class RiskManager:
             return RiskDecision(False, reason="non-positive equity")
 
         # Cap the signal so that the resulting notional is at most
-        # max_risk_pct of equity. If the strategy already requested less
-        # we leave the qty untouched.
+        # max_risk_pct of equity, and not more than remaining headroom under
+        # the per-symbol cap (defaults had max_risk_pct > max_symbol_notional_pct,
+        # which previously scaled to the risk cap then always failed symbol_ok).
         max_notional_per_trade = equity * self._limits.max_risk_pct
+        sym_budget = self._exposure.symbol_additional_budget(signal.symbol)
+        max_notional_per_trade = min(max_notional_per_trade, sym_budget)
         requested_notional = signal.qty * mid_price
         if requested_notional > max_notional_per_trade:
             scaled_qty = max_notional_per_trade / mid_price

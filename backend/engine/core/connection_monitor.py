@@ -43,6 +43,10 @@ class ConnectionMonitor:
         self._stale_threshold = max(0.0, ws_stale_pause_sec)
         self._cooldown_sec = max(0.0, cooldown_sec)
 
+    def apply_settings(self, settings: Settings) -> None:
+        self._stale_threshold = max(0.0, settings.ws_stale_pause_sec)
+        self._cooldown_sec = max(0.0, settings.breaker_minor_cooldown_sec)
+
     @classmethod
     def from_settings(
         cls,

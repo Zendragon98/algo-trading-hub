@@ -47,6 +47,9 @@ class SlippageGuard:
         # additional fills arrive after the breach trips.
         self._aborted: set[str] = set()
 
+    def set_cooldown_sec(self, sec: float) -> None:
+        self._cooldown_sec = max(0.0, sec)
+
     async def on_fill(self, parent_id: str, max_slippage_bps: float) -> None:
         """Check the live execution report after a fill.
 

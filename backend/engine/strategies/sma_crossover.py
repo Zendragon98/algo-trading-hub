@@ -7,6 +7,11 @@ back below we flip short. Each symbol carries its own deque of mids
 and its own cooldown so a flap on BTC never interferes with an ETH
 crossover.
 
+Samples can be either one mid per engine heartbeat (default) or one
+closed bar per ``sma_bar_interval_sec`` (set e.g. to ``300`` for 5m bars
+so windows mean “bars”, not seconds — better when spread must be
+recovered over larger moves).
+
 Sizing is equity-budgeted: each entry risks ``sma_risk_per_trade_pct``
 of equity, sized via the per-leg stop loss (``default_stop_loss_pct``)
 so a stop-out costs the same dollar amount regardless of price level.
@@ -49,6 +54,8 @@ class _SymbolState:
     """Per-symbol rolling buffer + crossover memory."""
 
     mids: deque[float]
+    last_mid_in_bar: float = 0.0
+    bar_bucket: int | None = None
     prev_fast_above: bool | None = None
     # +1 long, -1 short, 0 flat (in *strategy intent* — the actual
     # position can lag pending OMS fills).
@@ -74,6 +81,9 @@ class SmaCrossoverStrategy(StrategyBase):
             raise ValueError("SMA_FAST_WINDOW must be < SMA_SLOW_WINDOW")
 
         self._symbols: list[str] = self._resolve_universe(settings)
+        self._bar_interval_sec = float(settings.sma_bar_interval_sec or 0.0)
+        if self._bar_interval_sec < 0:
+            raise ValueError("SMA_BAR_INTERVAL_SEC must be >= 0")
         # Per-symbol state lazily upgraded through ``_state_for`` so a
         # mid-run universe expansion (settings hot-reload) doesn't lose
         # any existing crossover memory.
@@ -106,6 +116,17 @@ class SmaCrossoverStrategy(StrategyBase):
     def symbols(self) -> list[str]:
         return list(self._symbols)
 
+    def refresh_settings(self, settings: Settings) -> None:
+        self._settings = settings
+        self._fast = int(settings.sma_fast_window)
+        self._slow = int(settings.sma_slow_window)
+        if self._fast <= 0 or self._slow <= 0 or self._fast >= self._slow:
+            raise ValueError("SMA_FAST_WINDOW must be positive and less than SMA_SLOW_WINDOW")
+        self._bar_interval_sec = float(settings.sma_bar_interval_sec or 0.0)
+        if self._bar_interval_sec < 0:
+            raise ValueError("SMA_BAR_INTERVAL_SEC must be >= 0")
+        self._symbols = self._resolve_universe(settings)
+
     def on_tick(self, features: dict[str, Features]) -> Iterable[Signal]:
         now = time.time()
         cooldown = float(self._settings.sma_cooldown_sec)
@@ -119,10 +140,11 @@ class SmaCrossoverStrategy(StrategyBase):
             state = self._state_for(symbol)
 
             if now - state.last_action_ts < cooldown:
-                state.append(mid)
+                self._push_sample(state, mid, now)
                 continue
 
-            state.append(mid)
+            if not self._push_sample(state, mid, now):
+                continue
             if len(state.mids) < self._slow:
                 continue
 
@@ -170,6 +192,35 @@ class SmaCrossoverStrategy(StrategyBase):
         return signals
 
     # --- Internal ---
+
+    def _push_sample(self, state: _SymbolState, mid: float, now: float) -> bool:
+        """Record one SMA observation when due.
+
+        Returns True when ``state.mids`` gained a new sample this call (always
+        True in heartbeat mode; in bar mode only when a bar just closed).
+        """
+        if self._bar_interval_sec <= 0:
+            state.append(mid)
+            return True
+        return self._append_bar_close_if_advanced(state, mid, now)
+
+    def _append_bar_close_if_advanced(self, state: _SymbolState, mid: float, now: float) -> bool:
+        """Append at most one bar close when ``now`` crosses a bar boundary."""
+        interval = self._bar_interval_sec
+        bucket = int(now // interval)
+        if state.bar_bucket is None:
+            state.bar_bucket = bucket
+            state.last_mid_in_bar = mid
+            return False
+        if bucket == state.bar_bucket:
+            state.last_mid_in_bar = mid
+            return False
+        # ``last_mid_in_bar`` still holds the last mid from the bar we are leaving.
+        close_px = state.last_mid_in_bar
+        state.append(close_px)
+        state.bar_bucket = bucket
+        state.last_mid_in_bar = mid
+        return True
 
     def _state_for(self, symbol: str) -> _SymbolState:
         state = self._state.get(symbol)

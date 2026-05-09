@@ -1,9 +1,10 @@
 """Runtime configuration.
 
-Every tunable default lives on `Settings` below. Operators override values
-via `backend/.env` or real environment variables (`pydantic-settings`); the
-`.env.example` file is intentionally minimal — copy it to `.env` and only
-set secrets or knobs you change from defaults.
+Every tunable default lives on `Settings` below — edit this file for risk,
+spread, strategy, and other non-secret defaults. Use `backend/.env` or process
+environment variables only for secrets, URLs, or deployment-specific overrides
+(keys remain overridable via env when needed). The `.env.example` template stays
+minimal (mostly API keys).
 
 Nothing else in the codebase should call `os.getenv` directly; depend on
 `Settings` / `get_settings()` instead.
@@ -53,7 +54,9 @@ class Settings(BaseSettings):
     binance_rest_base: str = "https://testnet.binancefuture.com"
     binance_ws_base: str = "wss://stream.binancefuture.com"
     # Client-side REST pacing + HTTP 429 handling (see BinanceRestClient).
-    binance_rest_min_interval_ms: int = 50
+    # Slightly conservative default to stay under Binance futures REST weight limits
+    # when connect + reconcile + orders share one client.
+    binance_rest_min_interval_ms: int = 100
     binance_rest_429_default_backoff_sec: float = 60.0
     binance_rest_pause_buffer_sec: float = 0.5
 
@@ -74,7 +77,7 @@ class Settings(BaseSettings):
     )
     base_currency: str = "USDT"
     engine_autostart: bool = False
-    # Which strategy set to run. Supported: "pairs" | "sma".
+    # Which strategy set to run. Supported: "pairs" | "sma" | "market_making".
     strategy: str = "pairs"
 
     # --- Risk ---
@@ -93,7 +96,29 @@ class Settings(BaseSettings):
     # --- Failsafes (circuit breakers) ---
     # Pre-trade gates
     max_tick_age_sec: float = 5.0           # stale-tick veto threshold
-    max_entry_spread_bps: float = 25.0      # wide-spread veto threshold
+    max_entry_spread_bps: float = 25.0      # wide-spread veto when spread_dynamic_enabled is False
+    spread_dynamic_enabled: bool = Field(
+        default=True,
+        description="Per-symbol EWMA spread gate; set False to use max_entry_spread_bps only.",
+    )
+    spread_baseline_alpha: float = Field(
+        default=0.06,
+        description="EWMA weight on each new quoted spread sample (MarketDataGuard).",
+    )
+    spread_wide_multiplier: float = Field(
+        default=2.5,
+        description="Veto entry when spread > this × baseline EWMA (before floor/ceiling clamp).",
+    )
+    spread_wide_floor_bps: float = Field(
+        default=8.0,
+        description="Minimum dynamic spread allowance in bps.",
+    )
+    spread_wide_ceiling_bps: float = Field(
+        default=400.0,
+        description="Hard spread veto above this (bps), regardless of EWMA.",
+    )
+    # Per-symbol notional cap (% equity). RiskManager sizes trades to
+    # min(max_risk_pct, remaining headroom here) so this need not equal max_risk_pct.
     max_symbol_notional_pct: float = 0.20   # per-symbol exposure cap
     min_free_margin_pct: float = 0.10       # equity headroom required to enter
     # In-flight execution
@@ -164,8 +189,9 @@ class Settings(BaseSettings):
     balance_resync_sec: int = 0
 
     # --- Futures leverage ---
-    # Applied per symbol via the venue's `set_leverage` hook on engine
-    # start. Leverage doesn't change the dollar-loss-at-stop (that's
+    # Applied per symbol via the venue's `set_leverage` hook lazily before
+    # the first entry order for that symbol (not at engine start). Leverage
+    # doesn't change the dollar-loss-at-stop (that's
     # bounded by `risk_per_trade_pct`); it only relaxes the margin
     # requirement so the stop-loss-sized notional fits in the wallet.
     leverage: int = 10
@@ -193,12 +219,36 @@ class Settings(BaseSettings):
     sma_symbol: str = "BTCUSDT"
     sma_fast_window: int = 10
     sma_slow_window: int = 30
+    # When >0, each SMA sample is one *closed bar* of this length (seconds),
+    # using the last mid seen in that bar as the close — windows are then in
+    # bar count (intraday-style). When 0, one sample per engine heartbeat (~1Hz).
+    sma_bar_interval_sec: float = 0.0
     # Per-symbol equity slice spent on each SMA entry. Default 0.5%.
     # Falls back to ``sma_qty`` when equity is unavailable (e.g. boot
     # before the first ``fetch_balance`` lands).
     sma_risk_per_trade_pct: float = 0.005
     sma_qty: float = 0.001
     sma_cooldown_sec: int = 15
+
+    # --- Market-making tilt strategy (skew + imbalance + tape) ---
+    # MM_SYMBOLS: CSV list; when empty, the first engine `symbols` entry is used.
+    mm_symbols: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # Rolling mean of (micro_price - mid)/mid in bps over this many seconds.
+    mm_skew_window_sec: float = 300.0
+    mm_skew_scale: float = 1.0
+    mm_imbalance_scale: float = 15.0
+    # Count-based tape pressure uses TRADE_TAPE_WINDOW_SEC (default 300s): scale on
+    # (ask_hit_count - bid_hit_count) / total_trades when total >= mm_min_tape_trades.
+    mm_tape_scale: float = 12.0
+    mm_min_tape_trades: int = 5
+    # Composite = skew + imbalance + tape terms; act when |composite| >= this.
+    mm_entry_tilt: float = 8.0
+    # "fade" = buy on very negative composite / sell on very positive; "follow" = opposite mapping.
+    mm_signal_mode: str = "fade"
+    mm_min_samples: int = 5
+    mm_risk_per_trade_pct: float = 0.005
+    mm_qty: float = 0.001
+    mm_cooldown_sec: float = 12.0
 
     # --- API ---
     api_host: str = "127.0.0.1"
@@ -220,7 +270,7 @@ class Settings(BaseSettings):
     log_file_max_bytes: int = 10_000_000  # 10 MB before rotation
     log_file_backup_count: int = 5
 
-    @field_validator("symbols", "sma_symbols", "cors_origins", mode="before")
+    @field_validator("symbols", "sma_symbols", "mm_symbols", "cors_origins", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:
         # pydantic-settings hands us a raw string from the .env file; split
@@ -265,6 +315,20 @@ class Settings(BaseSettings):
         usdc = {s.removesuffix("USDC"): s for s in self.symbols if s.endswith("USDC")}
         bases = sorted(usdt.keys() & usdc.keys())
         return [(usdt[base], usdc[base]) for base in bases]
+
+
+def normalize_strategy_name(value: str) -> str:
+    """Map short aliases to ``StrategyBase.name`` ids (same as ``main.py`` boot logic)."""
+
+    aliases: dict[str, str] = {
+        "pairs": "pairs_trading_usdt_usdc",
+        "pairs_trading": "pairs_trading_usdt_usdc",
+        "sma": "sma_crossover",
+        "mm": "market_making",
+        "market_making": "market_making",
+    }
+    k = (value or "").strip().lower()
+    return aliases.get(k, k)
 
 
 @lru_cache(maxsize=1)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -19,7 +20,7 @@ from common.config import Settings, get_settings
 from common.enums import EventType
 from common.events import EventBus
 
-from .routes import control, execution, klines, logs, orders, positions, status, trades
+from .routes import control, execution, klines, logs, orders, positions, settings, status, trades
 from .schemas import LogDTO
 from .ws import router as ws_router
 
@@ -45,8 +46,14 @@ async def _log_buffer_pump(bus: EventBus) -> None:
             )
 
 
-def create_app(engine, bus: EventBus, settings: Settings | None = None) -> FastAPI:
-    settings = settings or get_settings()
+def create_app(
+    engine,
+    bus: EventBus,
+    app_settings: Settings | None = None,
+    *,
+    request_shutdown: Callable[[], None] | None = None,
+) -> FastAPI:
+    app_settings = app_settings or get_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -71,7 +78,7 @@ def create_app(engine, bus: EventBus, settings: Settings | None = None) -> FastA
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
+        allow_origins=app_settings.cors_origins,
         # Allow local dev frontends (Vite, Storybook, etc.) regardless of port.
         # This also covers cases where the browser reports `localhost` while the
         # API is addressed via `127.0.0.1` (or vice versa).
@@ -83,6 +90,7 @@ def create_app(engine, bus: EventBus, settings: Settings | None = None) -> FastA
 
     app.state.engine = engine
     app.state.bus = bus
+    app.state.request_shutdown = request_shutdown
 
     app.include_router(status.router)
     app.include_router(positions.router)
@@ -92,6 +100,7 @@ def create_app(engine, bus: EventBus, settings: Settings | None = None) -> FastA
     app.include_router(klines.router)
     app.include_router(logs.router)
     app.include_router(control.router)
+    app.include_router(settings.router)
     app.include_router(ws_router)
 
     return app

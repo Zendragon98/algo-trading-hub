@@ -53,6 +53,28 @@ def test_caps_qty_to_max_risk() -> None:
     assert pytest.approx(decision.qty) == 1.0
 
 
+def test_per_symbol_cap_clamps_notional_before_symbol_ok() -> None:
+    """When max_risk_pct exceeds max_symbol_notional_pct, size to the tighter cap.
+
+    Otherwise we scale qty to the risk ceiling then veto every time with
+    symbol_exposure_cap (production SMA logs showed this pattern).
+    """
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        max_risk_pct=0.35,
+        max_symbol_notional_pct=0.20,
+        max_gross_notional=1_000_000.0,
+        max_drawdown_pct=0.05,
+        symbols=["BTCUSDT"],
+    )
+    rm, _ = _build(settings)
+    # Equity=1000, per-symbol cap 20% -> 200 USDT max; risk cap would allow 350.
+    decision = rm.check(Signal(symbol="BTCUSDT", side=Side.BUY, qty=1_000_000.0, reason="test"), mid_price=100.0)
+    assert decision.approved
+    assert pytest.approx(decision.qty) == 2.0  # 200 / 100
+
+
 def test_rejects_when_kill_switch() -> None:
     """Engine-scope MAJOR breach blocks every entry path.
 

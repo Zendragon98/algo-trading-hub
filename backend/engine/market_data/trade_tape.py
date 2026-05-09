@@ -55,6 +55,9 @@ class TradeTape:
         self._tapes: dict[str, deque[TapeTrade]] = {}
         self._sums: dict[str, _RunningSums] = {}
 
+    def set_window_sec(self, window_sec: float) -> None:
+        self._window = max(1.0, float(window_sec))
+
     def record(self, trade: TapeTrade) -> None:
         tape = self._tapes.setdefault(trade.symbol, deque())
         sums = self._sums.setdefault(trade.symbol, _RunningSums())

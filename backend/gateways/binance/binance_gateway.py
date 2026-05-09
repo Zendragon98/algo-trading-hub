@@ -26,7 +26,7 @@ from .leverage_bracket_cache import (
     save_leverage_bracket_cache,
 )
 from .order_connection import OrderConnection
-from .rest_client import BinanceRestClient
+from .rest_client import BinanceRestClient, BinanceRestError
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +163,15 @@ class BinanceGateway(GatewayInterface):
 
     async def set_leverage(self, symbol: str, leverage: int) -> None:
         sym_u = symbol.upper()
+        if sym_u not in self._symbol_filters:
+            # Universe lists (and stale leverage caches) can mention symbols the
+            # USDT-M ``exchangeInfo`` response does not serve — Binance then
+            # returns ``code=-1121`` on POST ``/leverage``.
+            logger.debug(
+                "set_leverage skipped %s: not in exchangeInfo for this REST base",
+                sym_u,
+            )
+            return
         requested = int(leverage)
         cap = self._max_leverage_by_symbol.get(sym_u)
         effective = min(requested, cap) if cap is not None else requested
@@ -181,6 +190,16 @@ class BinanceGateway(GatewayInterface):
                 resp.get("leverage", effective),
                 resp.get("maxNotionalValue", "?"),
             )
+        except BinanceRestError as exc:
+            if exc.code == -1121:
+                logger.warning(
+                    "set_leverage skipped %s: venue reports invalid futures symbol (-1121)",
+                    sym_u,
+                )
+            else:
+                logger.exception(
+                    "set_leverage failed for %s (leverage=%dx)", sym_u, effective
+                )
         except Exception:
             # Don't crash the engine on per-symbol leverage failures (e.g.
             # symbols with open positions reject the change). The engine
@@ -195,6 +214,9 @@ class BinanceGateway(GatewayInterface):
 
     async def fetch_balances(self) -> dict[str, float]:
         return await self._account.fetch_balances()
+
+    async def fetch_balances_and_positions(self) -> tuple[dict[str, float], list[Position]]:
+        return await self._account.fetch_balances_and_positions()
 
     async def fetch_24h_volumes(self, symbols: list[str]) -> dict[str, float]:
         """Pull 24h notional volume per symbol from ``/fapi/v1/ticker/24hr``.

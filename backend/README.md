@@ -214,6 +214,7 @@ The engine never imports a venue. It calls `create_gateway(settings)` from `gate
    | `fetch_positions`        | `list[Position]` snapshot (in `Settings.base_currency`)           |
    | `fetch_balance`          | wallet balance in `Settings.base_currency`                        |
    | `fetch_balances`         | per-asset wallet map (`{"USDT": 100.0, "USDC": 50.0, ...}`); default sums to `fetch_balance` |
+   | `fetch_balances_and_positions` | wallet map + positions in minimal REST calls; default chains `fetch_balances` + `fetch_positions`; Binance uses one `GET /fapi/v2/account` |
    | `fetch_24h_volumes`      | per-symbol 24h notional volume (used by liquidity-weighted strategies); default `{}` |
    | `book_snapshot`          | REST L2 snapshot in `{lastUpdateId, bids, asks}` shape            |
 
@@ -374,11 +375,12 @@ Futures pair-trading needs three things the spot version doesn't:
    (basis divergence in z-space), not a per-leg fixed-% bracket.
 
 2. **Leverage** — `LEVERAGE` is applied per symbol via the gateway's
-   `set_leverage` hook on engine start. Leverage doesn't change the
+   `set_leverage` hook immediately before the first *entry* order for
+   that symbol (reduce-only exits skip it). Leverage doesn't change the
    dollar-loss-at-stop (that's bounded by `RISK_PER_TRADE_PCT`); it
    only relaxes the margin requirement so a stop-loss-sized notional
    actually fits inside the wallet. On Binance USDT-M Futures this
-   issues `POST /fapi/v1/leverage` for every subscribed symbol.
+   issues `POST /fapi/v1/leverage` at most once per traded symbol per session.
 
 3. **Atomic pair submission** — every paired entry/exit emits both
    legs with the same `Signal.group_id`. `Engine._dispatch_group`
@@ -401,7 +403,7 @@ Unlike pairs trading, the SMA strategy does **not** manage its own SL/TP — `ma
 
 ### Risk module — `engine/risk/` + `engine/portfolio/` + `engine/position/`
 
-Pre-trade gate (`RiskManager.check`): caps signal qty at `max_risk_pct` of equity, rejects on `max_gross_notional` breach, returns either an approved (possibly downscaled) qty or a veto with a reason. Additional pre-trade vetoes flow through `MarketDataGuard` (stale tick, wide spread) and `ExposureTracker` (per-symbol notional cap, free-margin floor).
+Pre-trade gate (`RiskManager.check`): caps signal qty at `max_risk_pct` of equity, rejects on `max_gross_notional` breach, returns either an approved (possibly downscaled) qty or a veto with a reason. Additional pre-trade vetoes flow through `MarketDataGuard` (stale tick; wide spread defaults to an EWMA-relative threshold per symbol — tune `spread_*` fields on `Settings` in `common/config.py` — or fixed `max_entry_spread_bps` when `spread_dynamic_enabled` is false) and `ExposureTracker` (per-symbol notional cap, free-margin floor).
 
 Live monitor (`RiskManager.monitor_tick`): per tick, evaluates the position's `StopBracket` (configured from `default_stop_loss_pct` / `default_take_profit_pct`) and emits an `ExitIntent` when the bid/ask crosses a threshold. A drawdown breach trips the kill switch and flattens. A separate high-water-mark drawdown (`hwm_drawdown_kill_pct`) catches the give-back-from-peak scenario the session-start drawdown can miss.
 
@@ -411,7 +413,7 @@ Risk-driven exits (SL, TP, max-drawdown, operator flatten) are submitted with `r
 
 `PositionTracker` folds fills into a per-symbol weighted-entry position, splits realised PnL on partial closes, and handles flips (short → long) cleanly. A venue-side close (`pa==0` row in `ACCOUNT_UPDATE`) pops the symbol so the dashboard never holds a stale long.
 
-`Portfolio` sits on top: cash + positions + equity curve, all read by the dashboard. Cash is held as a per-asset wallet map (`{"USDT": 100.0, "USDC": 50.0, ...}`) so a partial `ACCOUNT_UPDATE` event — Binance only ships the assets that *changed* — merges cleanly without zeroing out unreported wallets. The single-number `cash` view sums the USDT + USDC stablecoin wallets when `BASE_CURRENCY` is one of them. Wallet and position figures are applied live from the user-data WebSocket (`ACCOUNT_UPDATE`). Periodic reconcile uses REST (`GET /account`, `GET /positionRisk`) only when user-data has been idle longer than `RECONCILE_USER_DATA_FRESH_SEC` (or when `RECONCILE_SKIP_REST_WHEN_USER_DATA_FRESH=false`), which matches Binance’s guidance to prefer the stream over polling. Optional `BALANCE_RESYNC_SEC` > 0 adds another GET `/account` loop (default `0`).
+`Portfolio` sits on top: cash + positions + equity curve, all read by the dashboard. Cash is held as a per-asset wallet map (`{"USDT": 100.0, "USDC": 50.0, ...}`) so a partial `ACCOUNT_UPDATE` event — Binance only ships the assets that *changed* — merges cleanly without zeroing out unreported wallets. The single-number `cash` view sums the USDT + USDC stablecoin wallets when `BASE_CURRENCY` is one of them. Wallet and position figures are applied live from the user-data WebSocket (`ACCOUNT_UPDATE`). Periodic reconcile uses REST only when user-data has been idle longer than `RECONCILE_USER_DATA_FRESH_SEC` (or when `RECONCILE_SKIP_REST_WHEN_USER_DATA_FRESH=false`). On Binance USDT-M that is a single `GET /fapi/v2/account` (balances plus embedded `positions`), which matches Binance’s guidance to prefer the stream over polling and halves reconcile weight versus two endpoints. Optional `BALANCE_RESYNC_SEC` > 0 adds another GET `/account` loop (default `0`).
 
 ### Failsafes — circuit-breaker matrix
 
@@ -420,10 +422,10 @@ Every safety trip flows through one shared `CircuitBreaker` (`engine/risk/circui
 | Code | Severity | Scope | Trip on | Action |
 | ---- | -------- | ----- | ------- | ------ |
 | `stale_tick` | minor | symbol | tick age > `MAX_TICK_AGE_SEC` | veto entries; auto-resume |
-| `wide_spread` | minor | symbol | spread bps > `MAX_ENTRY_SPREAD_BPS` | veto entries; auto-resume |
+| `wide_spread` | minor | symbol | spread > dynamic threshold (`SPREAD_WIDE_MULTIPLIER` × per-symbol EWMA, clamped by floor/ceiling) or, if `SPREAD_DYNAMIC_ENABLED=false`, spread > `MAX_ENTRY_SPREAD_BPS` | veto entries; auto-resume |
 | `repeat_reject` | minor | symbol | `MAX_CONSECUTIVE_REJECTS` rejects in a row | pause symbol for `REJECT_COOLDOWN_SEC` |
 | `slippage_breach` | minor | parent | realised vs arrival > `parent.max_slippage_bps` | cancel parent |
-| `stale_market_data` | minor | engine | tick stream silent > `WS_STALE_PAUSE_SEC` | pause new orders |
+| `stale_market_data` | minor | engine | no public WS traffic (bookTicker / depth / aggTrade / `!ticker@arr`) for > `WS_STALE_PAUSE_SEC` | pause new orders |
 | `stale_user_data` | minor | engine | user-data silent > `WS_STALE_PAUSE_SEC` | pause new orders |
 | `max_drawdown` | major | engine | session-start drawdown >= `MAX_DRAWDOWN_PCT` | flatten + latch |
 | `hwm_drawdown` | major | engine | drawdown from peak equity >= `HWM_DRAWDOWN_KILL_PCT` | flatten + latch |
@@ -458,7 +460,7 @@ See `AGENTS.md`. Highlights:
 
 ## Configuration reference
 
-Defaults are defined on the `Settings` class in `common/config.py` (single source of truth). Override via `backend/.env` or environment variables only where needed — `.env.example` is a minimal template, not a full list.
+Defaults are defined on the `Settings` class in `common/config.py` (single source of truth). Prefer editing that file for risk, spread, and strategy knobs; use `backend/.env` or environment variables mainly for secrets and deployment-specific overrides — `.env.example` stays minimal.
 
 Loaded via `pydantic-settings`. Defaults shown below.
 
@@ -471,7 +473,7 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `BINANCE_TESTNET`            | `true`                               | Pin to testnet endpoints |
 | `BINANCE_REST_BASE`          | `https://testnet.binancefuture.com`  | REST host |
 | `BINANCE_WS_BASE`            | `wss://stream.binancefuture.com`     | WS host |
-| `BINANCE_REST_MIN_INTERVAL_MS` | `50`                               | Minimum spacing between REST calls (client-side throttle) |
+| `BINANCE_REST_MIN_INTERVAL_MS` | `100`                              | Minimum spacing between REST calls (client-side throttle) |
 | `BINANCE_REST_429_DEFAULT_BACKOFF_SEC` | `60`                        | HTTP 429 pause when ``Retry-After`` header is absent |
 | `BINANCE_REST_PAUSE_BUFFER_SEC` | `0.5`                           | Extra seconds added to ``Retry-After`` / ban backoff |
 | `IBKR_HOST` / `IBKR_PORT`    | `127.0.0.1` / `7497`                 | TWS / IB Gateway address (7497 paper, 7496 live) |
@@ -482,7 +484,7 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `BASE_CURRENCY`              | `USDT`                               | Equity / PnL denomination (if `USDT`/`USDC`, the engine sums **USDT+USDC** wallets) |
 | `MAX_RISK_PCT`               | `0.35`                               | Per-leg notional ceiling as % of equity (hard cap; UI slider) |
 | `RISK_PER_TRADE_PCT`         | `0.005`                              | Stop-loss-budgeted sizing: equity fraction lost if SL fires |
-| `LEVERAGE`                   | `10`                                 | Futures leverage target per symbol; Binance clamps to each symbol's max (`GET /fapi/v1/leverageBracket` then `POST /fapi/v1/leverage`) |
+| `LEVERAGE`                   | `10`                                 | Futures leverage target per symbol (applied lazily before first entry); Binance clamps to each symbol's max (`GET /fapi/v1/leverageBracket` then `POST /fapi/v1/leverage`) |
 | `LEVERAGE_BRACKET_CACHE_PATH` | `data/cache/binance_leverage_brackets.json` | Backend-relative JSON cache for bracket caps (skip GET after first successful fetch) |
 | `LEVERAGE_BRACKET_CACHE_TTL_SEC` | `0`                               | Seconds before refetching brackets (`0` = only refresh when cache missing or `BINANCE_REST_BASE` changes) |
 | `MAX_GROSS_NOTIONAL`         | `50000`                              | Hard cap on total open notional |
@@ -496,7 +498,8 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `PAIR_VOLUME_REFRESH_SEC`    | `1800`                               | Volume loop period; with WS mode REST only backfills symbols still missing |
 | `BALANCE_RESYNC_SEC`         | `0`                                  | Extra GET `/account` cadence (0 = off; balances still refresh on `RECONCILE_INTERVAL_SEC` + WS) |
 | `SMA_SYMBOLS`                | `AUTO`                               | Universe for the SMA scanner. CSV or `AUTO` to pull every USDT perp; empty falls back to `SMA_SYMBOL` |
-| `SMA_FAST_WINDOW` / `SMA_SLOW_WINDOW` | `10` / `30`                | Fast / slow SMA windows |
+| `SMA_FAST_WINDOW` / `SMA_SLOW_WINDOW` | `10` / `30`                | Fast / slow SMA windows (sample count; see `SMA_BAR_INTERVAL_SEC`) |
+| `SMA_BAR_INTERVAL_SEC`       | `0`                                  | Bar length in seconds for each SMA sample (`0` = one sample per ~1s heartbeat); e.g. `300` = 5m bars |
 | `SMA_RISK_PER_TRADE_PCT`     | `0.005`                              | Equity slice per SMA entry (uses `DEFAULT_STOP_LOSS_PCT` as the sizing denominator) |
 | `SMA_QTY` / `SMA_COOLDOWN_SEC` | `0.001` / `15`                     | Static fallback qty + per-symbol cooldown |
 | `VWAP_DURATION_SEC`          | `60`                                 | Parent-order duration |
@@ -513,7 +516,8 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `LOG_FILE_MAX_BYTES`         | `10000000`                           | Rotate `app.log` at this size |
 | `LOG_FILE_BACKUP_COUNT`      | `5`                                  | Keep N rotated `app.log` backups |
 | `MAX_TICK_AGE_SEC`           | `5.0`                                | Stale-tick veto threshold (per symbol) |
-| `MAX_ENTRY_SPREAD_BPS`       | `25.0`                               | Wide-spread veto threshold (per symbol) |
+| `MAX_ENTRY_SPREAD_BPS`       | `25.0`                               | Wide-spread veto when dynamic spread is off (`spread_dynamic_enabled=false`) |
+| `SPREAD_DYNAMIC_ENABLED` / `SPREAD_BASELINE_ALPHA` / `SPREAD_WIDE_MULTIPLIER` / `SPREAD_WIDE_FLOOR_BPS` / `SPREAD_WIDE_CEILING_BPS` | see `Settings` | EWMA spread gate — **edit defaults in `common/config.py`** |
 | `MAX_SYMBOL_NOTIONAL_PCT`    | `0.20`                               | Per-symbol exposure cap (fraction of equity) |
 | `MIN_FREE_MARGIN_PCT`        | `0.10`                               | Equity headroom required to enter a new position |
 | `MAX_OPEN_PARENTS`           | `8`                                  | Cap on simultaneous in-flight parents |
@@ -527,7 +531,7 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `EXEC_QUALITY_WINDOW`        | `10`                                 | Number of completed parents in the avg |
 | `WS_STALE_PAUSE_SEC`         | `30.0`                               | Auto-pause threshold for WS / user-data silence |
 | `RECONCILE_INTERVAL_SEC`     | `60.0`                               | Reconcile timer; REST snapshot runs only when user-data WS idle (see below) |
-| `RECONCILE_SKIP_REST_WHEN_USER_DATA_FRESH` | `true`                  | Skip GET `/account` + `/positionRisk` while fills / orders / `ACCOUNT_UPDATE` were recent |
+| `RECONCILE_SKIP_REST_WHEN_USER_DATA_FRESH` | `true`                  | Skip account REST snapshot while fills / orders / `ACCOUNT_UPDATE` were recent |
 | `RECONCILE_USER_DATA_FRESH_SEC` | `120.0`                           | Max age (seconds) for last user-data activity to treat WS as authoritative |
 | `RECONCILE_QTY_TOLERANCE`    | `1e-6`                               | Qty mismatch above this trips MAJOR `reconcile_mismatch` |
 | `FLATTEN_ON_STOP`            | `true`                               | Market-out residuals before `engine.stop()` disconnects |
@@ -584,10 +588,13 @@ All payloads use the same field names as `src/components/algo/types.ts` so the f
 | POST   | `/api/control/start`       |                     | new `StatusDTO`                      |
 | POST   | `/api/control/pause`       |                     | new `StatusDTO`                      |
 | POST   | `/api/control/resume`      |                     | new `StatusDTO`                      |
-| POST   | `/api/control/stop`        |                     | new `StatusDTO`                      |
+| POST   | `/api/control/stop`        |                     | new `StatusDTO` (halts engine; API keeps running) |
+| POST   | `/api/control/shutdown`    |                     | new `StatusDTO` (exit process; only when `create_app` is wired with `request_shutdown`, e.g. `main.py`) |
 | POST   | `/api/control/flatten`     |                     | new `StatusDTO`                      |
 | POST   | `/api/control/strategy`    | `{name}`            | Hot-swap the active strategy (400 on unknown name) |
 | PATCH  | `/api/control/risk`        | `{max_risk_pct}`    | new `StatusDTO`                      |
+| GET    | `/api/settings`            |                     | `{ settings: <full Settings JSON, secrets masked> }` |
+| PATCH  | `/api/settings`            | partial fields      | `{ ok: true, settings: ... }` merge into live runtime config |
 | WS     | `/ws`                      |                     | stream of `{type, ts, data}` events  |
 
 WebSocket event types: `tick`, `fill`, `order`, `parent`, `execution`, `position`, `equity`, `log`, `status`. `parent` is emitted on every child fill of an in-flight VWAP; `execution` is the post-trade report when a parent completes. The dashboard hook in `src/hooks/useAlgoStream.ts` is the canonical consumer.

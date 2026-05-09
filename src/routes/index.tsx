@@ -30,6 +30,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { EquityChart } from "@/components/algo/EquityChart";
 import { PositionChartDialog } from "@/components/algo/PositionChartDialog";
+import { SettingsDialog } from "@/components/algo/SettingsDialog";
 import type {
   AlgoStatus,
   ExecutionAggregate,
@@ -75,6 +76,7 @@ function Index() {
   const [risk, setRisk] = useState<number[]>([35]);
   const [autoCompound, setAutoCompound] = useState(true);
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const totalEquity = equity.length ? equity[equity.length - 1] : 0;
   const startEquity = equity.length ? equity[0] : 0;
@@ -108,6 +110,7 @@ function Index() {
   const onStart = () => handleControl(api.start);
   const onPause = () => handleControl(api.pause);
   const onStop = () => handleControl(api.stop);
+  const onKill = () => handleControl(api.shutdown);
   const onFlatten = () => handleControl(api.flatten);
 
   // Push the slider's percentage (0-100) to the engine as a fraction.
@@ -136,8 +139,9 @@ function Index() {
         strategy={strategy}
         onStart={onStart}
         onPause={onPause}
-        onStop={onStop}
+        onKill={onKill}
         onFlatten={onFlatten}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       <main className="mx-auto max-w-[1500px] px-4 pb-10 pt-6 lg:px-8">
@@ -272,6 +276,14 @@ function Index() {
               >
                 <AlertTriangle className="size-4" /> Flatten all positions
               </Button>
+
+              <Button
+                variant="outline"
+                className="w-full md:hidden"
+                onClick={() => setSettingsOpen(true)}
+              >
+                <Settings2 className="size-4" /> Engine settings
+              </Button>
             </div>
           </Panel>
         </section>
@@ -339,6 +351,13 @@ function Index() {
         open={chartSymbol !== null}
         onOpenChange={(o) => !o && setChartSymbol(null)}
       />
+
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        onSaved={() => void live.refresh()}
+        activeStrategyLabel={strategy?.label ?? null}
+      />
     </div>
   );
 }
@@ -352,8 +371,9 @@ function TopBar(props: {
   strategy: StrategyInfo | null;
   onStart: () => void;
   onPause: () => void;
-  onStop: () => void;
+  onKill: () => void;
   onFlatten: () => void;
+  onOpenSettings?: () => void;
 }) {
   const { status, uptimeSec, paperMode, strategy } = props;
   const statusMeta = {
@@ -406,6 +426,11 @@ function TopBar(props: {
         </div>
 
         <div className="hidden items-center gap-2 md:flex">
+          {props.onOpenSettings && (
+            <Button size="sm" variant="outline" onClick={props.onOpenSettings} className="border-border">
+              <Settings2 className="size-4" /> Settings
+            </Button>
+          )}
           <Button size="sm" variant="ghost" onClick={props.onPause} disabled={status !== "running"}>
             <Pause className="size-4" />
           </Button>
@@ -417,7 +442,7 @@ function TopBar(props: {
           >
             <Play className="size-4" /> Start
           </Button>
-          <Button size="sm" variant="destructive" onClick={props.onStop} disabled={status === "stopped"}>
+          <Button size="sm" variant="destructive" onClick={props.onKill} disabled={status === "stopped"}>
             <Power className="size-4" /> Kill
           </Button>
         </div>

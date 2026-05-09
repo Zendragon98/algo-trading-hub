@@ -71,6 +71,10 @@ class LossTracker:
         self._seen_trade_ids: set[str] = set()
         self._current_streak: int = 0
 
+    def apply_settings(self, settings: Settings) -> None:
+        self._daily_kill = max(0.0, settings.daily_loss_kill_pct)
+        self._max_streak = max(0, int(settings.max_consecutive_losses))
+
     @classmethod
     def from_settings(
         cls,
