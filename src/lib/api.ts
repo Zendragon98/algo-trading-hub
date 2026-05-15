@@ -131,6 +131,19 @@ export type StrategyInfoDTO = {
   active: boolean;
 };
 
+export type TradeDTO = {
+  id: string;
+  ts: string;
+  symbol: string;
+  side: "buy" | "sell";
+  qty: number;
+  price: number;
+  action?: "open" | "close";
+  entry_price?: number | null;
+  exit_price?: number | null;
+  pnl?: number | null;
+};
+
 export type KlineDTO = {
   open_time: number;
   open: number;
@@ -171,7 +184,7 @@ export type StateDTO = {
   kpi: KpiDTO;
   equity: EquityDTO;
   positions: Position[];
-  trades: Trade[];
+  trades: TradeDTO[];
   orders: OrdersDTO;
   execution: ExecutionStatsDTO;
   system_health?: SystemHealthDTO | null;
@@ -289,7 +302,7 @@ export const api = {
   status: () => request<StatusDTO>("/api/status"),
   equity: () => request<EquityDTO>("/api/equity"),
   positions: () => request<Position[]>("/api/positions"),
-  trades: (limit = 40) => request<Trade[]>(`/api/trades?limit=${limit}`),
+  trades: (limit = 40) => request<TradeDTO[]>(`/api/trades?limit=${limit}`),
   logs: (limit = 60) => request<LogEntry[]>(`/api/logs?limit=${limit}`),
   orders: () => request<OrdersDTO>("/api/orders"),
   execution: () => request<ExecutionStatsDTO>("/api/execution"),
@@ -330,6 +343,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  tripBreakers: (body: { detail?: string; flatten?: boolean; pause?: boolean } = {}) =>
+    request<BreakerListDTO>("/api/control/breakers/trip", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 export type WsEvent =
@@ -337,13 +355,10 @@ export type WsEvent =
   | {
       type: "fill";
       ts: number;
-      data: {
+      data: TradeDTO & {
         child_id: string;
         parent_id: string | null;
-        symbol: string;
-        side: "buy" | "sell";
-        qty: number;
-        price: number;
+        trade_id?: string | null;
         venue_price: number;
         impact_bps: number;
       };
@@ -410,6 +425,22 @@ export function toExecutionAggregate(d: ExecutionAggregateDTO): ExecutionAggrega
 
 export function toStrategyInfo(d: StrategyInfoDTO): StrategyInfo {
   return { name: d.name, label: d.label, description: d.description, active: d.active };
+}
+
+export function toTrade(d: TradeDTO): Trade {
+  const action = d.action ?? (d.exit_price != null ? "close" : "open");
+  return {
+    id: d.id,
+    ts: d.ts,
+    symbol: d.symbol,
+    side: d.side,
+    qty: d.qty,
+    price: d.price,
+    action,
+    entryPrice: d.entry_price ?? d.price,
+    exitPrice: d.exit_price,
+    pnl: d.pnl,
+  };
 }
 
 export function toBreakerStatus(d: BreakerStatusDTO): import("@/components/algo/types").BreakerStatus {

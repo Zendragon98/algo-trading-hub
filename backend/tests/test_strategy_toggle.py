@@ -123,6 +123,14 @@ def test_set_active_strategy_rejects_unknown_name() -> None:
         engine.set_active_strategy("does-not-exist")
 
 
+def test_set_active_strategy_accepts_all_mode() -> None:
+    pairs = _StubStrategy("pairs", "BTCUSDC", manages_risk=True)
+    sma = _StubStrategy("sma", "ETHUSDT", manages_risk=False)
+    engine = _engine_with([pairs, sma])
+    engine.set_active_strategy("all")
+    assert engine.is_multi_strategy_mode()
+
+
 def test_unknown_boot_strategy_falls_back_to_first() -> None:
     """``settings.strategy`` not in registered names => first strategy wins."""
     pairs = _StubStrategy("pairs", "BTCUSDC", manages_risk=True)

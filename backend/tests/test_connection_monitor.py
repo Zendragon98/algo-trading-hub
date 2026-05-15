@@ -47,6 +47,20 @@ def test_zero_user_data_ts_does_not_trip() -> None:
     assert not breaker.is_blocked(BreakerScope.ENGINE)
 
 
+def test_idle_account_skips_user_data_stale_check() -> None:
+    breaker = CircuitBreaker()
+    cm = ConnectionMonitor(breaker=breaker, ws_stale_pause_sec=2.0, cooldown_sec=10.0)
+    now = time.time()
+    cm.evaluate(
+        now=now,
+        last_tick_ts=now - 0.5,
+        last_user_data_ts=now - 60.0,
+        engine_running=True,
+        check_user_data_stale=False,
+    )
+    assert not breaker.is_blocked(BreakerScope.ENGINE)
+
+
 def test_paused_engine_skips_evaluation() -> None:
     breaker = CircuitBreaker()
     cm = ConnectionMonitor(breaker=breaker, ws_stale_pause_sec=1.0, cooldown_sec=10.0)

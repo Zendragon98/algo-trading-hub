@@ -1,0 +1,22 @@
+%% System context — venue, backend process, browser
+flowchart LR
+    subgraph Venue
+        BN[Binance Futures<br/>WS + REST]
+        IB[IBKR TWS<br/>skeleton]
+    end
+
+    subgraph Backend["backend/ single asyncio process"]
+        GW[gateways/]
+        ENG[engine/]
+        API[api/ FastAPI]
+        GW <--> ENG
+        ENG --> API
+    end
+
+    subgraph Browser
+        UI[React console]
+    end
+
+    BN <--> GW
+    IB -.-> GW
+    API <--> UI

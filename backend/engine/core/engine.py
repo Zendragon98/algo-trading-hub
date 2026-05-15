@@ -39,10 +39,12 @@ from ..execution.vwap_executor import VwapExecutor
 from ..market_data.feature_store import FeatureStore
 from ..market_data.orderbook import OrderBookStore
 from ..market_data.trade_tape import TradeTape
-from ..orders.order_manager import OrderManager
+from ..orders.order_manager import OrderManager, _fill_to_dict
+from ..performance.fill_classification import classify_fill
 from ..performance.performance_tracker import PerformanceTracker
 from ..portfolio.portfolio import Portfolio
 from ..position.position_tracker import PositionTracker
+from ..position.strategy_ledger import StrategyPositionLedger
 from ..risk.circuit_breaker import (
     Breach,
     BreakerScope,
@@ -61,6 +63,7 @@ from ..risk.pretrade_validator import PreTradeValidator
 from ..risk.risk_manager import ExitIntent, RiskManager
 from ..risk.stop_loss import StopLossMonitor
 from ..risk.venue_sizing import venue_min_qty
+from ..strategies.signal_netter import NettedSignal, net_strategy_signals
 from ..strategies.strategy_base import StrategyBase
 from ..persistence.journal import replay_wal_async
 from .clock import Clock
@@ -99,6 +102,10 @@ def _venue_symbol_list(candidates: Iterable[str], fallback: Iterable[str]) -> li
     return got if got else ["BTCUSDT"]
 
 
+# Hot-swap / boot mode: run every registered strategy with internal netting.
+ALL_STRATEGIES_MODE = "all"
+
+
 class Engine:
     """The entire trading stack as one object."""
 
@@ -122,10 +129,19 @@ class Engine:
         # set, else the first strategy. The dashboard hot-swap calls
         # ``set_active_strategy`` to change this without re-creating the
         # engine.
-        default_name = settings.strategy if settings.strategy in self._strategies_by_name else (
-            strategies[0].name if strategies else ""
-        )
+        boot = normalize_strategy_name(settings.strategy)
+        if boot == ALL_STRATEGIES_MODE:
+            default_name = ALL_STRATEGIES_MODE
+        elif boot in self._strategies_by_name:
+            default_name = boot
+        else:
+            default_name = strategies[0].name if strategies else ""
         self._active_strategy_name: str = default_name
+        self._strategy_ledger = StrategyPositionLedger()
+        # parent_id -> strategy -> symbol -> signed intended delta (multi-mode fills)
+        self._parent_attribution: dict[str, dict[str, dict[str, float]]] = {}
+        self._parent_filled_qty: dict[str, float] = {}
+        self._parent_ledger_applied_fraction: dict[str, float] = {}
         self._state = EngineState()
 
         # All symbols any strategy cares about — that's what we subscribe to.
@@ -192,6 +208,7 @@ class Engine:
             portfolio=self._portfolio,
             positions=self._positions,
         )
+        self._executor.set_limit_collar_check(self._pretrade.check_limit_collar)
         self._latency = LatencyTracker(bus=bus)
         self._alerts = AlertManager(
             bus=bus,
@@ -204,6 +221,8 @@ class Engine:
             crossed_book_breaker=settings.md_crossed_book_breaker,
         )
         self._md_bootstrap_done = False
+        self._book_snapshot_sem = asyncio.Semaphore(8)
+        self._resnapshot_inflight: set[str] = set()
         self._clock_skew_ms: float = 0.0
         self._router = ExecutionRouter(
             wheel=self._wheel,
@@ -328,26 +347,53 @@ class Engine:
         """Name of the strategy currently emitting signals (``""`` if none)."""
         return self._active_strategy_name
 
-    def set_active_strategy(self, name: str) -> None:
-        """Hot-swap the active strategy.
+    @property
+    def strategy_ledger(self) -> StrategyPositionLedger:
+        return self._strategy_ledger
 
-        ``name`` must be one of the strategies the engine was constructed
-        with (``__init__`` registers each by ``strategy.name``). Raises
-        ``ValueError`` for unknown names so the API layer can surface a
-        400 to the dashboard. Updates the StopLossMonitor's
-        externally-managed set so only the active strategy's coins skip
-        the per-leg SL/TP bracket.
+    def is_multi_strategy_mode(self) -> bool:
+        return self._active_strategy_name == ALL_STRATEGIES_MODE
+
+    def set_active_strategy(self, name: str) -> None:
+        """Hot-swap the active strategy or enable multi-strategy netting.
+
+        ``name`` must be a registered ``strategy.name`` or ``"all"`` to run
+        every strategy with internal position netting. Raises ``ValueError``
+        for unknown names so the API layer can surface a 400 to the dashboard.
         """
-        normalised = (name or "").strip()
-        if normalised not in self._strategies_by_name:
-            available = ", ".join(sorted(self._strategies_by_name)) or "<none>"
+        raw = (name or "").strip()
+        alias = normalize_strategy_name(raw)
+        if alias == ALL_STRATEGIES_MODE:
+            normalised = ALL_STRATEGIES_MODE
+        elif raw in self._strategies_by_name:
+            normalised = raw
+        elif alias in self._strategies_by_name:
+            normalised = alias
+        else:
+            known = set(self._strategies_by_name) | {ALL_STRATEGIES_MODE}
+            available = ", ".join(sorted(known)) or "<none>"
             raise ValueError(f"unknown strategy {name!r}; available: {available}")
         if normalised == self._active_strategy_name:
             return
         previous = self._active_strategy_name
         self._active_strategy_name = normalised
         self._stop_monitor.set_externally_managed(self._compute_externally_managed())
-        logger.info("strategy hot-swap: %s -> %s", previous or "<none>", normalised)
+        if normalised == ALL_STRATEGIES_MODE:
+            sym_n = len(self._symbols)
+            logger.info(
+                "strategy hot-swap: %s -> all (netted, %d symbols)",
+                previous or "<none>",
+                sym_n,
+            )
+            return
+        active = self._strategies_by_name.get(normalised)
+        sym_n = len(active.symbols()) if active is not None else 0
+        logger.info(
+            "strategy hot-swap: %s -> %s (%d symbols)",
+            previous or "<none>",
+            normalised,
+            sym_n,
+        )
 
     def apply_settings_patch(self, patch: dict[str, Any]) -> Settings:
         """Merge ``patch`` into runtime ``Settings`` and refresh subsystems.
@@ -391,12 +437,17 @@ class Engine:
             strat.refresh_settings(s)
 
     def _compute_externally_managed(self) -> set[str]:
-        """Return the set of symbols whose risk the active strategy owns.
+        """Return symbols whose per-leg SL/TP bracket is suppressed.
 
-        Idle strategies always return an empty set so their coins fall
-        back to the engine's per-leg SL/TP bracket the moment they are
-        deactivated.
+        In multi-strategy mode every strategy that ``manages_own_risk()``
+        contributes its symbols to the externally-managed set.
         """
+        if self.is_multi_strategy_mode():
+            managed: set[str] = set()
+            for strat in self._strategies:
+                if strat.manages_own_risk():
+                    managed.update(strat.symbols())
+            return managed
         active = self._strategies_by_name.get(self._active_strategy_name)
         if active is None or not active.manages_own_risk():
             return set()
@@ -451,9 +502,9 @@ class Engine:
                 )
             )
 
-        # Seed L2 books over REST before the public WS so the first depth diff
-        # does not race a half-built book (avoids startup sequence-gap storms).
-        await self._resync_symbol_books(self._symbols, reason="startup")
+        # REST snapshots before WS: a single pass keeps lastUpdateId fresh; avoid
+        # subscribing first (18s of parallel snapshots would stale early symbols).
+        await self._bootstrap_order_books()
 
         # Public market WebSocket: ``bookTicker`` for mids, depth for L2,
         # ``!ticker@arr`` for rolling 24h volumes (avoids REST ``/ticker/24hr``).
@@ -465,9 +516,6 @@ class Engine:
             on_quote_volume_24h=self._on_quote_volume_24h,
             on_reconnect=self._on_market_ws_reconnect,
         )
-
-        # REST-sync every L2 book before applying depth diffs (avoids million-id gaps).
-        await self._bootstrap_order_books()
         self._md_bootstrap_done = True
 
         # Prime mids from WS where possible; REST ``/depth`` only for stragglers.
@@ -477,9 +525,6 @@ class Engine:
         balances, positions = await self._gateway.fetch_balances_and_positions()
         self._portfolio.seed_balances(balances)
         self._positions.seed(positions)
-        self._oms.touch_user_data_activity()
-        # REST account snapshot is fresh account state even before user-data WS events.
-        self._oms.touch_user_data_activity()
 
         if getattr(self._settings, "order_reconcile_on_startup", True):
             await self._order_reconciler.sync_startup()
@@ -522,24 +567,7 @@ class Engine:
 
     async def _bootstrap_order_books(self) -> None:
         """REST snapshot every symbol's L2 book before the depth stream is applied."""
-        if not self._symbols:
-            return
-        sem = asyncio.Semaphore(8)
-
-        async def _one(symbol: str) -> None:
-            async with sem:
-                await self._snapshot_book(symbol)
-
-        results = await asyncio.gather(
-            *(_one(sym) for sym in self._symbols), return_exceptions=True,
-        )
-        failures = sum(1 for r in results if isinstance(r, Exception))
-        logger.info(
-            "order book bootstrap: %d/%d symbols synced (failed=%d)",
-            len(self._symbols) - failures,
-            len(self._symbols),
-            failures,
-        )
+        await self._resync_symbol_books(self._symbols, reason="startup", invalidate=False)
 
     async def _prime_symbol_prices(self) -> None:
         """Seed mids from ``bookTicker`` WS when possible; REST ``/depth`` for stragglers."""
@@ -760,6 +788,29 @@ class Engine:
             len(volumes), top_str,
         )
 
+    def _touch_symbol_from_book(self, symbol: str, book) -> None:
+        """Keep per-symbol tick timestamps fresh when only depth (not bookTicker) updates."""
+        mid = book.mid()
+        if mid is None or mid <= 0:
+            return
+        bb = book.best_bid()
+        ba = book.best_ask()
+        recv_ts = time.time()
+        self._latest_tick[symbol] = Tick(
+            symbol=symbol,
+            bid=bb if bb is not None else mid,
+            ask=ba if ba is not None else mid,
+            ts=recv_ts,
+        )
+
+    def _refresh_ticks_from_books(self, symbols: Iterable[str]) -> None:
+        """Refresh tick receive times from ready L2 books (see _on_tick comment)."""
+        for sym in symbols:
+            book = self._books.get(sym)
+            if book is None or not book.ready():
+                continue
+            self._touch_symbol_from_book(sym, book)
+
     async def flatten(self) -> None:
         """Cancel working orders + market-out all positions."""
         logger.warning("flattening all positions")
@@ -769,16 +820,48 @@ class Engine:
             logger.exception("venue cancel_all_open_orders failed during flatten")
         await self._oms.cancel_all()
         for position in list(self._positions.all()):
-            if position.qty == 0:
+            if abs(position.qty) <= 0:
                 continue
             side = Side.SELL if position.qty > 0 else Side.BUY
-            await self._router.submit(
-                symbol=position.symbol,
-                side=side,
-                qty=abs(position.qty),
-                notes="operator flatten",
-                reduce_only=True,
+            await self._dispatch_single(
+                Signal(
+                    symbol=position.symbol,
+                    side=side,
+                    qty=abs(position.qty),
+                    reason="flatten",
+                    reduce_only=True,
+                )
             )
+
+    async def operator_halt(
+        self,
+        *,
+        detail: str = "",
+        flatten: bool = True,
+        pause: bool = True,
+    ) -> None:
+        """Operator trading halt: latch a MAJOR engine breaker and flatten."""
+        logger.error("operator halt requested%s", f": {detail}" if detail else "")
+        self._breaker.trip(
+            Breach(
+                code="operator_halt",
+                scope=BreakerScope.ENGINE,
+                severity=BreakerSeverity.MAJOR,
+                detail=detail or "operator_halt",
+            )
+        )
+        if flatten:
+            self._auto_flatten_in_progress = True
+            try:
+                try:
+                    await self._gateway.cancel_all_open_orders()
+                except Exception:  # noqa: BLE001
+                    logger.exception("venue cancel_all before operator halt failed")
+                await self.flatten()
+            except Exception:  # noqa: BLE001
+                logger.exception("operator halt flatten failed")
+        if pause:
+            await self.pause()
 
     # --- Market data callbacks ---
 
@@ -828,7 +911,13 @@ class Engine:
         if action is DiffAction.RESNAPSHOT:
             if gap > 0:
                 self._md_quality.record_gap(diff.symbol, gap)
-            await self._snapshot_book(diff.symbol)
+            sym = diff.symbol
+            if sym not in self._resnapshot_inflight:
+                self._resnapshot_inflight.add(sym)
+                try:
+                    await self._snapshot_book(sym)
+                finally:
+                    self._resnapshot_inflight.discard(sym)
             action, gap = self._md_quality.assess(
                 diff,
                 book_ready=book.ready(),
@@ -842,23 +931,29 @@ class Engine:
         self._md_quality.on_applied(
             diff, best_bid=book.best_bid(), best_ask=book.best_ask(),
         )
+        self._touch_symbol_from_book(diff.symbol, book)
 
     async def _on_market_ws_reconnect(self, symbols: list[str]) -> None:
         """REST-resync L2 books after a public market WebSocket reconnect."""
         await self._resync_symbol_books(symbols, reason="reconnect")
 
-    async def _resync_symbol_books(self, symbols: list[str], *, reason: str) -> None:
+    async def _resync_symbol_books(
+        self,
+        symbols: list[str],
+        *,
+        reason: str,
+        invalidate: bool = True,
+    ) -> None:
         if not symbols:
             return
         logger.info("%s: resyncing %d symbol L2 book(s)", reason, len(symbols))
-        self._md_quality.invalidate(symbols)
-        for sym in symbols:
-            self._books.get(sym).invalidate()
-        sem = asyncio.Semaphore(8)
+        if invalidate:
+            self._md_quality.invalidate(symbols)
+            for sym in symbols:
+                self._books.get(sym).invalidate()
 
         async def _one(symbol: str) -> None:
-            async with sem:
-                await self._snapshot_book(symbol)
+            await self._snapshot_book(symbol)
 
         results = await asyncio.gather(*(_one(s) for s in symbols), return_exceptions=True)
         failures = sum(1 for r in results if isinstance(r, Exception))
@@ -894,11 +989,28 @@ class Engine:
 
         if not await self._oms.on_fill(fill):
             return
-        await self._positions.on_fill(fill)
+        pre_position = self._positions.get(fill.symbol)
+        classification = classify_fill(pre_position, fill)
+        # Binance ACCOUNT_UPDATE already carries authoritative ``pa``; applying
+        # the same ORDER_TRADE_UPDATE fill doubles qty when events arrive out
+        # of order (ACCOUNT_UPDATE first — observed on CRVUSDC).
+        if not self._positions_from_account_updates():
+            await self._positions.on_fill(fill)
         position = self._positions.get(fill.symbol) or Position(symbol=fill.symbol)
         self._risk.on_fill(fill, position)
-        # Prefer exchange-reported realized PnL per fill when available (Binance `rp`).
-        self._performance.record_fill(fill, realized_pnl=fill.realized_pnl)
+        record = self._performance.record_fill(fill, classification)
+        await self._bus.publish(
+            Event(
+                type=EventType.FILL,
+                payload={
+                    **_fill_to_dict(fill),
+                    "action": record.action,
+                    "entry_price": record.entry_price,
+                    "exit_price": record.exit_price,
+                    "pnl": record.pnl,
+                },
+            )
+        )
         if fill.parent_id:
             await self._exec_tracker.on_fill(
                 parent_id=fill.parent_id,
@@ -915,15 +1027,70 @@ class Engine:
                 await self._slippage_guard.on_fill(
                     fill.parent_id, parent.max_slippage_bps,
                 )
+        self._notify_strategies_on_fill(fill)
+
+    def _notify_strategies_on_fill(self, fill: Fill) -> None:
+        parent_id = fill.parent_id or ""
+        parent = self._oms.parent(parent_id) if parent_id else None
+        attr = self._parent_attribution.get(parent_id) if parent_id else None
+
+        if self.is_multi_strategy_mode() and attr:
+            self._apply_attributed_fill(fill, parent_id, attr, parent)
+            return
+
+        strategy_name = parent.strategy_name if parent else ""
+        if (
+            self.is_multi_strategy_mode()
+            and strategy_name
+            and strategy_name in self._strategies_by_name
+        ):
+            self._strategy_ledger.apply_fill(strategy_name, fill.symbol, fill.side, fill.qty)
+            self._call_strategy_on_fill(strategy_name, fill)
+            return
+
         active = self._strategies_by_name.get(self._active_strategy_name)
         if active is not None:
-            try:
-                active.on_fill(fill.symbol, fill.qty, fill.side.value)
-            except Exception:  # noqa: BLE001
-                logger.exception("strategy %s on_fill raised", active.name)
+            self._call_strategy_on_fill(active.name, fill)
+
+    def _apply_attributed_fill(
+        self,
+        fill: Fill,
+        parent_id: str,
+        attr: dict[str, dict[str, float]],
+        parent: ParentOrder | None,
+    ) -> None:
+        parent_qty = parent.qty if parent is not None and parent.qty > 0 else fill.qty
+        cumulative = self._parent_filled_qty.get(parent_id, 0.0) + fill.qty
+        self._parent_filled_qty[parent_id] = cumulative
+        fill_fraction = min(1.0, cumulative / parent_qty) if parent_qty > 0 else 1.0
+        prev = self._parent_ledger_applied_fraction.get(parent_id, 0.0)
+        delta_fraction = fill_fraction - prev
+        self._parent_ledger_applied_fraction[parent_id] = fill_fraction
+
+        sym = fill.symbol.upper()
+        for strat, sym_deltas in attr.items():
+            intended = sym_deltas.get(sym, 0.0)
+            if abs(intended) < 1e-12:
+                continue
+            self._strategy_ledger.apply_delta(strat, sym, intended * delta_fraction)
+            self._call_strategy_on_fill(strat, fill)
+
+        if fill_fraction >= 1.0:
+            self._parent_attribution.pop(parent_id, None)
+            self._parent_filled_qty.pop(parent_id, None)
+            self._parent_ledger_applied_fraction.pop(parent_id, None)
+
+    def _call_strategy_on_fill(self, strategy_name: str, fill: Fill) -> None:
+        strat = self._strategies_by_name.get(strategy_name)
+        if strat is None:
+            return
+        try:
+            strat.on_fill(fill.symbol, fill.qty, fill.side.value)
+        except Exception:  # noqa: BLE001
+            logger.exception("strategy %s on_fill raised", strategy_name)
 
     async def _on_user_ws_connected(self) -> None:
-        self._oms.touch_user_data_activity()
+        """User-data WS is up; freshness is tracked on real ACCOUNT_UPDATE / fills."""
 
     async def _on_account_update(self, update: dict) -> None:
         """Apply exchange-reported wallet + position state.
@@ -954,6 +1121,12 @@ class Engine:
             return False
         return (time.time() - ts) < float(self._settings.reconcile_user_data_fresh_sec)
 
+    def _positions_from_account_updates(self) -> bool:
+        """True when venue user-data ACCOUNT_UPDATE drives position qty."""
+        if self._settings.venue != "binance":
+            return False
+        return self._user_data_fresh()
+
     async def _on_clock_tick(self) -> None:
         await self._portfolio.mark_to_market(use_mark_pnl=not self._user_data_fresh())
         # Refresh portfolio guards before the breaker advances so a
@@ -961,11 +1134,13 @@ class Engine:
         self._pnl.update()
         self._loss_tracker.update()
         self._exec_quality_guard.evaluate()
+        has_working_orders = any(True for _ in self._oms.working_children())
         self._connection_monitor.evaluate(
             now=time.time(),
             last_tick_ts=self._state.last_tick_ts,
             last_user_data_ts=self._oms.last_user_data_ts,
             engine_running=self._state.status is EngineStatus.RUNNING,
+            check_user_data_stale=has_working_orders,
         )
         # Advance the circuit-breaker so cooled-down minor breaches return
         # to ARMED. Runs even when paused so the engine can auto-resume
@@ -987,6 +1162,9 @@ class Engine:
         stale = self._md_quality.tick_staleness(now=time.time())
         for sym in stale[:_MAX_MD_RESNAPSHOTS_PER_TICK]:
             await self._snapshot_book(sym)
+        active = self._strategies_by_name.get(self._active_strategy_name)
+        if active is not None:
+            self._refresh_ticks_from_books(active.symbols())
         await self._evaluate_exits()
         await self._evaluate_strategies()
 
@@ -1035,6 +1213,9 @@ class Engine:
         )
 
     async def _evaluate_strategies(self) -> None:
+        if self.is_multi_strategy_mode():
+            await self._evaluate_all_strategies_netted()
+            return
         active = self._strategies_by_name.get(self._active_strategy_name)
         if active is None:
             return
@@ -1045,6 +1226,23 @@ class Engine:
             logger.exception("strategy %s on_tick raised", active.name)
             return
         await self._dispatch_signals(signals)
+
+    async def _evaluate_all_strategies_netted(self) -> None:
+        tagged: list[tuple[str, Signal]] = []
+        for strat in self._strategies:
+            try:
+                feats = {sym: self._features.snapshot(sym) for sym in strat.symbols()}
+                for sig in strat.on_tick(feats):
+                    tagged.append((strat.name, sig))
+            except Exception:  # noqa: BLE001
+                logger.exception("strategy %s on_tick raised", strat.name)
+        if not tagged:
+            return
+        result = net_strategy_signals(tagged)
+        for netted in result.loose:
+            await self._dispatch_netted_single(netted)
+        for gid, legs in result.groups.items():
+            await self._dispatch_group(gid, legs)
 
     async def _dispatch_signals(self, signals: Iterable[Signal]) -> None:
         # Bucket pair-legs that must trade together; submit non-grouped
@@ -1062,11 +1260,27 @@ class Engine:
         for gid, legs in groups.items():
             await self._dispatch_group(gid, legs)
 
-    async def _dispatch_single(self, signal: Signal) -> None:
+    async def _dispatch_netted_single(self, netted: NettedSignal) -> None:
+        """Submit a cross-strategy net order and record fill attribution."""
+        signal = netted.signal
+        parent = await self._dispatch_single(signal, return_parent=True)
+        if parent is None:
+            return
+        sym = signal.symbol.upper()
+        self._parent_attribution[parent.id] = {
+            strat: {sym: delta} for strat, delta in netted.contributions.items()
+        }
+
+    async def _dispatch_single(
+        self,
+        signal: Signal,
+        *,
+        return_parent: bool = False,
+    ) -> ParentOrder | None:
         """Pre-trade validate + submit one ungrouped signal."""
         mid = self._mid_for(signal.symbol)
         if mid is None:
-            return
+            return None
         tick = self._latest_tick.get(signal.symbol)
         feat = self._features.snapshot(signal.symbol)
         self._latency.on_signal(signal.symbol)
@@ -1078,22 +1292,26 @@ class Engine:
         )
         if not result.approved:
             logger.info("pretrade vetoed %s: %s", signal.symbol, result.reason)
-            return
+            return None
         self._latency.on_risk_passed(signal.symbol)
         try:
             if not signal.reduce_only:
                 await self._ensure_leverage_before_entry(signal.symbol)
-            await self._router.submit(
+            parent = await self._router.submit(
                 symbol=signal.symbol,
                 side=signal.side,
                 qty=result.qty,
                 notes=signal.reason,
                 signal_score=signal.score,
                 reduce_only=signal.reduce_only,
+                strategy_name=signal.strategy_name,
             )
             self._latency.on_child_submitted(signal.symbol)
+            if return_parent:
+                return parent
         except ParentSubmissionRejected as exc:
             logger.info("router gated %s: %s", signal.symbol, exc)
+        return None
 
     async def _dispatch_group(self, group_id: str, legs: list[Signal]) -> None:
         """Submit pair legs with unified pre-trade checks and compensating unwind."""
@@ -1123,6 +1341,34 @@ class Engine:
 
         strategy_qty = max((leg.qty for leg in legs if leg.qty > 0), default=0.0)
         pair_qty = max(strategy_qty, max(floors.values()))
+        # Apply per-leg risk caps at the proposed pair size so validate_group
+        # does not veto with risk_scale when one leg notional exceeds max_risk_pct.
+        min_allowed = pair_qty
+        for leg in legs:
+            probe = Signal(
+                symbol=leg.symbol,
+                side=leg.side,
+                qty=pair_qty,
+                reason=leg.reason,
+                score=leg.score,
+                group_id=leg.group_id,
+            )
+            decision = self._risk.check(
+                probe,
+                mids[leg.symbol],
+                tick_ts=tick_ts[leg.symbol],
+                spread_bps=spread_bps[leg.symbol],
+            )
+            if not decision.approved:
+                logger.info(
+                    "group %s aborted: %s for %s",
+                    group_id,
+                    decision.reason,
+                    leg.symbol,
+                )
+                return
+            min_allowed = min(min_allowed, decision.qty)
+        pair_qty = min_allowed
         result = self._pretrade.validate_group(
             legs,
             pair_qty,
@@ -1156,9 +1402,16 @@ class Engine:
                     notes=leg.reason,
                     signal_score=leg.score,
                     group_id=group_id,
+                    strategy_name=leg.strategy_name,
                 )
                 self._latency.on_child_submitted(leg.symbol)
                 submitted.append((leg, parent))
+                if leg.strategy_name and self.is_multi_strategy_mode():
+                    sym = leg.symbol.upper()
+                    delta = pair_qty if leg.side is Side.BUY else -pair_qty
+                    self._parent_attribution.setdefault(parent.id, {}).setdefault(
+                        leg.strategy_name, {},
+                    )[sym] = delta
             except ParentSubmissionRejected as exc:
                 await self._compensate_group_submission(group_id, submitted, exc)
                 return
@@ -1226,18 +1479,19 @@ class Engine:
         self._leverage_applied_symbols.add(sym_u)
 
     async def _snapshot_book(self, symbol: str) -> None:
-        try:
-            data = await self._gateway.book_snapshot(symbol, depth=100)
-        except Exception:  # noqa: BLE001
-            logger.exception("book snapshot failed for %s", symbol)
-            return
-        last_id = int(data.get("lastUpdateId", 0))
-        self._books.get(symbol).apply_snapshot(
-            bids=[(float(p), float(q)) for p, q in data.get("bids", [])],
-            asks=[(float(p), float(q)) for p, q in data.get("asks", [])],
-            last_update_id=last_id,
-        )
-        self._md_quality.on_snapshot(symbol, last_id)
+        async with self._book_snapshot_sem:
+            try:
+                data = await self._gateway.book_snapshot(symbol, depth=100)
+            except Exception:  # noqa: BLE001
+                logger.exception("book snapshot failed for %s", symbol)
+                return
+            last_id = int(data.get("lastUpdateId", 0))
+            self._books.get(symbol).apply_snapshot(
+                bids=[(float(p), float(q)) for p, q in data.get("bids", [])],
+                asks=[(float(p), float(q)) for p, q in data.get("asks", [])],
+                last_update_id=last_id,
+            )
+            self._md_quality.on_snapshot(symbol, last_id)
 
     def _mid_for(self, symbol: str) -> float | None:
         tick = self._latest_tick.get(symbol)

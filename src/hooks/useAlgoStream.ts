@@ -13,6 +13,7 @@ import {
   toExecutionParent,
   toStrategyInfo,
   toSystemHealth,
+  toTrade,
   toWorkingOrder,
   type StateDTO,
   type StatusEventData,
@@ -215,7 +216,7 @@ export function useAlgoStream(): AlgoStream {
         strategies: state.strategies.map(toStrategyInfo),
         equity: state.equity.equity,
         positions: state.positions,
-        trades: state.trades,
+        trades: state.trades.map(toTrade),
         logs,
         orders: state.orders.working.map(toWorkingOrder),
         workingParents: state.execution.working.map(toExecutionParent),
@@ -425,15 +426,19 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
     }
 
     case "fill": {
-      const trade: Trade = {
-        id: event.data.child_id,
+      const d = event.data;
+      const trade = toTrade({
+        id: d.id ?? d.trade_id ?? d.child_id,
         ts: fmtTime(event.ts),
-        symbol: event.data.symbol,
-        side: event.data.side,
-        qty: event.data.qty,
-        price: event.data.price,
-        pnl: null,
-      };
+        symbol: d.symbol,
+        side: d.side,
+        qty: d.qty,
+        price: d.price,
+        action: d.action,
+        entry_price: d.entry_price,
+        exit_price: d.exit_price,
+        pnl: d.pnl,
+      });
       return { ...prev, trades: [trade, ...prev.trades].slice(0, 60) };
     }
 

@@ -190,13 +190,15 @@ def _position_from_payload(data: dict[str, Any]) -> Position | None:
     if not sym:
         return None
     try:
+        entry = data.get("avg_entry_price", data.get("entry_price"))
+        upnl = data.get("exchange_unrealized_pnl", data.get("unrealized_pnl"))
         return Position(
             symbol=str(sym),
             qty=float(data.get("qty") or 0),
-            entry_price=float(data.get("entry_price") or 0),
+            avg_entry_price=float(entry or 0),
             mark_price=float(data.get("mark_price") or 0),
-            unrealized_pnl=float(data.get("unrealized_pnl") or 0),
             realized_pnl=float(data.get("realized_pnl") or 0),
+            exchange_unrealized_pnl=float(upnl) if upnl is not None else None,
         )
     except (TypeError, ValueError):
         return None
@@ -257,6 +259,7 @@ async def replay_wal_async(
             if pos is not None:
                 position_list.append(pos)
 
+    positions_from_wal = bool(position_list)
     if position_list:
         positions.seed(position_list)
         summary.positions_seeded = len(position_list)
@@ -265,7 +268,9 @@ async def replay_wal_async(
         oms.restore_fill_seen(fill.trade_id)
         if fill.child_id in children:
             fill.parent_id = fill.parent_id or children[fill.child_id].parent_id
-        await positions.on_fill(fill)
+        # POSITION events are post-fill snapshots; replaying fills on top doubles qty.
+        if not positions_from_wal:
+            await positions.on_fill(fill)
         summary.fills_applied += 1
 
     oms.restore_state(parents=parents, children=children)

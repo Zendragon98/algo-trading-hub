@@ -130,18 +130,28 @@ class OrderManager:
         try:
             placed = await self._gateway.place_order(child)
         except Exception as exc:
-            # `logger.exception(...)` prints a traceback in console logs, but the UI log
-            # stream only surfaces the formatted message. Include the exception text.
-            logger.exception(
-                "place_order failed for %s (symbol=%s side=%s qty=%.10f type=%s price=%s): %s",
-                child.id,
-                child.symbol,
-                child.side.value,
-                child.qty,
-                child.order_type.value,
-                "-" if child.price is None else f"{child.price:.10f}",
-                exc,
-            )
+            # Venue has no position to reduce (-2022); common when local book lags flat.
+            if getattr(exc, "code", None) == -2022:
+                logger.warning(
+                    "reduce_only rejected at venue for %s (symbol=%s qty=%.10f): %s",
+                    child.id,
+                    child.symbol,
+                    child.qty,
+                    exc,
+                )
+            else:
+                # `logger.exception(...)` prints a traceback in console logs, but the UI log
+                # stream only surfaces the formatted message. Include the exception text.
+                logger.exception(
+                    "place_order failed for %s (symbol=%s side=%s qty=%.10f type=%s price=%s): %s",
+                    child.id,
+                    child.symbol,
+                    child.side.value,
+                    child.qty,
+                    child.order_type.value,
+                    "-" if child.price is None else f"{child.price:.10f}",
+                    exc,
+                )
             child.status = OrderStatus.REJECTED
             if self._submit_guard is not None:
                 self._submit_guard.record_status(child.symbol, OrderStatus.REJECTED)
@@ -200,9 +210,6 @@ class OrderManager:
                     )
             fill.parent_id = self._child_to_parent.get(fill.child_id)
 
-        await self._bus.publish(
-            Event(type=EventType.FILL, payload=_fill_to_dict(fill))
-        )
         return True
 
     # --- Cancel / flatten ---

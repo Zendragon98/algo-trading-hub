@@ -92,6 +92,7 @@ function isSystemKey(key: string): boolean {
 
 /** Canonical ``settings.strategy`` values (matches backend strategy ``name`` fields). */
 const BOOT_STRATEGY_OPTIONS: { value: string; label: string }[] = [
+  { value: "all", label: "All strategies (netted)" },
   { value: "pairs_trading_usdt_usdc", label: "Pairs trading (USDT/USDC)" },
   { value: "sma_crossover", label: "SMA crossover" },
   { value: "market_making", label: "Market making (skew + tape)" },

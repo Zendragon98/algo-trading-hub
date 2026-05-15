@@ -18,6 +18,7 @@ from ..schemas import (
     BreakerListDTO,
     BreakerRearmDTO,
     BreakerStatusDTO,
+    BreakerTripDTO,
     RiskUpdateDTO,
     StatusDTO,
 )
@@ -143,12 +144,10 @@ async def set_strategy(
     body: _StrategyToggleBody,
     engine: Engine = Depends(get_engine),
 ) -> StatusDTO:
-    """Hot-swap the active strategy.
+    """Hot-swap the active strategy or enable multi-strategy netting.
 
-    ``body.name`` must match a strategy registered at engine boot
-    (machine name, not display label). The engine atomically rewires the
-    StopLossMonitor's externally-managed set so coins owned by the new
-    strategy stop receiving the per-leg SL/TP bracket.
+    ``body.name`` must match a strategy registered at engine boot, or
+    ``"all"`` to run every strategy with internal position netting.
     """
     try:
         engine.set_active_strategy(body.name)
@@ -181,6 +180,27 @@ async def rearm_breakers(
     """
     breaker = engine.risk.breaker
     breaker.rearm(code=body.code, target=body.target)
+    return BreakerListDTO(
+        active=[_breaker_dto(s) for s in breaker.active()],
+        history=[_breaker_dto(s) for s in breaker.history()],
+    )
+
+
+@router.post("/breakers/trip", response_model=BreakerListDTO)
+async def trip_breakers(
+    body: BreakerTripDTO,
+    engine: Engine = Depends(get_engine),
+) -> BreakerListDTO:
+    """Operator trading halt: latch ``operator_halt`` and optionally flatten."""
+    await _run_or_500(
+        "breakers/trip",
+        lambda: engine.operator_halt(
+            detail=body.detail,
+            flatten=body.flatten,
+            pause=body.pause,
+        ),
+    )
+    breaker = engine.risk.breaker
     return BreakerListDTO(
         active=[_breaker_dto(s) for s in breaker.active()],
         history=[_breaker_dto(s) for s in breaker.history()],

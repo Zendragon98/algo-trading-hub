@@ -96,10 +96,18 @@ class MarketMakingStrategy(StrategyBase):
     def _resolve_universe(settings: Settings) -> list[str]:
         configured = [s.strip().upper() for s in (settings.mm_symbols or []) if s.strip()]
         if configured:
+            if len(configured) == 1 and configured[0] == "AUTO":
+                return MarketMakingStrategy._engine_symbol_universe(settings)
             return sorted(set(configured))
-        if settings.symbols:
-            return [str(s).strip().upper() for s in settings.symbols if str(s).strip()][:1] or ["BTCUSDT"]
-        return ["BTCUSDT"]
+        return MarketMakingStrategy._engine_symbol_universe(settings)
+
+    @staticmethod
+    def _engine_symbol_universe(settings: Settings) -> list[str]:
+        """All engine ``SYMBOLS`` (e.g. AUTO USDT/USDC perp universe)."""
+        syms = sorted(
+            {str(s).strip().upper() for s in (settings.symbols or []) if str(s).strip()}
+        )
+        return syms if syms else ["BTCUSDT"]
 
     def attach_equity_provider(self, provider: EquityProvider) -> None:
         self._equity_provider = provider
@@ -221,7 +229,19 @@ class MarketMakingStrategy(StrategyBase):
             )
             signals.append(sig)
 
-        return signals
+        return self._cap_entries(signals)
+
+    def _cap_entries(self, signals: list[Signal]) -> list[Signal]:
+        """Limit simultaneous new MM entries so we do not blow past open-parent caps."""
+        max_n = int(getattr(self._settings, "mm_max_entries_per_tick", 0) or 0)
+        if max_n <= 0:
+            return signals
+        exits = [s for s in signals if s.reduce_only]
+        entries = [s for s in signals if not s.reduce_only]
+        if len(entries) <= max_n:
+            return signals
+        entries.sort(key=lambda s: -float(s.score))
+        return exits + entries[:max_n]
 
     def _desired_sides(self, comp: float, entry: float) -> tuple[bool, bool]:
         if self._fade:

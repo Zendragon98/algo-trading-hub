@@ -111,7 +111,7 @@ function Index() {
   );
 
   const winRate = useMemo(() => {
-    const closed = trades.filter((t) => t.pnl !== null);
+    const closed = trades.filter((t) => t.action === "close");
     if (!closed.length) return 0;
     const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
     return (wins / closed.length) * 100;
@@ -129,6 +129,11 @@ function Index() {
   const onPause = () => handleControl(api.pause);
   const onStop = () => handleControl(api.stop);
   const onKill = () => handleControl(api.shutdown);
+  const onHaltTrading = () =>
+    handleControl(async () => {
+      await api.tripBreakers();
+      await live.refresh();
+    });
   const onFlatten = () => handleControl(api.flatten);
 
   // Push the slider's percentage (0-100) to the engine as a fraction.
@@ -181,6 +186,7 @@ function Index() {
         onStart={onStart}
         onPause={onPause}
         onKill={onKill}
+        onHaltTrading={onHaltTrading}
         onFlatten={onFlatten}
         onOpenSettings={() => setSettingsOpen(true)}
       />
@@ -206,7 +212,7 @@ function Index() {
             icon={<Gauge className="size-4" />}
             label="WIN RATE"
             value={`${winRate.toFixed(1)}%`}
-            sub={`${trades.filter((t) => t.pnl !== null).length} closed trades`}
+            sub={`${trades.filter((t) => t.action === "close").length} closed trades`}
             tone="neutral"
           />
           <KpiCard
@@ -536,6 +542,7 @@ function TopBar(props: {
   onStart: () => void;
   onPause: () => void;
   onKill: () => void;
+  onHaltTrading: () => void;
   onFlatten: () => void;
   onOpenSettings?: () => void;
 }) {
@@ -605,6 +612,15 @@ function TopBar(props: {
             className="bg-bull text-bull-foreground hover:bg-bull/90"
           >
             <Play className="size-4" /> Start
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={props.onHaltTrading}
+            disabled={status === "stopped"}
+            className="border-warning/50 text-warning hover:bg-warning/10"
+          >
+            <AlertTriangle className="size-4" /> Halt
           </Button>
           <Button size="sm" variant="destructive" onClick={props.onKill} disabled={status === "stopped"}>
             <Power className="size-4" /> Kill
@@ -688,6 +704,13 @@ function ToggleRow({
   );
 }
 
+const ALL_STRATEGIES_OPTION: StrategyInfo = {
+  name: "all",
+  label: "All strategies (netted)",
+  description: "Run pairs, SMA, and market making with internal position netting.",
+  active: false,
+};
+
 function StrategyPicker({
   strategies,
   activeName,
@@ -697,6 +720,7 @@ function StrategyPicker({
   activeName: string | null;
   onSelect: (name: string) => void;
 }) {
+  const options = [ALL_STRATEGIES_OPTION, ...strategies];
   return (
     <div>
       <div className="mb-2 flex items-center justify-between text-xs">
@@ -706,7 +730,7 @@ function StrategyPicker({
         )}
       </div>
       <div className="grid grid-cols-1 gap-1.5">
-        {strategies.map((s) => {
+        {options.map((s) => {
           const isActive = (activeName ?? "") === s.name;
           return (
             <button
@@ -985,17 +1009,21 @@ function PositionsTable({
 }
 
 function TradesTable({ trades }: { trades: Trade[] }) {
+  const fmtPrice = (v: number | null) =>
+    v === null ? "—" : v.toLocaleString(undefined, { maximumFractionDigits: 6 });
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="text-[10px] uppercase tracking-wider text-muted-foreground">
             <th className="px-4 py-2 text-left font-normal">Time</th>
-            <th className="px-2 py-2 text-left font-normal">Order</th>
+            <th className="px-2 py-2 text-left font-normal">Type</th>
             <th className="px-2 py-2 text-left font-normal">Symbol</th>
             <th className="px-2 py-2 text-left font-normal">Side</th>
             <th className="px-2 py-2 text-right font-normal">Qty</th>
-            <th className="px-2 py-2 text-right font-normal">Price</th>
+            <th className="px-2 py-2 text-right font-normal">Entry</th>
+            <th className="px-2 py-2 text-right font-normal">Exit</th>
             <th className="px-4 py-2 text-right font-normal">PnL</th>
           </tr>
         </thead>
@@ -1003,8 +1031,17 @@ function TradesTable({ trades }: { trades: Trade[] }) {
           {trades.slice(0, 12).map((t) => (
             <tr key={t.id} className="border-t border-border/60 hover:bg-accent/30">
               <td className="px-4 py-2 text-muted-foreground tabular-nums">{t.ts}</td>
-              <td className="px-2 py-2 text-xs text-muted-foreground">
-                {t.id.slice(-8).toUpperCase()}
+              <td className="px-2 py-2">
+                <span
+                  className={cn(
+                    "rounded-sm px-1.5 py-0.5 text-[10px] uppercase",
+                    t.action === "open"
+                      ? "bg-muted text-muted-foreground"
+                      : "bg-warning/15 text-warning",
+                  )}
+                >
+                  {t.action}
+                </span>
               </td>
               <td className="px-2 py-2">{t.symbol}</td>
               <td className="px-2 py-2">
@@ -1018,18 +1055,19 @@ function TradesTable({ trades }: { trades: Trade[] }) {
                 </span>
               </td>
               <td className="px-2 py-2 text-right tabular-nums">{t.qty}</td>
-              <td className="px-2 py-2 text-right tabular-nums">{t.price.toLocaleString()}</td>
+              <td className="px-2 py-2 text-right tabular-nums">{fmtPrice(t.entryPrice)}</td>
+              <td className="px-2 py-2 text-right tabular-nums">{fmtPrice(t.exitPrice)}</td>
               <td
                 className={cn(
                   "px-4 py-2 text-right tabular-nums",
-                  t.pnl === null
+                  t.action === "open"
                     ? "text-muted-foreground"
-                    : t.pnl >= 0
+                    : (t.pnl ?? 0) >= 0
                       ? "text-bull"
                       : "text-bear",
                 )}
               >
-                {t.pnl === null ? "—" : `${t.pnl >= 0 ? "+" : ""}${t.pnl.toFixed(2)}`}
+                {t.action === "open" ? "—" : `${(t.pnl ?? 0) >= 0 ? "+" : ""}${(t.pnl ?? 0).toFixed(2)}`}
               </td>
             </tr>
           ))}

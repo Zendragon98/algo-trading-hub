@@ -1,178 +1,192 @@
 # Algo Trading Hub
 
-End-to-end trading console: a React frontend that observes and controls a Python trading engine running against the Binance USDT-M Futures Testnet. Two strategies ship out of the box — a volume-weighted cross-coin USDT/USDC basis pairs-trader and a multi-symbol SMA crossover scanner — and the dashboard hot-swaps between them at runtime via the strategy toggle in the Control panel (`POST /api/control/strategy`). The engine is strategy-agnostic, so additional plug-ins surface in the toggle without UI changes.
+A React trading console that observes and controls a Python engine on **Binance USDT-M Futures** (testnet by default). Three strategies ship in-tree — volume-weighted **pairs trading**, multi-symbol **SMA crossover**, and **market making** — and the dashboard hot-swaps between them at runtime (`POST /api/control/strategy`) without restarting the process. The engine is **strategy-agnostic**: new `StrategyBase` plug-ins appear in the toggle automatically — no frontend changes required. You can also run **`all`** to tick every registered strategy and net conflicting signals before execution.
 
-## Architecture
+| Piece | Stack | Role |
+|-------|-------|------|
+| Frontend | React + TanStack Start (Vite; Cloudflare Workers SSR) | Dashboard, controls, live charts |
+| Backend | Python 3.11+ / FastAPI / asyncio | Trading engine + REST + WebSocket |
+| Venue | Binance Futures (testnet default) | Market data, orders, balances |
+
+Full backend documentation: [`backend/README.md`](backend/README.md).
+
+---
+
+## How it fits together
+
+One Python process runs the engine and the API on the same asyncio loop. The browser talks to FastAPI; the engine talks to the venue through a pluggable gateway.
 
 ```mermaid
-%%{init: {"flowchart": {"useMaxWidth": false, "htmlLabels": true, "nodeSpacing": 45, "rankSpacing": 60}, "themeVariables": {"fontSize": "18px"}}}%%
-flowchart TB
-    BinanceWs["Binance Futures WS<br/>depth + aggTrade + user-data"]
-    BinanceRest["Binance Futures REST<br/>orders + account + klines"]
-    IbkrTws["IBKR TWS / IB Gateway<br/>(7497 paper · 7496 live)"]
-
-    subgraph gw ["gateways/ (pluggable via factory)"]
-        direction LR
-        Factory["factory.create_gateway(VENUE)"]
-        BinanceGw["binance/<br/>BinanceGateway"]
-        IbkrGw["ibkr/<br/>IBKRGateway (skeleton)"]
-        Factory -.-> BinanceGw
-        Factory -.-> IbkrGw
-    end
-    BinanceWs --> BinanceGw
-    BinanceRest <--> BinanceGw
-    IbkrTws <--> IbkrGw
-
-    subgraph eng ["engine/"]
-        direction TB
-        MarketData["market_data<br/>OrderBook + TradeTape + DataQuality"]
-        Features["FeatureStore"]
-        Strategy["strategies/<br/>PairsTrading · SmaCrossover · MarketMaking"]
-        PreTrade["risk/<br/>PreTradeValidator"]
-        RiskMon2["risk/<br/>RiskManager + monitors"]
-        Router["execution/<br/>ExecutionRouter + Urgency"]
-        SubmitGuard["execution/<br/>SubmitGuard"]
-        Wheel["execution/<br/>AlgoWheel"]
-        Slicer["execution/<br/>Slicer + VwapExecutor"]
-        OrderMgr["orders/<br/>OrderManager (OMS)"]
-        OrdRec["core/<br/>OrderReconciler"]
-        PosRec["core/<br/>Position Reconciler"]
-        Tracker["execution/<br/>ExecutionTracker"]
-        Impact["execution/<br/>ImpactModel (paper-only)"]
-        Position["position/<br/>PositionTracker"]
-        Portfolio["portfolio/<br/>Portfolio + PnLTracker"]
-        Obs["observability/<br/>LatencyTracker + AlertManager"]
-
-        MarketData --> Features --> Strategy --> PreTrade --> Router
-        PreTrade --> RiskMon2
-        Router --> SubmitGuard --> Wheel --> Slicer --> OrderMgr
-        Router --> Tracker
-        OrdRec -.-> OrderMgr
-        PosRec -.-> Position
-        Impact --> Position --> Portfolio
-        Impact --> Tracker
-        Obs -.-> Router
+flowchart LR
+    subgraph Venue
+        BN[Binance Futures<br/>WS + REST]
     end
 
-    BinanceGw --> MarketData
-    IbkrGw -.-> MarketData
-    OrderMgr --> BinanceGw
-    OrderMgr -.-> IbkrGw
-    BinanceGw -->|fills + balances| Impact
-    IbkrGw -.->|fills + balances| Impact
+    subgraph Backend["backend/ (single process)"]
+        GW[gateways/<br/>BinanceGateway]
+        ENG[engine/<br/>strategies · risk · execution]
+        API[api/<br/>REST + /ws]
+        GW <--> ENG
+        ENG --> API
+    end
 
-    Mode["TRADING_MODE<br/>paper · live"] -.->|live disables| Impact
+    subgraph Browser
+        UI[React console<br/>localhost:5173]
+    end
 
-    Bus["common/<br/>EventBus"]
-    Portfolio --> Bus
-    OrderMgr --> Bus
-    Tracker --> Bus
-    MarketData --> Bus
-
-    Journal["persistence/<br/>EventJournal WAL"]
-    Recorder["persistence/<br/>EventRecorder<br/>data/runs/&lt;id&gt;/*.jsonl"]
-    Bus --> Journal
-    Bus --> Recorder
-    API["api/<br/>FastAPI REST + WebSocket<br/>/health · /ready"]
-    FE["React console<br/>OMS · Execution Quality · System Health"]
-    Bus --> API
-    API <--> FE
-
-    Analytics["analytics/<br/>calibration · stress_runner · daily_report"]
-    Analytics -.->|calibrates thresholds| Strategy
-    Analytics -.->|calibrates| Wheel
+    BN <--> GW
+    API <--> UI
 ```
 
-Source kept editable at [`backend/docs/architecture.mmd`](backend/docs/architecture.mmd). Full architecture deep-dive in [`backend/README.md`](backend/README.md).
+### Trading tick (simplified)
 
-### System capabilities (7 layers)
+Each heartbeat walks the same path: ingest quotes → compute features → run the **active** strategy → risk gate → slice and route orders → reconcile fills into positions and equity.
 
-| Layer | Repo paths | Status |
-|-------|------------|--------|
-| 1 Platform | `common/`, `persistence/journal.py`, `/health`, `/ready` | Implemented |
-| 2 Market data | `engine/market_data/`, `data_quality.py` | Implemented |
-| 3 Execution | `gateways/`, `engine/execution/` | Binance production; IBKR skeleton |
-| 4 OMS | `engine/orders/`, `order_reconciliation.py` | Implemented |
-| 5 Risk | `engine/risk/pretrade_validator.py`, monitors | Implemented |
-| 6 Strategy | `engine/strategies/`, `analytics/` | Implemented + offline stress |
-| 7 UI & ops | `src/`, `api/`, alerts, reports | Implemented |
+```mermaid
+flowchart TB
+    MD[Market data<br/>book + tape + quality] --> FS[FeatureStore]
+    FS --> ST[Active strategy]
+    ST --> RK[Pre-trade risk]
+    RK --> EX[Execution router<br/>wheel → VWAP slices]
+    EX --> OMS[Order manager]
+    OMS --> GW[Gateway → venue]
+    GW -->|fills| POS[Positions + portfolio]
+```
 
-## Layout
+### Events & persistence
+
+State changes fan out on an in-process `EventBus`. Subscribers persist a per-run JSONL archive, stream to the UI, and optionally append a WAL for recovery.
+
+```mermaid
+flowchart LR
+    ENG[Engine] --> BUS[EventBus]
+    BUS --> REC[Run recorder<br/>data/runs/…]
+    BUS --> API[FastAPI /ws]
+    BUS --> J[WAL journal]
+    API --> UI[Dashboard]
+```
+
+Editable diagram sources live in [`backend/docs/`](backend/docs/).
+
+---
+
+## Platform layers
+
+| # | Layer | Paths | Notes |
+|---|-------|-------|-------|
+| 1 | Platform | `common/`, `persistence/`, `/health`, `/ready` | Config, bus, journaling |
+| 2 | Market data | `engine/market_data/` | L2 book, tape, data-quality guards |
+| 3 | Execution | `gateways/`, `engine/execution/` | Binance production; IBKR skeleton |
+| 4 | OMS | `engine/orders/`, reconcile | Parent/child lifecycle |
+| 5 | Risk | `engine/risk/`, `portfolio/`, `position/` | Pre-trade, monitors, circuit breakers |
+| 6 | Strategy | `engine/strategies/`, `analytics/` | Live signals + offline calibration |
+| 7 | UI & ops | `src/`, `api/` | Console, alerts, run archives |
+
+---
+
+## Repository layout
 
 ```
 algo-trading-hub/
-  src/                     React + TanStack Start frontend (Cloudflare Workers SSR)
-    routes/index.tsx       the dashboard
-    hooks/useAlgoStream.ts REST + WS client hook bound to the dashboard
-    lib/api.ts             typed fetch + WS helpers
-    components/algo/types.ts  view-model shapes (mirrors backend/api/schemas.py)
-  backend/                 Python trading engine + FastAPI surface
-    main.py                runs engine + uvicorn in one event loop
-    engine/                strategy-agnostic core (orders, exec, risk, observability, ...)
-    gateways/              venue adapters (Binance Futures Testnet)
-    api/                   FastAPI REST + /ws WebSocket
-    analytics/             offline calibration jobs
-    docs/architecture.png  the image above
+├── src/                      React dashboard
+│   ├── routes/index.tsx      main page
+│   ├── hooks/useAlgoStream.ts   REST hydrate + WebSocket
+│   ├── lib/api.ts            typed client
+│   └── components/algo/
+│       └── types.ts          view-model shapes (mirror backend/api/schemas.py)
+└── backend/                  Python engine + API
+    ├── main.py               engine + uvicorn entrypoint
+    ├── engine/               strategy-agnostic core
+    ├── gateways/             venue adapters
+    ├── api/                  FastAPI routes + /ws
+    ├── analytics/            offline calibration jobs
+    └── docs/                 architecture diagram sources
 ```
+
+---
 
 ## Prerequisites
 
-- Node.js 20+ (or Bun 1.2+) for the frontend
-- Python 3.11+ for the backend
-- A Binance Futures **Testnet** API key + secret (https://testnet.binancefuture.com)
+- **Node.js 20+** or **Bun 1.2+** for the frontend
+- **Python 3.11+** for the backend
+- **Binance Futures Testnet** API key + secret — https://testnet.binancefuture.com
 
-## Run it locally
+---
 
-Two terminals.
+## Run locally
 
-**Backend** (one-shot on Windows):
+Use two terminals.
+
+### Backend
+
+**Windows (one-shot):**
 
 ```powershell
 cd backend
 copy .env.example .env
-# set BINANCE_API_KEY + BINANCE_API_SECRET in .env (other overrides optional; defaults in backend/common/config.py)
+# set BINANCE_API_KEY and BINANCE_API_SECRET (other overrides optional — defaults in backend/common/config.py)
 .\run.bat
 ```
 
-POSIX or manual:
+**macOS / Linux:**
 
 ```bash
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env  # add keys; optional overrides — defaults in backend/common/config.py
+cp .env.example .env   # add keys; see common/config.py for defaults
 python main.py
-# -> serving on http://127.0.0.1:8000
+# → http://127.0.0.1:8000
 ```
 
-**Frontend**:
+### Frontend
 
 ```bash
 bun install        # or: npm install
 bun run dev        # or: npm run dev
-# -> http://localhost:5173
+# → http://localhost:5173
 ```
 
-In dev, Vite proxies `/api` and `/ws` to `http://127.0.0.1:8000`, so the dashboard talks to the API same-origin (no CORS). Set `VITE_API_BASE` if your backend URL differs.
+In dev, Vite proxies `/api` and `/ws` to `http://127.0.0.1:8000` (same-origin, no CORS). Override with `VITE_API_BASE` if the API runs elsewhere.
 
-The dashboard hydrates from `GET /api/state` on mount and stays live over `/ws`. The strategy toggle, label, description and paper/live mode shown in the UI come from that hydrate — no values are hardcoded on the frontend, and there is no mock data wired in dev or prod (mocks live only under `backend/tests/`). Control buttons (Start / Pause / Stop / Flatten), the risk slider, and the strategy picker issue REST calls; the engine fans the resulting status changes back over the WebSocket. Position-chart candles are pulled live via `GET /api/klines`.
+---
 
-Equity correctness is anchored to the venue. Wallet balances are tracked per-asset (Binance Futures keeps separate USDT and USDC wallets) so a partial `ACCOUNT_UPDATE` event never wipes an unreported leg, and a 30-second REST resync runs as a safety net behind the live stream so the dashboard equity always converges back to Binance.
+## Dashboard behaviour
 
-In **LIVE** mode the backend will **refuse to start** if your venue is still pointed at a sandbox/testnet, so the portfolio cash/equity always seeds from your **real account balance**.
+- **Hydrate** — `GET /api/state` on load; strategy labels, paper/live mode, and KPIs come from the backend (nothing hardcoded in the UI). There is **no mock data** wired in dev or prod — mocks live only under `backend/tests/`.
+- **Live stream** — `/ws` pushes fills, orders, equity, logs, `breaker`, and status events.
+- **Controls** — Start / Pause / Stop / Flatten / Halt, risk slider, and strategy picker call REST; status flows back over the socket.
+- **Charts** — position candles via `GET /api/klines`.
+- **Panels** — OMS, Execution Quality, and System Health (latency, breakers, connection freshness).
 
-### Failsafes at a glance
+Equity is anchored to the venue: wallets are tracked **per asset** (USDT + USDC on Binance Futures) so a partial `ACCOUNT_UPDATE` never wipes an unreported leg. Reconcile uses REST when the user-data stream has been idle (`RECONCILE_USER_DATA_FRESH_SEC`); optional `BALANCE_RESYNC_SEC` > 0 adds a periodic `GET /account` safety net.
 
-A unified circuit-breaker covers the engine end-to-end so extreme events have a defined safety fallback:
+In **LIVE** mode the backend **refuses to start** if the gateway still points at a sandbox/testnet host, so portfolio cash/equity always seeds from your **real account balance**.
 
-- **Unified pre-trade** — `PreTradeValidator` (fat-finger, signal dedup, limit collar, group parity) before any parent reaches the router.
-- **Matching / reconcile** — order-level reconcile vs venue open orders; position reconcile; optional `RECOVER_ON_START` WAL replay.
-- **In-flight execution** — urgency profiles, passive bid/ask peg, deterministic client order IDs, per-parent slippage abort, submit throttles.
-- **Portfolio guards** — HWM drawdown, daily-loss kill, consecutive-loss streak, execution-quality blowout (`MAJOR` latched until re-arm).
-- **System-level** — MD quality (gaps, crossed book, resnapshot), WS/user-data staleness pause, webhook alerts, `/health` + `/ready`, System Health dashboard panel.
+---
 
-`MAJOR` breaches automatically flatten + latch; the operator clears them via `POST /api/control/breakers/rearm`. `MINOR` breaches auto-resume after a cooldown. See `backend/README.md` "Failsafes — circuit-breaker matrix" for the full list and tunables.
+## Safety overview
 
-## Backend deep-dive
+A unified circuit breaker covers the engine end-to-end:
 
-See `backend/README.md` for the full architecture, module-by-module walk-through, env var reference, REST + WS contract, testing notes, and troubleshooting.
+| Stage | What runs |
+|-------|-----------|
+| **Pre-trade** | `PreTradeValidator` — fat-finger, signal dedup, limit collar, group parity |
+| **Matching / reconcile** | Order reconcile vs venue open orders; position reconcile; optional `RECOVER_ON_START` WAL replay |
+| **In-flight** | Urgency profiles, passive bid/ask peg, deterministic client order IDs, per-parent slippage abort, submit throttles |
+| **Portfolio** | HWM drawdown, daily-loss kill, consecutive-loss streak, execution-quality blowout (`MAJOR`, latched until re-arm) |
+| **System** | MD quality (gaps, crossed book, resnapshot), WS/user-data staleness pause, webhook alerts, `/health` + `/ready` |
+
+`MAJOR` breaches automatically flatten + latch; clear via `POST /api/control/breakers/rearm`. `MINOR` breaches auto-resume after cooldown. Dashboard **Halt** → `breakers/trip`; **Kill** → process shutdown (not the trading kill switch).
+
+See [`backend/README.md` — Failsafes](backend/README.md#failsafes--circuit-breaker-matrix) for the full matrix and tunables.
+
+---
+
+## Learn more
+
+| Topic | Where |
+|-------|--------|
+| Module walk-through, env vars, API contract | [`backend/README.md`](backend/README.md) |
+| Code style for contributors | [`backend/AGENTS.md`](backend/AGENTS.md) |
+| Diagram sources | [`backend/docs/`](backend/docs/) |

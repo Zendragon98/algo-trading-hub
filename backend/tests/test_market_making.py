@@ -7,6 +7,7 @@ os.environ.setdefault("BINANCE_API_SECRET", "test")
 
 from common.config import Settings  # noqa: E402
 from common.enums import Side  # noqa: E402
+from common.types import Signal  # noqa: E402
 from engine.market_data.feature_store import Features  # noqa: E402
 from engine.strategies.market_making import MarketMakingStrategy  # noqa: E402
 
@@ -130,6 +131,45 @@ def test_mm_follow_mapping() -> None:
         if sigs:
             break
     assert sigs[0].side is Side.BUY
+
+
+def test_mm_uses_full_engine_symbol_universe_when_unconfigured() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        symbols=["BTCUSDT", "ETHUSDT", "SOLUSDC"],
+        mm_symbols=[],
+    )
+    strat = MarketMakingStrategy(settings)
+    assert set(strat.symbols()) == {"BTCUSDT", "ETHUSDT", "SOLUSDC"}
+
+
+def test_mm_auto_alias_matches_engine_symbols() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        symbols=["AVAXUSDT", "AVAXUSDC"],
+        mm_symbols=["AUTO"],
+    )
+    strat = MarketMakingStrategy(settings)
+    assert set(strat.symbols()) == {"AVAXUSDT", "AVAXUSDC"}
+
+
+def test_mm_caps_new_entries_per_tick() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        mm_max_entries_per_tick=2,
+    )
+    strat = MarketMakingStrategy(settings)
+    sigs = [
+        Signal(symbol="A", side=Side.BUY, qty=1.0, score=1.0, reason="mm"),
+        Signal(symbol="B", side=Side.BUY, qty=1.0, score=5.0, reason="mm"),
+        Signal(symbol="C", side=Side.BUY, qty=1.0, score=3.0, reason="mm"),
+        Signal(symbol="D", side=Side.SELL, qty=1.0, score=10.0, reason="mm_exit", reduce_only=True),
+    ]
+    capped = strat._cap_entries(sigs)
+    assert [s.symbol for s in capped] == ["D", "B", "C"]
 
 
 def test_mm_exits_when_composite_reverts() -> None:

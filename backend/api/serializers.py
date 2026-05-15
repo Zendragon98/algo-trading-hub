@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from common.types import ChildOrder, Position
-from engine.core.engine import Engine
+from engine.core.engine import ALL_STRATEGIES_MODE, Engine
 from engine.core.state import EngineSnapshot
 from engine.execution.execution_metrics import ExecutionReport
 from engine.performance.performance_tracker import TradeRecord
@@ -23,12 +23,12 @@ from .schemas import (
     ExecutionStatsDTO,
     KpiDTO,
     LogDTO,
+    StrategyInfoDTO,
     OrdersDTO,
     ParentOrderDTO,
     PositionDTO,
     StateDTO,
     StatusDTO,
-    StrategyInfoDTO,
     SystemHealthDTO,
     TradeDTO,
 )
@@ -56,6 +56,9 @@ def trade_to_dto(trade: TradeRecord) -> TradeDTO:
         side=trade.side,  # type: ignore[arg-type]
         qty=trade.qty,
         price=trade.price,
+        action=trade.action,
+        entry_price=trade.entry_price,
+        exit_price=trade.exit_price,
         pnl=trade.pnl,
     )
 
@@ -155,11 +158,25 @@ def strategy_to_dto(strategy: StrategyBase, *, active: bool = False) -> Strategy
 def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
     open_pnl = sum(p.unrealized_pnl for p in snapshot.positions)
     active_name = engine.active_strategy_name
-    strategies = [strategy_to_dto(s, active=s.name == active_name) for s in engine.strategies]
+    multi = engine.is_multi_strategy_mode()
+    strategies = [
+        strategy_to_dto(s, active=multi or s.name == active_name) for s in engine.strategies
+    ]
     # ``StateDTO.strategy`` is the *active* one (not the first registered)
     # so legacy frontends that only read this field still see what the
     # engine is actually running after a hot-swap.
-    active_dto = next((dto for dto in strategies if dto.active), strategies[0] if strategies else None)
+    if multi:
+        active_dto = StrategyInfoDTO(
+            name=ALL_STRATEGIES_MODE,
+            label="All strategies (netted)",
+            description="Runs pairs, SMA, and market making with internal position netting.",
+            active=True,
+        )
+    else:
+        active_dto = next(
+            (dto for dto in strategies if dto.active),
+            strategies[0] if strategies else None,
+        )
     return StateDTO(
         status=StatusDTO(
             status=snapshot.status.value,

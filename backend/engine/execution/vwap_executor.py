@@ -32,9 +32,15 @@ from .slicer import Slice, build_schedule
 logger = logging.getLogger(__name__)
 
 
+def _is_reduce_only_reject(exc: BaseException) -> bool:
+    """Binance futures code when there is no open position to reduce."""
+    return getattr(exc, "code", None) == -2022
+
+
 # A small adapter so the executor can ask "what's the current top-of-book
 # for SYM?" without depending directly on the OrderBookStore.
 PriceProvider = Callable[[str], float | None]
+LimitCollarCheck = Callable[[str, float, float], tuple[bool, str]]
 # Notified once per parent when its run task ends — for any reason (full
 # fill, partial fill, slice rejection, operator cancel). Lets the
 # ExecutionTracker close out the report so the OMS panel doesn't pile
@@ -72,6 +78,11 @@ class VwapExecutor:
         )
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._on_parent_done = on_parent_done
+        self._limit_collar_check: LimitCollarCheck | None = None
+
+    def set_limit_collar_check(self, fn: LimitCollarCheck | None) -> None:
+        """Optional pre-submit guard for passive LIMIT pegs vs mid."""
+        self._limit_collar_check = fn
 
     def apply_settings(self, settings: Settings) -> None:
         """Refresh VWAP schedule defaults for *new* parents (in-flight unchanged)."""
@@ -225,6 +236,19 @@ class VwapExecutor:
     async def _submit_slice(self, parent: ParentOrder, slc: Slice) -> None:
         price = self._passive_price(parent)
         order_type = OrderType.LIMIT if price is not None else OrderType.MARKET
+        if price is not None and self._limit_collar_check is not None:
+            mid = self._features.snapshot(parent.symbol).mid
+            ref_mid = mid if mid and mid > 0 else self._price(parent.symbol)
+            if ref_mid and ref_mid > 0:
+                ok, reason = self._limit_collar_check(parent.symbol, price, ref_mid)
+                if not ok:
+                    logger.warning(
+                        "limit collar veto parent=%s slice=%d: %s",
+                        parent.id,
+                        slc.index,
+                        reason,
+                    )
+                    return
         # Re-validate the child against venue constraints right before submit.
         # This prevents hard REST rejections (e.g. MIN_NOTIONAL) from bubbling
         # out of the gateway and spamming logs.
@@ -247,7 +271,15 @@ class VwapExecutor:
         )
         try:
             placed = await self._om.submit_child(child)
-        except Exception:
+        except Exception as exc:
+            if parent.reduce_only or _is_reduce_only_reject(exc):
+                logger.warning(
+                    "slice aborted (reduce_only) parent=%s slice=%d: %s",
+                    parent.id,
+                    slc.index,
+                    exc,
+                )
+                raise
             # If the passive LIMIT is rejected (or REST submit fails), fall back to
             # a MARKET order for the slice so the strategy continues to function
             # under exchange realities (partial/no fill/reject).
@@ -307,6 +339,8 @@ class VwapExecutor:
                 break
             await asyncio.sleep(poll)
         if not self._cfg.market_fallback:
+            return
+        if child.reduce_only:
             return
 
         await self._om.cancel(child_id)

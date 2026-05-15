@@ -7,6 +7,7 @@ import time
 from common.enums import Side
 from common.events import EventBus
 from common.types import Fill
+from engine.performance.fill_classification import FillClassification
 from engine.performance.performance_tracker import PerformanceTracker
 from engine.portfolio.portfolio import Portfolio
 from engine.position.position_tracker import PositionTracker
@@ -35,7 +36,7 @@ def _record_pnl(perf: PerformanceTracker, pnl: float, idx: int = 0) -> None:
             fee=0.0,
             fee_asset="USDT",
         ),
-        realized_pnl=pnl,
+        FillClassification(action="close", entry_price=100.0, exit_price=100.0, pnl=pnl),
     )
 
 

@@ -1,0 +1,21 @@
+%% Per-tick trading path inside engine/
+flowchart TB
+    MD[market_data<br/>OrderBook · TradeTape · DataQuality]
+    FS[FeatureStore]
+    ST[strategies/<br/>pairs · sma · market_making]
+    PT[risk/ PreTradeValidator]
+    RM[risk/ RiskManager monitors]
+    RT[execution/ Router + Urgency]
+    SG[SubmitGuard]
+    WH[AlgoWheel + Slicer + VwapExecutor]
+    OMS[orders/ OrderManager]
+    TRK[ExecutionTracker]
+    POS[position/ + portfolio/]
+
+    MD --> FS --> ST --> PT --> RT
+    PT --> RM
+    RT --> SG --> WH --> OMS
+    RT --> TRK
+    OMS -->|venue orders| GW[Gateway]
+    GW -->|fills| POS
+    TRK --> POS

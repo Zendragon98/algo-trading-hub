@@ -66,12 +66,14 @@ class ConnectionMonitor:
         last_tick_ts: float,
         last_user_data_ts: float,
         engine_running: bool,
+        check_user_data_stale: bool = True,
     ) -> None:
         """Trip / refresh the stale-feed breach according to current ages.
 
         ``last_user_data_ts`` is allowed to be ``0`` before any fill
-        lands (user-data only emits when something changes). We only
-        trip on user-data once it has produced at least one event.
+        lands (user-data only emits when something changes). User-data
+        staleness is only enforced while working orders are open — an
+        idle account may not receive ACCOUNT_UPDATE for minutes.
         """
         if not engine_running or self._stale_threshold <= 0:
             return
@@ -89,7 +91,7 @@ class ConnectionMonitor:
                     )
                 )
 
-        if last_user_data_ts > 0:
+        if check_user_data_stale and last_user_data_ts > 0:
             user_age = max(0.0, now - last_user_data_ts)
             if user_age > self._stale_threshold:
                 self._breaker.trip(

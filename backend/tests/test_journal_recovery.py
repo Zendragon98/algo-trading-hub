@@ -87,6 +87,44 @@ async def test_replay_wal_restores_child_and_position(tmp_path: Path) -> None:
     assert pos.qty != 0
 
 
+@pytest.mark.asyncio
+async def test_replay_wal_skips_fill_deltas_when_positions_present(tmp_path: Path) -> None:
+    wal = tmp_path / "events.wal.jsonl"
+    lines = [
+        {
+            "type": EventType.POSITION.value,
+            "data": {
+                "symbol": "CRVUSDC",
+                "qty": -5565.5,
+                "avg_entry_price": 0.2591,
+                "mark_price": 0.2591,
+            },
+        },
+        {
+            "type": EventType.FILL.value,
+            "data": {
+                "child_id": "ALPHA7-abc-01",
+                "symbol": "CRVUSDC",
+                "side": "sell",
+                "qty": 5565.5,
+                "price": 0.2591,
+                "trade_id": "t1",
+            },
+        },
+    ]
+    wal.write_text("\n".join(json.dumps(r) for r in lines), encoding="utf-8")
+
+    bus = EventBus()
+    oms = OrderManager(gateway=_Gw(), bus=bus)
+    positions = PositionTracker(bus=bus)
+    summary = await replay_wal_async(wal, oms, positions)
+    assert summary.positions_seeded == 1
+    assert summary.fills_applied == 1
+    pos = positions.get("CRVUSDC")
+    assert pos is not None
+    assert pos.qty == pytest.approx(-5565.5)
+
+
 def test_find_previous_wal_excludes_current(tmp_path: Path) -> None:
     run_a = tmp_path / "2026-01-01T00-00-00Z"
     run_b = tmp_path / "2026-01-02T00-00-00Z"

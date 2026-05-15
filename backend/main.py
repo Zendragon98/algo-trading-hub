@@ -34,7 +34,7 @@ from common.config import get_settings, normalize_strategy_name
 from common.enums import TradingMode
 from common.events import EventBus
 from common.logging import configure_logging
-from engine.core.engine import Engine
+from engine.core.engine import ALL_STRATEGIES_MODE, Engine
 from engine.persistence.run_bootstrap import bootstrap_run, shutdown_bootstrap
 from engine.strategies.market_making import MarketMakingStrategy
 from engine.strategies.pairs_trading import PairsTradingStrategy
@@ -159,8 +159,8 @@ async def _run() -> None:
         SmaCrossoverStrategy(settings),
         MarketMakingStrategy(settings),
     ]
-    known_names = {s.name for s in strategies}
-    # Operators usually write the short alias ("pairs" / "sma") in .env;
+    known_names = {s.name for s in strategies} | {ALL_STRATEGIES_MODE}
+    # Operators usually write the short alias ("pairs" / "sma" / "all") in .env;
     # canonicalise it to the strategy's class-level ``name`` so the engine
     # / API agree on the lookup key.
     raw_default = (settings.strategy or "pairs").strip().lower()
@@ -186,9 +186,14 @@ async def _run() -> None:
     # reference to where capital is actually flowing. Done after engine
     # construction because the Portfolio + volume cache live inside the
     # Engine.
-    def _position_qty(symbol: str) -> float:
-        pos = engine._positions.get(symbol)  # noqa: SLF001
-        return pos.qty if pos is not None else 0.0
+    def _position_qty_for(strat_name: str):
+        def provider(symbol: str) -> float:
+            if engine.is_multi_strategy_mode():  # noqa: SLF001
+                return engine.strategy_ledger.qty(strat_name, symbol)  # noqa: SLF001
+            pos = engine._positions.get(symbol)  # noqa: SLF001
+            return pos.qty if pos is not None else 0.0
+
+        return provider
 
     for strat in strategies:
         if isinstance(strat, PairsTradingStrategy):
@@ -196,10 +201,10 @@ async def _run() -> None:
             strat.attach_weight_provider(lambda: engine.volume_weights)
         if isinstance(strat, SmaCrossoverStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
-            strat.attach_position_provider(_position_qty)
+            strat.attach_position_provider(_position_qty_for(strat.name))
         if isinstance(strat, MarketMakingStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
-            strat.attach_position_provider(_position_qty)
+            strat.attach_position_provider(_position_qty_for(strat.name))
 
     autostart = bool(settings.engine_autostart)
     if args.engine:

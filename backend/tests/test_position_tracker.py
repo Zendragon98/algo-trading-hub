@@ -92,3 +92,30 @@ async def test_apply_exchange_positions_drops_zero_qty_rows() -> None:
     ])
     assert tracker.get("BTCUSDT") is None
     assert tracker.all() == []
+
+
+@pytest.mark.asyncio
+async def test_account_update_then_fill_doubles_qty_without_guard() -> None:
+    """Documents the reconcile_mismatch bug: ACCOUNT_UPDATE then on_fill."""
+    from common.types import Position
+
+    bus = EventBus()
+    tracker = PositionTracker(bus)
+    await tracker.apply_exchange_positions([
+        Position(symbol="CRVUSDC", qty=-5565.5, avg_entry_price=0.2591, mark_price=0.0),
+    ])
+    await tracker.on_fill(
+        Fill(
+            child_id="c1",
+            parent_id=None,
+            symbol="CRVUSDC",
+            side=Side.SELL,
+            qty=5565.5,
+            price=0.2591,
+            fee=0.0,
+            fee_asset="USDC",
+        )
+    )
+    pos = tracker.get("CRVUSDC")
+    assert pos is not None
+    assert pos.qty == pytest.approx(-11131.0)

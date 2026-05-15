@@ -1,0 +1,8 @@
+%% Event bus, persistence, and API fan-out
+flowchart LR
+    ENG[Engine modules] --> BUS[common/ EventBus]
+    BUS --> J[persistence/ WAL journal]
+    BUS --> R[persistence/ Run recorder<br/>data/runs/id/*.jsonl]
+    BUS --> API[api/ REST + WebSocket]
+    API --> UI[React dashboard]
+    AN[analytics/ offline] -.->|calibrates thresholds| ENG

@@ -20,6 +20,9 @@ export type Trade = {
   side: "buy" | "sell";
   qty: number;
   price: number;
+  action: "open" | "close";
+  entryPrice: number | null;
+  exitPrice: number | null;
   pnl: number | null;
 };
 

@@ -1,115 +1,163 @@
 # Algo trading backend
 
-Python backend that powers the React console at the repo root. Runs locally, connects to the Binance USDT-M Futures Testnet, scans every USDT/USDC perp listed on the venue, applies a VWAP algo wheel for execution, and enforces real-time risk.
+Python backend for the React console at the repo root. Connects to **Binance USDT-M Futures** (testnet by default), runs a VWAP execution wheel, and enforces layered risk controls.
 
-The engine is multi-strategy: it loads every registered `StrategyBase` (currently `PairsTradingStrategy` and `SmaCrossoverStrategy`) at boot and only one is *active* at a time. Operators hot-swap from the dashboard via `POST /api/control/strategy` — no engine restart, no config edit. The active strategy's metadata (name, label, description, `active=true`) is exposed at `GET /api/state` so the frontend always shows the correct label without any hardcoded branding.
+**Multi-strategy:** `main.py` registers `PairsTradingStrategy`, `SmaCrossoverStrategy`, and `MarketMakingStrategy` at boot. Only one is *active* at a time (or `all` with internal signal netting). Hot-swap via `POST /api/control/strategy` — no restart. Metadata (name, label, description) is served from `GET /api/state`.
+
+Repo overview: [`../README.md`](../README.md).
+
+---
+
+## Contents
+
+- [Architecture](#architecture)
+- [Module map](#module-map)
+- [Quick start](#quick-start)
+- [Folder layout](#folder-layout)
+- [Trading mode](#trading-mode-paper-vs-live)
+- [Adding a gateway](#adding-a-new-gateway)
+- [Module deep-dives](#module-deep-dives)
+  - [Market making](#strategy--enginestrategiesmarket_makingpy)
+  - [Multi-strategy `all`](#multi-strategy-mode--all)
+- [Failsafes](#failsafes--circuit-breaker-matrix)
+- [Configuration](#configuration-reference)
+- [Run archive](#run-archive)
+- [REST + WebSocket](#rest--websocket-contract)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+
+---
 
 ## Architecture
 
+Read top-down: **system context** → **per-tick path** → **event fan-out**. Editable sources are in [`docs/`](docs/).
+
+### 1. System context
+
 ```mermaid
-%%{init: {"flowchart": {"useMaxWidth": false, "htmlLabels": true, "nodeSpacing": 45, "rankSpacing": 60}, "themeVariables": {"fontSize": "18px"}}}%%
-flowchart TB
-    BinanceWs["Binance Futures WS<br/>depth + aggTrade + user-data"]
-    BinanceRest["Binance Futures REST<br/>orders + account + klines"]
-    IbkrTws["IBKR TWS / IB Gateway<br/>(7497 paper · 7496 live)"]
-
-    subgraph gw ["gateways/ (pluggable via factory)"]
-        direction LR
-        Factory["factory.create_gateway(VENUE)"]
-        BinanceGw["binance/<br/>BinanceGateway"]
-        IbkrGw["ibkr/<br/>IBKRGateway (skeleton)"]
-        Factory -.-> BinanceGw
-        Factory -.-> IbkrGw
-    end
-    BinanceWs --> BinanceGw
-    BinanceRest <--> BinanceGw
-    IbkrTws <--> IbkrGw
-
-    subgraph eng ["engine/"]
-        direction TB
-        MarketData["market_data<br/>OrderBook + TradeTape + DataQuality"]
-        Features["FeatureStore"]
-        Strategy["strategies/<br/>PairsTrading · SmaCrossover · MarketMaking"]
-        PreTrade["risk/<br/>PreTradeValidator"]
-        RiskMon2["risk/<br/>RiskManager + monitors"]
-        Router["execution/<br/>ExecutionRouter + Urgency"]
-        SubmitGuard["execution/<br/>SubmitGuard"]
-        Wheel["execution/<br/>AlgoWheel"]
-        Slicer["execution/<br/>Slicer + VwapExecutor"]
-        OrderMgr["orders/<br/>OrderManager (OMS)"]
-        OrdRec["core/<br/>OrderReconciler"]
-        PosRec["core/<br/>Position Reconciler"]
-        Tracker["execution/<br/>ExecutionTracker"]
-        Impact["execution/<br/>ImpactModel (paper-only)"]
-        Position["position/<br/>PositionTracker"]
-        Portfolio["portfolio/<br/>Portfolio + PnLTracker"]
-        Obs["observability/<br/>LatencyTracker + AlertManager"]
-
-        MarketData --> Features --> Strategy --> PreTrade --> Router
-        PreTrade --> RiskMon2
-        Router --> SubmitGuard --> Wheel --> Slicer --> OrderMgr
-        Router --> Tracker
-        OrdRec -.-> OrderMgr
-        PosRec -.-> Position
-        Impact --> Position --> Portfolio
-        Impact --> Tracker
-        Obs -.-> Router
+flowchart LR
+    subgraph Venue
+        BN[Binance Futures<br/>WS + REST]
+        IB[IBKR TWS<br/>skeleton]
     end
 
-    BinanceGw --> MarketData
-    IbkrGw -.-> MarketData
-    OrderMgr --> BinanceGw
-    OrderMgr -.-> IbkrGw
-    BinanceGw -->|fills + balances| Impact
-    IbkrGw -.->|fills + balances| Impact
+    subgraph Process["backend/ — one asyncio loop"]
+        GW[gateways/]
+        ENG[engine/]
+        API[api/ FastAPI]
+        GW <--> ENG
+        ENG --> API
+    end
 
-    Mode["TRADING_MODE<br/>paper · live"] -.->|live disables| Impact
+    subgraph Browser
+        UI[React console]
+    end
 
-    Bus["common/<br/>EventBus"]
-    Portfolio --> Bus
-    OrderMgr --> Bus
-    Tracker --> Bus
-    MarketData --> Bus
-
-    Journal["persistence/<br/>EventJournal WAL"]
-    Recorder["persistence/<br/>EventRecorder<br/>data/runs/&lt;id&gt;/*.jsonl"]
-    Bus --> Journal
-    Bus --> Recorder
-    API["api/<br/>FastAPI REST + WebSocket<br/>/health · /ready"]
-    FE["React console<br/>OMS · Execution Quality · System Health"]
-    Bus --> API
-    API <--> FE
-
-    Analytics["analytics/<br/>calibration · stress_runner · daily_report"]
-    Analytics -.->|calibrates thresholds| Strategy
-    Analytics -.->|calibrates| Wheel
+    BN <--> GW
+    IB -.-> GW
+    API <--> UI
 ```
 
-## What this is
+`main.py` starts the gateway, engine, and uvicorn together so the API reads live state without locks or IPC.
 
-The folders in this codebase as required in the project:
-       |
-| Analytical module           | `analytics/` (offline) + `engine/market_data/` (live)        |
-| Risk management module      | `engine/risk/` + `engine/portfolio/` + `engine/position/`    |
-| Execution module            | `engine/execution/` + `engine/orders/`                       |
+### 2. Per-tick trading path
 
-The engine is fully event-driven (asyncio). The FastAPI surface and the trading loop share a single event loop so the API can read engine state without locks or IPC.
+```mermaid
+flowchart TB
+    MD[market_data<br/>book · tape · quality]
+    FS[FeatureStore]
+    ST[strategies/<br/>active strategy]
+    PT[PreTradeValidator]
+    RM[RiskManager monitors]
+    RT[ExecutionRouter]
+    SG[SubmitGuard]
+    WH[AlgoWheel → Slicer → VwapExecutor]
+    OMS[OrderManager]
+    TRK[ExecutionTracker]
+    POS[position + portfolio]
+
+    MD --> FS --> ST --> PT --> RT
+    PT --> RM
+    RT --> SG --> WH --> OMS
+    RT --> TRK
+    OMS -->|orders| GW[Gateway]
+    GW -->|fills| POS
+    TRK --> POS
+```
+
+**Not on the hot path** (timer-driven): `OrderReconciler`, position reconcile, `ConnectionMonitor` (WS/user-data staleness), and `engine/observability/` (`LatencyTracker`, `AlertManager`). `ImpactModel` is paper-only and disabled in `TRADING_MODE=live`.
+
+### 3. Events and persistence
+
+```mermaid
+flowchart LR
+    ENG[Engine] --> BUS[EventBus]
+    BUS --> J[WAL journal]
+    BUS --> R[Run recorder<br/>data/runs/id/*.jsonl]
+    BUS --> API[REST + /ws]
+    API --> UI[Dashboard]
+    AN[analytics/ offline] -.->|calibrates| ENG
+```
+
+| Diagram file | What it shows |
+|--------------|---------------|
+| `docs/architecture-system.mmd` | Venue ↔ backend ↔ browser |
+| `docs/architecture-tick.mmd` | Engine hot path |
+| `docs/architecture-events.mmd` | Bus fan-out |
+| `docs/architecture.mmd` | Compact all-in-one (legacy) |
+
+### Parent-order execution (sequence)
+
+```mermaid
+sequenceDiagram
+    participant S as Strategy
+    participant K as RiskManager
+    participant R as ExecutionRouter
+    participant W as AlgoWheel
+    participant V as VwapExecutor
+    participant O as OrderManager
+    participant G as Gateway
+
+    S->>K: Signal
+    K->>R: ParentOrder (qty capped)
+    R->>W: choose mode from features
+    W-->>R: FRONTLOAD / NORMAL / BACKLOAD
+    R->>V: slice schedule
+    loop each slice
+        V->>O: child LIMIT
+        O->>G: place_order
+        G-->>O: ack + fills
+        Note over V,O: slice timeout? cancel + market residual
+    end
+```
+
+---
+
+## Module map
+
+| Concern | Live path | Offline / calibration |
+|---------|-----------|------------------------|
+| Analytics | `engine/market_data/` — book, tape, features | `analytics/` — pair + orderbook analyzers |
+| Execution | `engine/execution/` + `engine/orders/` | `analytics/orderbook_analyzer.py` → wheel thresholds |
+| Risk | `engine/risk/`, `portfolio/`, `position/` | — |
+| Gateway | `gateways/` via `create_gateway(VENUE)` | `gateways/ibkr/` skeleton |
+
+Dependency rule: `common/` ← `gateways/` + `engine/` ← `api/` + `analytics/`. Cross-module coupling is only through `EventBus`.
 
 ## Quick start
 
+**Windows** — from `backend/`:
+
 ```powershell
-# From backend/
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-
-copy .env.example .env
-# edit .env: paste Binance testnet API key + secret (other overrides optional)
-
+copy .env.example .env    # add BINANCE_API_KEY + BINANCE_API_SECRET
 python main.py
+# or: .\run.bat           # venv + deps + launch in one step
 ```
 
-POSIX equivalent:
+**macOS / Linux:**
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -118,20 +166,9 @@ cp .env.example .env
 python main.py
 ```
 
-The single Windows convenience script `run.bat` does the venv bootstrap + dependency install + launch in one shot:
+API at **http://127.0.0.1:8000** (REST + `/ws`). Frontend in a second terminal from repo root: `bun install && bun run dev` → http://localhost:5173.
 
-```powershell
-.\run.bat
-```
-
-The console is then served at `http://127.0.0.1:8000` (REST + WS). Start the React frontend in a second terminal from the repo root:
-
-By default, the backend boots with the engine stopped (no trading) — start it from the UI (or via `POST /api/control/start`). To auto-start on boot, set `ENGINE_AUTOSTART=true` in `backend/.env` (or run `python main.py --engine`).
-
-```bash
-bun install
-bun run dev   # http://localhost:5173
-```
+By default the engine boots **stopped** — press Start in the UI or `POST /api/control/start`. Auto-start: `ENGINE_AUTOSTART=true` in `.env` or `python main.py --engine`. API-only (engine paused): `python main.py --no-engine`.
 
 ## Folder layout
 
@@ -159,15 +196,16 @@ backend/
       ibkr_gateway.py        every method conforms to the interface; TODOs point at ib_async
 
   engine/                    strategy-agnostic trading core
-    core/                    Engine orchestrator + heartbeat clock + state
-    market_data/             OrderBook + TradeTape + FeatureStore
+    core/                    Engine + heartbeat + order/position reconcile + ConnectionMonitor
+    market_data/             OrderBook + TradeTape + FeatureStore + data_quality
+    observability/           LatencyTracker + AlertManager
     orders/                  OrderManager (parent/child OMS)
     execution/               AlgoWheel + Slicer + VwapExecutor + ExecutionRouter
                              + ImpactModel + ExecutionTracker
     position/                PositionTracker (mark-to-market + realised PnL)
     portfolio/               Portfolio (cash + equity curve)
     risk/                    Limits + PnLTracker + StopLossMonitor + RiskManager
-    strategies/              StrategyBase + PairsTradingStrategy + SmaCrossoverStrategy
+    strategies/              StrategyBase + pairs · sma · market_making
     performance/             PerformanceTracker (win rate + trade history)
     persistence/             EventRecorder (per-run JSONL archive of the EventBus)
     main_engine.py           CLI to run the engine without the API
@@ -186,7 +224,7 @@ backend/
 
   tests/                     pytest suite (mocks live ONLY here)
   data/                      gitignored cache of parquet/JSON artefacts
-  docs/                      architecture.mmd
+  docs/                      architecture *.mmd diagram sources
 ```
 
 ## Trading mode (paper vs live)
@@ -264,34 +302,7 @@ python -m analytics.orderbook_analyzer --symbol BTCUSDT --window-sec 300
 
 ### Execution module — `engine/execution/`
 
-Sequence per parent order:
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Strat as Strategy
-    participant Risk as RiskManager
-    participant Router as ExecutionRouter
-    participant Wheel as AlgoWheel
-    participant Slicer as Slicer
-    participant Vwap as VwapExecutor
-    participant OMS as OrderManager
-    participant Gw as BinanceGateway
-
-    Strat->>Risk: Signal
-    Risk->>Router: ParentOrder (size capped)
-    Router->>Wheel: choose(ParentOrder, Features)
-    Wheel-->>Router: AlgoMode
-    Router->>Slicer: build_schedule(mode, qty, duration, n)
-    Slicer-->>Router: list[Slice]
-    Router->>Vwap: execute(parent, schedule)
-    loop per slice
-        Vwap->>OMS: submit_child(LIMIT)
-        OMS->>Gw: place_order
-        Gw-->>OMS: ack + fills
-        Note over Vwap,OMS: timeout? cancel + market the residual
-    end
-```
+See [Parent-order execution](#parent-order-execution-sequence) above for the sequence diagram.
 
 Wheel decision rule (mirrors `engine/execution/algo_wheel.py`):
 
@@ -410,6 +421,25 @@ Sizing is equity-budgeted: each entry risks `SMA_RISK_PER_TRADE_PCT` of equity, 
 
 Unlike pairs trading, the SMA strategy does **not** manage its own SL/TP — `manages_own_risk()` returns False so the engine's per-leg `StopLossMonitor` stays armed for every coin it trades. Strategy hot-swap (`POST /api/control/strategy { name: "sma_crossover" }`) atomically rotates the externally-managed set: pairs symbols stop bypassing the bracket and SMA symbols pick up a fresh per-leg stop on the next tick.
 
+### Strategy — `engine/strategies/market_making.py`
+
+Microstructure-tilt strategy using **rolling micro-price skew**, **L2 imbalance**, and **tape pressure** (bid-hit vs offer-lift counts in the `trade_tape_window_sec` window). Composite signal:
+
+```
+composite = mm_skew_scale * skew_avg + mm_imbalance_scale * imbalance + mm_tape_scale * tape_pressure
+```
+
+`MM_SIGNAL_MODE`:
+
+- **`fade`** (default) — buy when composite is very negative, sell when very positive (mean-reversion).
+- **`follow`** — buy on positive composite, sell on negative (short-term continuation).
+
+Universe via `MM_SYMBOLS` (CSV or `AUTO` → engine `SYMBOLS`). Sizing is equity-budgeted (`MM_RISK_PER_TRADE_PCT` / `DEFAULT_STOP_LOSS_PCT`) with `MM_QTY` fallback at boot. Per-symbol cooldown (`MM_COOLDOWN_SEC`). Does **not** manage its own SL/TP — engine `StopLossMonitor` stays armed. Hot-swap: `POST /api/control/strategy { "name": "market_making" }`.
+
+### Multi-strategy mode — `all`
+
+Set boot default `STRATEGY=all` or hot-swap to `all`. Every registered strategy ticks each heartbeat; `engine/strategies/signal_netter.py` nets opposing signals per symbol before the shared risk + execution path. Per-strategy positions are tracked in `engine/position/strategy_ledger.py` when netting is active.
+
 ### Risk module — `engine/risk/` + `engine/portfolio/` + `engine/position/`
 
 Pre-trade gate (`PreTradeValidator` → `RiskManager.check`): single entry for single-leg and pair-group signals. Caps signal qty at `max_risk_pct` of equity, rejects on `max_gross_notional` breach, and applies optional fat-finger limits (`MAX_ORDER_NOTIONAL_USD`, `MAX_QTY_VS_POSITION_MULTIPLE`), signal dedup (`SIGNAL_DEDUP_TTL_SEC`), and venue floors via `venue_sizing.venue_min_qty`. Additional vetoes flow through `MarketDataGuard` (stale tick; wide spread) and `ExposureTracker` (per-symbol notional cap, free-margin floor). Pair groups use the same per-leg `RiskManager.check` path; partial basket failure triggers compensating reduce-only unwinds.
@@ -450,6 +480,7 @@ Every safety trip flows through one shared `CircuitBreaker` (`engine/risk/circui
 | `reconcile_mismatch` | major | engine | venue vs local qty diff > `RECONCILE_QTY_TOLERANCE` | flatten + latch |
 | `order_reconcile_mismatch` | minor | engine | open-order set differs between venue and OMS | pause; auto-resume |
 | `group_unwind_failed` | major | symbol | compensating unwind after partial pair submit failed | latch symbol |
+| `operator_halt` | major | engine | operator `POST /api/control/breakers/trip` or dashboard **Halt** | flatten + latch |
 
 Pre-submit guards (`SubmitGuard`) enforce three additional ceilings without tripping a recorded breach:
 
@@ -463,8 +494,13 @@ Operator endpoints:
 
 ```
 GET  /api/control/breakers                    # active + history
+POST /api/control/breakers/trip               # body: {detail?, flatten?, pause?}; operator halt
 POST /api/control/breakers/rearm              # body: {code?, target?}; clears latched majors
 ```
+
+The dashboard **Halt** button calls `breakers/trip` (trading halt + flatten + pause). **Kill** calls `shutdown` and exits the Python process — it is not the trading kill switch.
+
+**Paper / testnet tuning:** breaker state is in-memory only (cleared on restart). Tighten `MAX_DRAWDOWN_PCT`, `HWM_DRAWDOWN_KILL_PCT`, or `DAILY_LOSS_KILL_PCT` in `common/config.py` if you want earlier automatic halts on small paper accounts. `WS_STALE_PAUSE_SEC` trips a MINOR engine breach (pauses entries, no auto-flatten).
 
 ### Code structure & quality
 
@@ -497,7 +533,8 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `IBKR_CLIENT_ID`             | `7`                                  | IB API client id |
 | `IBKR_ACCOUNT`               | empty                                | Specific account to trade (empty = default) |
 | `SYMBOLS`                    | `AUTO`                               | Subscribed symbols. CSV (`BTCUSDT,BTCUSDC,...`) or `AUTO` to auto-discover every USDT/USDC perp pair on the venue at boot |
-| `STRATEGY`                   | `pairs`                              | Boot default: `pairs` (volume-weighted basis) or `sma` (multi-symbol crossover). Hot-swappable via `POST /api/control/strategy` |
+| `STRATEGY`                   | `pairs`                              | Boot default: `pairs`, `sma_crossover`, `market_making`, or `all` (netted multi-strategy). Hot-swappable via `POST /api/control/strategy` |
+| `ENGINE_AUTOSTART`           | `false`                              | Start engine on boot (or use `python main.py --engine`) |
 | `BASE_CURRENCY`              | `USDT`                               | Equity / PnL denomination (if `USDT`/`USDC`, the engine sums **USDT+USDC** wallets) |
 | `MAX_RISK_PCT`               | `0.35`                               | Per-leg notional ceiling as % of equity (hard cap; UI slider) |
 | `RISK_PER_TRADE_PCT`         | `0.005`                              | Stop-loss-budgeted sizing: equity fraction lost if SL fires |
@@ -515,6 +552,12 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `PAIR_VOLUME_REFRESH_SEC`    | `1800`                               | Volume loop period; with WS mode REST only backfills symbols still missing |
 | `BALANCE_RESYNC_SEC`         | `0`                                  | Extra GET `/account` cadence (0 = off; balances still refresh on `RECONCILE_INTERVAL_SEC` + WS) |
 | `SMA_SYMBOLS`                | `AUTO`                               | Universe for the SMA scanner. CSV or `AUTO` to pull every USDT perp; empty falls back to `SMA_SYMBOL` |
+| `SMA_MAX_SYMBOLS`            | `20`                                 | Cap when `SMA_SYMBOLS=AUTO` (top N by 24h volume) |
+| `MM_SYMBOLS`                 | `AUTO`                               | Market-making universe (CSV or `AUTO` → `SYMBOLS`) |
+| `MM_SIGNAL_MODE`             | `fade`                               | `fade` \| `follow` — mean-reversion vs continuation |
+| `MM_ENTRY_TILT` / `MM_EXIT_TILT` | `8.0` / `0`                      | Entry threshold; exit = 35% of entry when exit is `0` |
+| `MM_SKEW_WINDOW_SEC`         | `300`                                | Rolling window for micro-price skew average |
+| `MM_RISK_PER_TRADE_PCT` / `MM_QTY` / `MM_COOLDOWN_SEC` | `0.005` / `0.001` / `12` | Sizing + per-symbol cooldown |
 | `SMA_FAST_WINDOW` / `SMA_SLOW_WINDOW` | `10` / `30`                | Fast / slow SMA windows (sample count; see `SMA_BAR_INTERVAL_SEC`) |
 | `SMA_BAR_INTERVAL_SEC`       | `0`                                  | Bar length in seconds for each SMA sample (`0` = one sample per ~1s heartbeat); e.g. `300` = 5m bars |
 | `SMA_RISK_PER_TRADE_PCT`     | `0.005`                              | Equity slice per SMA entry (uses `DEFAULT_STOP_LOSS_PCT` as the sizing denominator) |
@@ -585,7 +628,9 @@ backend/data/runs/2026-05-09T13-30-15Z/
   positions.jsonl        every position snapshot change
   equity.jsonl           every mark-to-market equity tick
   status.jsonl           engine status transitions (running/paused/stopped)
+  breakers.jsonl         circuit-breaker trips and clears
   logs.jsonl             same INFO+ records the dashboard sees
+  events.wal.jsonl       (when JOURNAL_ENABLED=true) full bus WAL
   ticks.jsonl            (only if PERSIST_RECORD_TICKS=true)
 ```
 
@@ -629,7 +674,9 @@ All payloads use the same field names as `src/components/algo/types.ts` so the f
 | PATCH  | `/api/settings`            | partial fields      | `{ ok: true, settings: ... }` merge into live runtime config |
 | WS     | `/ws`                      |                     | stream of `{type, ts, data}` events  |
 
-WebSocket event types: `tick`, `fill`, `order`, `parent`, `execution`, `position`, `equity`, `log`, `status`. `parent` is emitted on every child fill of an in-flight VWAP; `execution` is the post-trade report when a parent completes. The dashboard hook in `src/hooks/useAlgoStream.ts` is the canonical consumer.
+WebSocket event types: `tick`, `fill`, `order`, `parent`, `execution`, `position`, `equity`, `log`, `status`, `breaker`. `parent` is emitted on every child fill of an in-flight VWAP; `execution` is the post-trade report when a parent completes; `breaker` is a circuit-breaker trip or clear. The dashboard hook in `src/hooks/useAlgoStream.ts` is the canonical consumer.
+
+Control routes require `Authorization: Bearer <API_TOKEN>` when `API_TOKEN` is set in config.
 
 ## Testing
 
@@ -650,6 +697,9 @@ Highlights:
 - `test_pairs_trading.py` confirms paired signal emission on cross-coin deviation, reference-basis tracking, the volume-weighted reference, and the hybrid `|z|/entry_z` sizing scale.
 - `test_portfolio_balance_merge.py` pins per-asset wallet merge: a partial `ACCOUNT_UPDATE` must not zero out unreported assets, and `seed_balances` / `update_balances` / `update_asset_balance` keep the per-asset map intact.
 - `test_strategy_toggle.py` covers `Engine.set_active_strategy` (only the active strategy ticks + receives fills), `StopLossMonitor.set_externally_managed` (newly-managed symbols disarm), and the multi-symbol SMA scanner (per-symbol state + equity-budgeted sizing).
+- `test_signal_netter.py` / `test_multi_strategy.py` cover `STRATEGY=all` signal netting and per-strategy ledger positions.
+- `test_market_making.py` covers skew/imbalance/tape composite and fade vs follow modes.
+- `test_connection_monitor.py` covers WS/user-data staleness breaches.
 - `test_vwap_executor.py` runs the executor end-to-end against an in-test `MockGateway`.
 - `test_impact_model.py` covers sign convention + square-root scaling of synthetic impact.
 - `test_execution_metrics.py` covers per-parent slippage, vwap, and the completion lifecycle.

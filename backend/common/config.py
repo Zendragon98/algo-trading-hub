@@ -77,7 +77,8 @@ class Settings(BaseSettings):
     )
     base_currency: str = "USDT"
     engine_autostart: bool = False
-    # Which strategy set to run. Supported: "pairs" | "sma" | "market_making".
+    # Which strategy set to run: "pairs" | "sma" | "market_making" | "all".
+    # "all" runs every registered strategy with internal position netting.
     strategy: str = "pairs"
 
     # --- Risk ---
@@ -270,7 +271,8 @@ class Settings(BaseSettings):
     sma_max_symbols: int = 20
 
     # --- Market-making tilt strategy (skew + imbalance + tape) ---
-    # MM_SYMBOLS: CSV list; when empty, the first engine `symbols` entry is used.
+    # MM_SYMBOLS: CSV list, or ``AUTO`` for the full engine ``SYMBOLS`` universe.
+    # When empty, MM scans every symbol in ``SYMBOLS`` (same as AUTO).
     mm_symbols: Annotated[list[str], NoDecode] = Field(default_factory=list)
     # Rolling mean of (micro_price - mid)/mid in bps over this many seconds.
     mm_skew_window_sec: float = 300.0
@@ -290,6 +292,8 @@ class Settings(BaseSettings):
     mm_risk_per_trade_pct: float = 0.005
     mm_qty: float = 0.001
     mm_cooldown_sec: float = 12.0
+    # Cap new MM entries per engine tick (exits are not capped). 0 = unlimited.
+    mm_max_entries_per_tick: int = 4
 
     # --- API ---
     api_host: str = "127.0.0.1"
@@ -367,6 +371,8 @@ def normalize_strategy_name(value: str) -> str:
         "sma": "sma_crossover",
         "mm": "market_making",
         "market_making": "market_making",
+        "all": "all",
+        "multi": "all",
     }
     k = (value or "").strip().lower()
     return aliases.get(k, k)

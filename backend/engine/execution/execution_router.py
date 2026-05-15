@@ -81,6 +81,7 @@ class ExecutionRouter:
         urgency: Urgency | None = None,
         signal_score: float = 0.0,
         group_id: str | None = None,
+        strategy_name: str = "",
     ) -> ParentOrder:
         if self._submit_guard is not None:
             # Reduce-only exits bypass the *symbol* gate so a paused symbol
@@ -110,6 +111,7 @@ class ExecutionRouter:
             urgency=resolved_urgency,
             signal_score=signal_score,
             group_id=group_id,
+            strategy_name=strategy_name,
         )
         feat = self._features.snapshot(symbol)
         parent.algo_mode = self._wheel.choose(parent, feat)

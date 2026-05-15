@@ -75,6 +75,21 @@ def test_per_symbol_cap_clamps_notional_before_symbol_ok() -> None:
     assert pytest.approx(decision.qty) == 2.0  # 200 / 100
 
 
+def test_monitor_tick_trips_max_drawdown() -> None:
+    """Session drawdown at or above the cap latches the engine breaker."""
+    settings = _settings()
+    rm, portfolio = _build(settings)
+    portfolio.seed_cash(1000.0)
+    # 6% drawdown with a 5% cap.
+    portfolio.update_cash(940.0)
+    rm._pnl.update()
+    tick = Tick(symbol="BTCUSDT", bid=99.5, ask=100.5)
+    rm.monitor_tick(tick, positions=[])
+    assert rm.kill_switch is True
+    codes = {s.code for s in rm.breaker.active()}
+    assert "max_drawdown" in codes
+
+
 def test_rejects_when_kill_switch() -> None:
     """Engine-scope MAJOR breach blocks every entry path.
 

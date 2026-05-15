@@ -27,6 +27,9 @@ class TradeDTO(BaseModel):
     side: Literal["buy", "sell"]
     qty: float
     price: float
+    action: Literal["open", "close"]
+    entry_price: float | None
+    exit_price: float | None
     pnl: float | None
 
 
@@ -240,3 +243,11 @@ class BreakerRearmDTO(BaseModel):
 
     code: str | None = None
     target: str | None = None
+
+
+class BreakerTripDTO(BaseModel):
+    """Operator trading halt payload."""
+
+    detail: str = ""
+    flatten: bool = True
+    pause: bool = True

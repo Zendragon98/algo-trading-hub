@@ -89,6 +89,8 @@ class Signal:
     group_id: str | None = None        # legs sharing this id are submitted atomically
     # When True the engine submits a position-reducing parent only (exits / flattens).
     reduce_only: bool = False
+    # Originating strategy (multi-strategy mode). ``"__netted__`` for cross-strategy nets.
+    strategy_name: str = ""
     ts: float = field(default_factory=time)
 
 
@@ -117,6 +119,7 @@ class ParentOrder:
     reduce_only: bool = False
     urgency: Urgency = Urgency.PASSIVE
     signal_score: float = 0.0
+    strategy_name: str = ""
 
 
 @dataclass(slots=True)

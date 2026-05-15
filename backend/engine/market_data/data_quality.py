@@ -127,7 +127,7 @@ class DataQualityMonitor:
             return
         # Large single-shot gaps are snapshot/stream desync, not packet loss.
         if gap > 500:
-            logger.warning("%s MD resync: skipped %d stale update ids (not counted)", symbol, gap)
+            logger.debug("%s MD resync: skipped %d stale update ids (not counted)", symbol, gap)
             return
         h = self._health.setdefault(symbol, SymbolMdHealth(symbol=symbol))
         h.sequence_gaps += gap

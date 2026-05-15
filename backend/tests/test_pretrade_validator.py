@@ -75,6 +75,66 @@ def _validator() -> PreTradeValidator:
     )
 
 
+def test_limit_collar_rejects_wide_peg() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        max_limit_deviation_bps=50.0,
+    )
+    bus = EventBus()
+    positions = PositionTracker(bus=bus)
+    portfolio = Portfolio(bus=bus, position_tracker=positions, base_currency="USDT")
+    portfolio.seed_cash(10_000.0)
+    pnl = PnLTracker(portfolio)
+    risk = RiskManager(
+        settings=settings,
+        portfolio=portfolio,
+        pnl=pnl,
+        stop_monitor=StopLossMonitor(limits=Limits.from_settings(settings)),
+        breaker=CircuitBreaker(bus=bus),
+    )
+    v = PreTradeValidator(
+        settings=settings,
+        risk=risk,
+        gateway=_Gw(),
+        portfolio=portfolio,
+        positions=positions,
+    )
+    ok, reason = v.check_limit_collar("BTCUSDT", limit_price=101.0, mid=100.0)
+    assert not ok
+    assert reason.startswith("limit_collar:")
+
+
+def test_limit_collar_allows_tight_peg() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        max_limit_deviation_bps=50.0,
+    )
+    bus = EventBus()
+    positions = PositionTracker(bus=bus)
+    portfolio = Portfolio(bus=bus, position_tracker=positions, base_currency="USDT")
+    portfolio.seed_cash(10_000.0)
+    pnl = PnLTracker(portfolio)
+    risk = RiskManager(
+        settings=settings,
+        portfolio=portfolio,
+        pnl=pnl,
+        stop_monitor=StopLossMonitor(limits=Limits.from_settings(settings)),
+        breaker=CircuitBreaker(bus=bus),
+    )
+    v = PreTradeValidator(
+        settings=settings,
+        risk=risk,
+        gateway=_Gw(),
+        portfolio=portfolio,
+        positions=positions,
+    )
+    ok, reason = v.check_limit_collar("BTCUSDT", limit_price=100.2, mid=100.0)
+    assert ok
+    assert reason == ""
+
+
 def test_fat_finger_notional_veto() -> None:
     v = _validator()
     sig = Signal(symbol="BTCUSDT", side=Side.BUY, qty=2.0, reason="test")
