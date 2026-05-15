@@ -1,22 +1,78 @@
-%% System context — venue, backend process, browser
-flowchart LR
-    subgraph Venue
-        BN[Binance Futures<br/>WS + REST]
-        IB[IBKR TWS<br/>skeleton]
+%% System context — venues, single Python process, React console
+%% Render: GitHub / VS Code Mermaid preview / https://mermaid.live
+
+flowchart TB
+    subgraph Browser["Browser — React + TanStack Start"]
+        direction TB
+        UI["Dashboard<br/>src/routes/index.tsx"]
+        HOOK["useAlgoStream<br/>REST hydrate + /ws"]
+        API_CLIENT["lib/api.ts<br/>typed DTOs"]
+        UI --> HOOK --> API_CLIENT
     end
 
-    subgraph Backend["backend/ single asyncio process"]
-        GW[gateways/]
-        ENG[engine/]
-        API[api/ FastAPI]
-        GW <--> ENG
-        ENG --> API
+    subgraph Process["backend/ — one asyncio event loop"]
+        direction TB
+        subgraph Entry["Entry & wiring"]
+            MAIN["main.py<br/>EventBus · Engine · uvicorn"]
+        end
+        subgraph API_Layer["api/ — control plane"]
+            FAST["FastAPI<br/>REST + /ws"]
+            CTRL["routes/control<br/>start · pause · flatten · strategy"]
+            SER["serializers → schemas.py"]
+            FAST --> CTRL
+            FAST --> SER
+        end
+        subgraph Core["engine/ — data plane"]
+            ENG["Engine<br/>1 Hz clock + callbacks"]
+            subgraph Modules["Hot path modules"]
+                MD["market_data/"]
+                ST["strategies/"]
+                RK["risk/"]
+                EX["execution/ + orders/"]
+                POS["position/ + portfolio/"]
+            end
+            ENG --> Modules
+        end
+        subgraph GW_Layer["gateways/ — venue seam"]
+            FACT["factory.create_gateway"]
+            BIN["binance/ BinanceGateway"]
+            IBKR["ibkr/ skeleton"]
+            FACT --> BIN
+            FACT -.-> IBKR
+        end
+        subgraph Platform["common/ + persistence/"]
+            BUS["EventBus"]
+            CFG["config.Settings"]
+            WAL["WAL journal"]
+            REC["Run recorder<br/>data/runs/…"]
+        end
+        MAIN --> ENG
+        MAIN --> FAST
+        ENG <--> BIN
+        ENG --> BUS
+        BUS --> WAL
+        BUS --> REC
+        BUS --> FAST
+        CFG -.-> ENG
+        CFG -.-> BIN
     end
 
-    subgraph Browser
-        UI[React console]
+    subgraph Venue["External venues"]
+        BN_REST["Binance Futures REST<br/>signed orders · account · depth"]
+        BN_WS_PUB["Public WS<br/>bookTicker · depth · aggTrade · !ticker@arr"]
+        BN_WS_USER["User-data WS<br/>ORDER_TRADE_UPDATE · ACCOUNT_UPDATE"]
+        IB["IBKR TWS<br/>future adapter"]
     end
 
-    BN <--> GW
-    IB -.-> GW
-    API <--> UI
+    API_CLIENT <-->|"dev: Vite proxy /api, /ws"| FAST
+    BIN <-->|REST| BN_REST
+    BIN <-->|WS| BN_WS_PUB
+    BIN <-->|WS + listenKey| BN_WS_USER
+    IBKR -.->|"planned"| BIN
+
+    classDef venue fill:#1e3a5f,stroke:#60a5fa,color:#e2e8f0
+    classDef browser fill:#14532d,stroke:#4ade80,color:#ecfdf5
+    classDef api fill:#422006,stroke:#fbbf24,color:#fffbeb
+    class BN_REST,BN_WS_PUB,BN_WS_USER venue
+    class UI,HOOK,API_CLIENT browser
+    class FAST,CTRL,SER api

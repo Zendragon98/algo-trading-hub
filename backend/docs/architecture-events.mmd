@@ -1,8 +1,62 @@
-%% Event bus, persistence, and API fan-out
-flowchart LR
-    ENG[Engine modules] --> BUS[common/ EventBus]
-    BUS --> J[persistence/ WAL journal]
-    BUS --> R[persistence/ Run recorder<br/>data/runs/id/*.jsonl]
-    BUS --> API[api/ REST + WebSocket]
-    API --> UI[React dashboard]
-    AN[analytics/ offline] -.->|calibrates thresholds| ENG
+%% EventBus fan-out — producers, consumers, persistence
+flowchart TB
+    subgraph Producers["Event producers"]
+        ENG["Engine<br/>tick · status · ops"]
+        GW["Gateway callbacks<br/>fills · orders"]
+        OMS["OrderManager<br/>ORDER_UPDATE"]
+        POS["PositionTracker<br/>POSITION"]
+        PF["Portfolio<br/>EQUITY"]
+        RK["Risk / breakers<br/>BREAKER"]
+        EX["ExecutionTracker<br/>PARENT_UPDATE · EXECUTION_REPORT"]
+        LOG["logging.configure<br/>LOG"]
+    end
+
+    BUS["common/EventBus<br/>asyncio fan-out · bounded queues"]
+
+    ENG & GW & OMS & POS & PF & RK & EX & LOG --> BUS
+
+    subgraph Consumers["Subscribers"]
+        WS["api/ws.py<br/>/ws JSON stream"]
+        REC["EventRecorder<br/>per-type *.jsonl"]
+        JOUR["WAL journal<br/>events.wal.jsonl + meta.json"]
+        LAT["LatencyTracker<br/>STATUS histograms"]
+        ALERT["AlertManager<br/>webhook on MAJOR"]
+        LOGBUF["log buffer pump<br/>GET /api/logs"]
+    end
+
+    BUS --> WS & REC & JOUR & LAT & ALERT & LOGBUF
+
+    WS --> UI["React useAlgoStream"]
+
+    subgraph Archive["data/runs/&lt;run-id&gt;/"]
+        direction LR
+        F1["fills.jsonl"]
+        F2["orders.jsonl"]
+        F3["parents.jsonl"]
+        F4["executions.jsonl"]
+        F5["positions.jsonl"]
+        F6["equity.jsonl"]
+        F7["status.jsonl"]
+        F8["breakers.jsonl"]
+        F9["logs.jsonl"]
+        F10["events.wal.jsonl"]
+    end
+
+    REC --> Archive
+    JOUR --> F10
+
+    subgraph EventTypes["EventType → stream mapping"]
+        direction TB
+        ET1["FILL → fills"]
+        ET2["ORDER_UPDATE → orders"]
+        ET3["PARENT_UPDATE → parents"]
+        ET4["EXECUTION_REPORT → executions"]
+        ET5["POSITION → positions"]
+        ET6["EQUITY → equity"]
+        ET7["STATUS → status"]
+        ET8["BREAKER → breakers"]
+        ET9["LOG → logs"]
+        ET10["TICK → ticks (opt-in)"]
+    end
+
+    AN["analytics/ offline<br/>pair_analyzer · orderbook_analyzer"] -.->|"calibrates thresholds"| ENG

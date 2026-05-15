@@ -1,0 +1,50 @@
+%% Position & portfolio truth — venue → engine → API → dashboard
+flowchart TB
+    BN["Binance Futures<br/>source of truth"]
+
+    subgraph VenuePaths["Venue → gateway"]
+        WS["User-data WS<br/>ACCOUNT_UPDATE · ORDER_TRADE_UPDATE"]
+        REST["REST<br/>GET /fapi/v2/account · positionRisk · openOrders"]
+        RECON["Periodic reconcile<br/>when user-data idle"]
+    end
+
+    BN --> WS & REST
+    REST --> RECON
+
+    subgraph EngineState["Engine state"]
+        PT["PositionTracker<br/>qty · entry · realised PnL"]
+        PF["Portfolio<br/>per-asset wallets USDT+USDC"]
+        OMS["OrderManager<br/>working children"]
+    end
+
+    WS -->|"apply_exchange_positions<br/>merge wallets"| PT & PF
+    REST -->|"sync_from_venue on mismatch"| PT
+    RECON --> PT & PF
+    WS --> OMS
+
+    subgraph Heal["Drift handling"]
+        H1["RECONCILE_HEAL_ON_MISMATCH<br/>overwrite local from venue"]
+        H2["MAJOR breaker reconcile_mismatch"]
+        H3["order_reconcile_mismatch<br/>cancel orphans"]
+    end
+
+    RECON --> H1 --> H2
+    RECON --> H3
+
+    subgraph API["api/"]
+        SNAP["GET /api/state<br/>engine.snapshot()"]
+        WS_OUT["/ws position · equity · order events"]
+    end
+
+    PT & PF & OMS --> SNAP & WS_OUT
+
+    subgraph UI["React dashboard"]
+        HOOK["useAlgoStream"]
+        POLL["Poll /api/state every 5s<br/>+ reconnect + tab focus"]
+        HOOK --> POLL
+    end
+
+    SNAP & WS_OUT --> HOOK
+
+    classDef truth fill:#7f1d1d,stroke:#fca5a5,color:#fef2f2
+    class BN truth

@@ -150,7 +150,7 @@ class MarketDataGuard:
                 cooldown_sec=self._cooldown_sec,
                 detail=(
                     f"spread={spread_bps:.1f}bps>{allowed:.1f}bps "
-                    f"(dyn mult={self._spread_mult}:1 ewma≈{baseline:.1f}→{ewma_after:.1f})"
+                    f"(dyn mult={self._spread_mult}:1 ewma~{baseline:.1f}->{ewma_after:.1f})"
                 ),
             )
         return None

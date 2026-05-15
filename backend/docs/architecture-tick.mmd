@@ -1,21 +1,95 @@
-%% Per-tick trading path inside engine/
-flowchart TB
-    MD[market_data<br/>OrderBook · TradeTape · DataQuality]
-    FS[FeatureStore]
-    ST[strategies/<br/>pairs · sma · market_making]
-    PT[risk/ PreTradeValidator]
-    RM[risk/ RiskManager monitors]
-    RT[execution/ Router + Urgency]
-    SG[SubmitGuard]
-    WH[AlgoWheel + Slicer + VwapExecutor]
-    OMS[orders/ OrderManager]
-    TRK[ExecutionTracker]
-    POS[position/ + portfolio/]
+%% Per-tick and per-callback paths inside engine/
+%% Solid = hot path on 1 Hz clock or market callback; dashed = background timers
 
-    MD --> FS --> ST --> PT --> RT
-    PT --> RM
-    RT --> SG --> WH --> OMS
-    RT --> TRK
-    OMS -->|venue orders| GW[Gateway]
-    GW -->|fills| POS
-    TRK --> POS
+flowchart TB
+    subgraph Inputs["Market & account inputs (async callbacks)"]
+        T["on_tick<br/>bookTicker BBO"]
+        D["on_depth<br/>L2 diff → OrderBook"]
+        TR["on_trade<br/>aggTrade → TradeTape"]
+        F["on_fill<br/>venue execution"]
+        OU["on_order_update<br/>child ack/cancel"]
+        AU["on_account_update<br/>wallet + positions"]
+    end
+
+    subgraph MD["engine/market_data/"]
+        OB["OrderBook per symbol"]
+        TAPE["TradeTape rolling window"]
+        DQ["DataQuality<br/>seq gaps · crossed book · resnapshot"]
+        FS["FeatureStore<br/>imbalance · spread · hit ratios"]
+        T --> OB
+        D --> OB
+        D --> DQ
+        TR --> TAPE
+        OB --> FS
+        TAPE --> FS
+    end
+
+    subgraph Clock["1 Hz Engine._on_clock_tick"]
+        direction TB
+        C0["mark_to_market · PnL · exec-quality guard"]
+        C1["ConnectionMonitor<br/>WS + user-data staleness"]
+        C2["CircuitBreaker.tick<br/>minor cooldowns"]
+        C3["Risk exits<br/>StopLossMonitor → reduce_only"]
+        C4["Active strategy.on_tick<br/>or all + SignalNetter"]
+        C0 --> C1 --> C2 --> C3 --> C4
+    end
+
+    subgraph Strategy["engine/strategies/"]
+        PT["PairsTrading<br/>volume-weighted basis z"]
+        SMA["SmaCrossover<br/>fast/slow SMA per symbol"]
+        MM["MarketMaking<br/>skew + imbalance + tape"]
+        NET["signal_netter<br/>STRATEGY=all"]
+        C4 --> PT & SMA & MM
+        C4 -.-> NET
+    end
+
+    subgraph Risk["engine/risk/"]
+        PRE["PreTradeValidator<br/>fat finger · dedup · spread · exposure"]
+        RM["RiskManager.check<br/>qty cap · gross notional"]
+        CB["CircuitBreaker<br/>minor veto · major flatten"]
+        PRE --> RM
+        RM --> CB
+    end
+
+    subgraph Exec["engine/execution/ + orders/"]
+        RT["ExecutionRouter<br/>urgency · parent create"]
+        SG["SubmitGuard<br/>open parents · rate limit"]
+        WH["AlgoWheel → Slicer → VwapExecutor"]
+        OMS["OrderManager<br/>parent/child lifecycle"]
+        TRK["ExecutionTracker<br/>slippage · VWAP TCA"]
+        RT --> SG --> WH --> OMS
+        RT --> TRK
+    end
+
+    subgraph State["State & outputs"]
+        POS["PositionTracker"]
+        PF["Portfolio · equity curve"]
+        GW["Gateway.place_order"]
+    end
+
+    FS --> C4
+    PT & SMA & MM --> PRE
+    NET --> PRE
+    PRE --> RT
+    OMS --> GW
+    GW -->|fills| F
+    F --> POS
+    F --> PF
+    AU --> POS
+    AU --> PF
+    POS --> PF
+    TRK --> PF
+
+    subgraph Background["Background loops (not every tick)"]
+        REC["Reconciler<br/>RECONCILE_INTERVAL_SEC"]
+        ORC["OrderReconciler<br/>openOrders vs OMS"]
+        VOL["Volume refresh<br/>PAIR_VOLUME_REFRESH_SEC"]
+        BAL["Balance resync<br/>optional BALANCE_RESYNC_SEC"]
+    end
+
+    REC -.-> POS
+    ORC -.-> OMS
+    VOL -.-> PT
+
+    classDef clock fill:#312e81,stroke:#a78bfa,color:#ede9fe
+    class C0,C1,C2,C3,C4 clock

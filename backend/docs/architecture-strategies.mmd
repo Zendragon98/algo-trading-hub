@@ -1,0 +1,39 @@
+%% Strategy modes and signal routing
+flowchart TB
+    subgraph Boot["Registered at main.py (all loaded)"]
+        P["PairsTradingStrategy"]
+        S["SmaCrossoverStrategy"]
+        M["MarketMakingStrategy"]
+    end
+
+    subgraph Mode["Active mode"]
+        ONE["Single strategy<br/>POST /control/strategy"]
+        ALL["STRATEGY=all<br/>SignalNetter"]
+    end
+
+    P & S & M --> ONE
+    P & S & M --> ALL
+
+    ONE --> TICK["on_tick per 1 Hz clock"]
+    ALL --> TICK2["each strategy on_tick"]
+    TICK2 --> NET["net_strategy_signals<br/>per symbol + group_id"]
+    NET --> DISPATCH["_dispatch_netted / _dispatch_group"]
+
+    TICK --> DISPATCH2["_dispatch_signals"]
+    DISPATCH --> RISK["PreTrade → Execution"]
+    DISPATCH2 --> RISK
+
+    subgraph RiskOwnership["StopLossMonitor ownership"]
+        P2["pairs: manages_own_risk=true<br/>z-space SL/TP only"]
+        S2["sma + mm: engine brackets<br/>DEFAULT_STOP_LOSS_PCT"]
+    end
+
+    P -.-> P2
+    S -.-> S2
+    M -.-> S2
+
+    subgraph Ledger["STRATEGY=all only"]
+        L["strategy_ledger<br/>per-strategy attributed qty"]
+    end
+
+    NET -.-> L

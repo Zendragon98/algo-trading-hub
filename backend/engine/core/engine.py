@@ -953,6 +953,10 @@ class Engine:
             except Exception:  # noqa: BLE001
                 logger.exception("venue cancel_all_open_orders failed during flatten")
             await self._oms.cancel_all()
+            try:
+                await self._order_reconciler.reconcile_once(trip_on_mismatch=False)
+            except Exception:  # noqa: BLE001
+                logger.exception("order reconcile after flatten failed")
             rounds = max(3, int(getattr(self._settings, "flatten_rounds", 4)))
             for attempt in range(rounds):
                 try:

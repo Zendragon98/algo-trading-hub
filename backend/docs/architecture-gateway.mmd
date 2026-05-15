@@ -1,0 +1,53 @@
+%% Gateway seam — Binance adapter internals
+flowchart LR
+    subgraph Engine["Engine (venue-agnostic)"]
+        E1["subscribe_market_data"]
+        E2["subscribe_user_data"]
+        E3["place_order / cancel_order"]
+        E4["fetch_balances_and_positions"]
+        E5["book_snapshot"]
+    end
+
+    subgraph Interface["gateways/gateway_interface.py"]
+        IF["GatewayInterface ABC<br/>SymbolFilters · callbacks"]
+    end
+
+    subgraph BinanceGW["gateways/binance/binance_gateway.py"]
+        BG["BinanceGateway"]
+        subgraph Connections
+            REST["rest_client.py<br/>signed httpx · throttle · 429 backoff"]
+            MKT["market_connection.py<br/>combined streams · reconnect"]
+            ORD["order_connection.py<br/>orders · listenKey keepalive"]
+            ACC["account_connection.py<br/>balances · positions"]
+        end
+        BG --> REST & MKT & ORD & ACC
+    end
+
+    subgraph BinanceAPI["Binance USDT-M Futures"]
+        R1["REST /fapi/v2/*"]
+        W1["wss stream.binancefuture.com"]
+        W2["user stream + listenKey"]
+    end
+
+    E1 & E2 & E3 & E4 & E5 --> IF
+    IF --> BG
+    REST --> R1
+    MKT --> W1
+    ORD --> R1
+    ORD --> W2
+    ACC --> R1
+
+    subgraph Callbacks["Callbacks into Engine"]
+        CB1["on_tick · on_depth · on_trade"]
+        CB2["on_fill · on_order_update"]
+        CB3["on_account_update · on_ws_connected"]
+        CB4["on_quote_volume_24h · on_reconnect"]
+    end
+
+    MKT --> CB1
+    ORD --> CB2
+    ORD --> CB3
+    MKT --> CB4
+
+    classDef engine fill:#1e293b,stroke:#94a3b8,color:#f1f5f9
+    class E1,E2,E3,E4,E5 engine

@@ -99,7 +99,15 @@ def configure_logging(
     if _CONFIGURED:
         return
 
-    console = logging.StreamHandler(sys.stdout)
+    # Windows consoles often default to cp1252; reconfigure so breaker
+    # detail strings and other UTF-8 log lines do not raise on emit.
+    console_stream = sys.stdout
+    if hasattr(console_stream, "reconfigure"):
+        try:
+            console_stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+    console = logging.StreamHandler(console_stream)
     console.setFormatter(
         logging.Formatter(
             fmt="%(asctime)s %(levelname)-5s %(name)s :: %(message)s",

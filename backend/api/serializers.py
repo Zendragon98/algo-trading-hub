@@ -73,7 +73,8 @@ def child_order_to_dto(child: ChildOrder) -> ChildOrderDTO:
         filled_qty=child.filled_qty,
         price=child.price,
         avg_fill_price=child.avg_fill_price,
-        order_type=child.order_type.value,  # type: ignore[arg-type]
+        # API / frontend use lowercase; OrderType keeps Binance uppercase.
+        order_type=child.order_type.value.lower(),  # type: ignore[arg-type]
         status=child.status.value,  # type: ignore[arg-type]
         venue_order_id=child.venue_order_id,
         created_at=child.created_at,

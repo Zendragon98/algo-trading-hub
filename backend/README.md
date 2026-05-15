@@ -1,10 +1,18 @@
 # Algo trading backend
 
-Python backend for the React console at the repo root. Connects to **Binance USDT-M Futures** (testnet by default), runs a VWAP execution wheel, and enforces layered risk controls.
+Python backend for the React console at the repo root. Connects to **Binance USDT-M Futures** (testnet by default), runs a VWAP execution wheel (algo wheel → slicer → passive limits + market fallback), and enforces layered risk controls end-to-end.
 
-**Multi-strategy:** `main.py` registers `PairsTradingStrategy`, `SmaCrossoverStrategy`, and `MarketMakingStrategy` at boot. Only one is *active* at a time (or `all` with internal signal netting). Hot-swap via `POST /api/control/strategy` — no restart. Metadata (name, label, description) is served from `GET /api/state`.
+| Capability | Detail |
+|------------|--------|
+| **Process model** | Single asyncio loop: `Engine` + FastAPI + `EventBus` in `main.py` |
+| **Venue seam** | `GatewayInterface` — Binance production; IBKR skeleton |
+| **Strategies** | Pairs (basis z), SMA crossover, market making; hot-swap at runtime |
+| **Multi-strategy** | `STRATEGY=all` nets signals via `signal_netter` before execution |
+| **Persistence** | Per-run JSONL under `data/runs/` + optional WAL replay |
+| **API** | REST control + `/ws` stream; schemas mirror `src/components/algo/types.ts` |
 
-Repo overview: [`../README.md`](../README.md).
+Repo overview & frontend architecture: [`../README.md`](../README.md).  
+Architecture diagram sources: [`docs/`](docs/) (12 `.mmd` files).
 
 ---
 
@@ -31,106 +39,146 @@ Repo overview: [`../README.md`](../README.md).
 
 ## Architecture
 
-Read top-down: **system context** → **per-tick path** → **event fan-out**. Editable sources are in [`docs/`](docs/).
+Read diagrams **top-down**: system context → lifecycle → hot path → events → gateway → data sync → breakers → execution. Every figure has an editable `.mmd` under [`docs/`](docs/) — paste into [mermaid.live](https://mermaid.live) or VS Code to edit.
+
+### Diagram index
+
+| Source file | What it documents |
+|-------------|-------------------|
+| [`architecture-system.mmd`](docs/architecture-system.mmd) | Venues · single process · control vs data plane |
+| [`architecture-lifecycle.mmd`](docs/architecture-lifecycle.mmd) | `main.py` boot · `Engine.start/stop` · WAL · shutdown |
+| [`architecture-tick.mmd`](docs/architecture-tick.mmd) | WS callbacks · 1 Hz clock · execution path · background loops |
+| [`architecture-events.mmd`](docs/architecture-events.mmd) | EventBus producers/subscribers · JSONL mapping |
+| [`architecture-gateway.mmd`](docs/architecture-gateway.mmd) | `GatewayInterface` · Binance connections |
+| [`architecture-data-sync.mmd`](docs/architecture-data-sync.mmd) | Venue truth · reconcile · dashboard poll |
+| [`architecture-control.mmd`](docs/architecture-control.mmd) | Operator REST → engine |
+| [`architecture-frontend.mmd`](docs/architecture-frontend.mmd) | React hydrate + `/ws` (repo `src/`) |
+| [`architecture-execution.mmd`](docs/architecture-execution.mmd) | Parent-order sequence |
+| [`architecture-strategies.mmd`](docs/architecture-strategies.mmd) | Single vs `all` · signal netting |
+| [`architecture-breakers.mmd`](docs/architecture-breakers.mmd) | Breaker state machine |
+| [`architecture.mmd`](docs/architecture.mmd) | Compact end-to-end |
 
 ### 1. System context
 
-```mermaid
-flowchart LR
-    subgraph Venue
-        BN[Binance Futures<br/>WS + REST]
-        IB[IBKR TWS<br/>skeleton]
-    end
-
-    subgraph Process["backend/ — one asyncio loop"]
-        GW[gateways/]
-        ENG[engine/]
-        API[api/ FastAPI]
-        GW <--> ENG
-        ENG --> API
-    end
-
-    subgraph Browser
-        UI[React console]
-    end
-
-    BN <--> GW
-    IB -.-> GW
-    API <--> UI
-```
-
-`main.py` starts the gateway, engine, and uvicorn together so the API reads live state without locks or IPC.
-
-### 2. Per-tick trading path
+`main.py` builds one `EventBus`, run persistence, `create_gateway(settings)`, all strategies, wires equity providers, optionally `engine.start()`, then uvicorn on the **same asyncio loop**.
 
 ```mermaid
 flowchart TB
-    MD[market_data<br/>book · tape · quality]
-    FS[FeatureStore]
-    ST[strategies/<br/>active strategy]
-    PT[PreTradeValidator]
-    RM[RiskManager monitors]
-    RT[ExecutionRouter]
-    SG[SubmitGuard]
-    WH[AlgoWheel → Slicer → VwapExecutor]
-    OMS[OrderManager]
-    TRK[ExecutionTracker]
-    POS[position + portfolio]
-
-    MD --> FS --> ST --> PT --> RT
-    PT --> RM
-    RT --> SG --> WH --> OMS
-    RT --> TRK
-    OMS -->|orders| GW[Gateway]
-    GW -->|fills| POS
-    TRK --> POS
+    subgraph Browser
+        UI[React] --> HOOK[useAlgoStream]
+    end
+    subgraph Process["backend/"]
+        MAIN[main.py] --> ENG[Engine]
+        ENG <--> GW[gateways/]
+        ENG --> BUS[EventBus]
+        BUS --> FAST[api/ FastAPI + /ws]
+    end
+    subgraph Venue
+        BN[Binance REST + WS]
+    end
+    HOOK <--> FAST
+    GW <--> BN
 ```
 
-**Not on the hot path** (timer-driven): `OrderReconciler`, position reconcile, `ConnectionMonitor` (WS/user-data staleness), and `engine/observability/` (`LatencyTracker`, `AlertManager`). `ImpactModel` is paper-only and disabled in `TRADING_MODE=live`.
+### 2. Boot and shutdown
 
-### 3. Events and persistence
+```mermaid
+sequenceDiagram
+    participant M as main.py
+    participant E as Engine
+    participant G as Gateway
+    M->>E: start()
+    E->>G: connect · REST snapshots · subscribe WS
+    E->>E: seed balances/positions · reconcilers · 1 Hz clock
+    Note over M: shutdown → stop() · flatten? · disconnect
+```
+
+Order inside `Engine.start()`: optional WAL replay → REST book snapshots **before** depth WS → market WS → prime mids → account snapshot → order reconcile → user-data WS → background reconcilers.
+
+### 3. Per-tick trading path
+
+**1 Hz clock:** mark-to-market → connection monitor → breaker tick → risk exits → strategy → pre-trade → router → OMS.
+
+**WS callbacks:** update books/tape; fills and `ACCOUNT_UPDATE` update positions (user-data fresh path avoids double-counting).
+
+```mermaid
+flowchart TB
+    MD[market_data → FeatureStore] --> C[strategy.on_tick]
+    C --> PRE[PreTradeValidator] --> RT[Router → Wheel → VWAP]
+    RT --> OMS --> GW[Gateway]
+    GW -->|fills| POS[position + portfolio]
+```
+
+**Background (not every tick):** `Reconciler`, `OrderReconciler`, volume refresh, optional balance resync, `LatencyTracker`, `AlertManager`. `ImpactModel` is offline-only (disabled in `TRADING_MODE=live`).
+
+### 4. Events and persistence
+
+```mermaid
+flowchart TB
+    PROD[Engine · OMS · Portfolio · Risk] --> BUS[EventBus]
+    BUS --> WS[/ws] & REC[*.jsonl] & JOUR[WAL]
+    WS --> UI[Dashboard]
+```
+
+| `EventType` | Archive | UI |
+|-------------|---------|-----|
+| `FILL` | `fills.jsonl` | Trades |
+| `ORDER_UPDATE` | `orders.jsonl` | OMS |
+| `PARENT_UPDATE` | `parents.jsonl` | In-flight VWAP |
+| `EXECUTION_REPORT` | `executions.jsonl` | TCA |
+| `POSITION` / `EQUITY` | `positions` / `equity` | Tables · chart |
+| `BREAKER` | `breakers.jsonl` | Audit |
+| `STATUS` | `status.jsonl` | Health · latency |
+
+Bounded subscriber queues — slow `/ws` clients drop oldest events; state lives in the engine.
+
+### 5. Gateway seam
 
 ```mermaid
 flowchart LR
-    ENG[Engine] --> BUS[EventBus]
-    BUS --> J[WAL journal]
-    BUS --> R[Run recorder<br/>data/runs/id/*.jsonl]
-    BUS --> API[REST + /ws]
-    API --> UI[Dashboard]
-    AN[analytics/ offline] -.->|calibrates| ENG
+    ENG --> IF[GatewayInterface] --> BG[BinanceGateway]
+    BG --> REST & MKT & ORD[connections]
+    REST & MKT & ORD --> BN[Binance /fapi]
 ```
 
-| Diagram file | What it shows |
-|--------------|---------------|
-| `docs/architecture-system.mmd` | Venue ↔ backend ↔ browser |
-| `docs/architecture-tick.mmd` | Engine hot path |
-| `docs/architecture-events.mmd` | Bus fan-out |
-| `docs/architecture.mmd` | Compact all-in-one (legacy) |
+See [Adding a new gateway](#adding-a-new-gateway). IBKR skeleton: `gateways/ibkr/`.
 
-### Parent-order execution (sequence)
+### 6. Circuit breakers
+
+```mermaid
+stateDiagram-v2
+    [*] --> Armed
+    Armed --> Minor: stale_tick · wide_spread
+    Minor --> Armed: cooldown
+    Armed --> Major: drawdown · reconcile
+    Major --> Latched: flatten
+    Latched --> Armed: rearm
+```
+
+Reduce-only orders bypass entry breakers. Matrix: [Failsafes](#failsafes--circuit-breaker-matrix).
+
+### 7. Parent-order execution
 
 ```mermaid
 sequenceDiagram
     participant S as Strategy
-    participant K as RiskManager
+    participant P as PreTradeValidator
     participant R as ExecutionRouter
     participant W as AlgoWheel
     participant V as VwapExecutor
     participant O as OrderManager
     participant G as Gateway
-
-    S->>K: Signal
-    K->>R: ParentOrder (qty capped)
-    R->>W: choose mode from features
-    W-->>R: FRONTLOAD / NORMAL / BACKLOAD
-    R->>V: slice schedule
-    loop each slice
-        V->>O: child LIMIT
+    S->>P: Signal
+    P->>R: approved
+    R->>W: FRONTLOAD / NORMAL / BACKLOAD
+    loop slices
+        V->>O: LIMIT
         O->>G: place_order
-        G-->>O: ack + fills
-        Note over V,O: slice timeout? cancel + market residual
+        G-->>O: fills
     end
 ```
+
+Wheel rules: [Execution module](#execution-module--engineexecution).
 
 ---
 
@@ -225,7 +273,7 @@ backend/
 
   tests/                     pytest suite (mocks live ONLY here)
   data/                      gitignored cache of parquet/JSON artefacts
-  docs/                      architecture *.mmd diagram sources
+  docs/                      architecture *.mmd (12 diagrams — see Architecture)
 ```
 
 ## Trading mode (paper vs live)
@@ -507,18 +555,14 @@ Binance is the source of truth for open qty. The engine and dashboard are kept a
 
 ```mermaid
 flowchart LR
-  BN[Binance]
-  GW[Gateway]
-  PT[PositionTracker]
-  API["GET /api/state + WS position"]
-  UI[Dashboard]
-
-  BN -->|ACCOUNT_UPDATE| GW
-  BN -->|REST reconcile / reconnect| GW
-  GW --> PT
-  PT --> API
-  API --> UI
+  BN[Binance] -->|ACCOUNT_UPDATE| GW[Gateway]
+  BN -->|REST reconcile| GW
+  GW --> PT[PositionTracker]
+  PT --> API["GET /api/state + /ws"]
+  API --> UI[Dashboard]
 ```
+
+**Editable source:** [`docs/architecture-data-sync.mmd`](docs/architecture-data-sync.mmd)
 
 **Operator signals** (System Health panel): keep **User-data age** under ~60 s; **Order reconcile** should read OK; any **`reconcile_mismatch` breaker** means drift was detected (and healed if `RECONCILE_HEAL_ON_MISMATCH=true`) — investigate before resuming. Set `RECONCILE_SKIP_REST_WHEN_USER_DATA_FRESH=false` if you want REST position checks every reconcile interval even while user-data WS is active.
 

@@ -1,0 +1,48 @@
+%% Frontend data plane — TanStack Start console
+flowchart TB
+    subgraph DevProxy["Vite dev server :5173"]
+        PROXY["proxy /api, /ws → :8000"]
+    end
+
+    subgraph App["src/"]
+        ROUTE["routes/index.tsx<br/>panels · controls · charts"]
+        HOOK["hooks/useAlgoStream.ts"]
+        CLIENT["lib/api.ts<br/>fetch + WebSocket"]
+        TYPES["components/algo/types.ts<br/>mirrors api/schemas.py"]
+        CHART["EquityChart · PositionChartDialog"]
+        ROUTE --> HOOK
+        HOOK --> CLIENT
+        CLIENT --> TYPES
+        ROUTE --> CHART
+    end
+
+    subgraph Hydrate["Initial + periodic hydrate"]
+        H1["GET /api/state<br/>positions · orders · KPIs · strategies"]
+        H2["GET /api/logs · settings on refresh"]
+        H3["Poll every 5s + on WS reconnect + tab focus"]
+    end
+
+    subgraph Live["WebSocket /ws"]
+        W1["fill · order · parent · execution"]
+        W2["position · equity · status · breaker · log"]
+    end
+
+    PROXY --> CLIENT
+    CLIENT --> H1 & H2 & H3
+    CLIENT --> Live
+
+    HOOK -->|"merge incremental events"| ROUTE
+
+    subgraph Panels["Dashboard panels"]
+        P1["Portfolio · equity curve"]
+        P2["Positions + klines chart"]
+        P3["OMS working orders"]
+        P4["Execution quality TCA"]
+        P5["System health<br/>latency · breakers · WS age"]
+        P6["Logs · breakers audit"]
+    end
+
+    ROUTE --> Panels
+
+    Note1["UI never calls Binance directly"]
+    Note1 -.-> CLIENT
