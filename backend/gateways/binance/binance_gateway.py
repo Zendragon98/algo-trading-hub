@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from common.config import Settings
@@ -13,6 +14,7 @@ from ..gateway_interface import (
     DepthCallback,
     FillCallback,
     GatewayInterface,
+    MarketReconnectCallback,
     OrderUpdateCallback,
     QuoteVolume24hCallback,
     SymbolFilters,
@@ -143,6 +145,7 @@ class BinanceGateway(GatewayInterface):
         on_trade: TradeCallback,
         *,
         on_quote_volume_24h: QuoteVolume24hCallback | None = None,
+        on_reconnect: MarketReconnectCallback | None = None,
     ) -> None:
         await self._market.start(
             symbols,
@@ -150,6 +153,7 @@ class BinanceGateway(GatewayInterface):
             on_depth,
             on_trade,
             on_quote_volume_24h=on_quote_volume_24h,
+            on_reconnect=on_reconnect,
         )
 
     async def subscribe_user_data(
@@ -157,8 +161,15 @@ class BinanceGateway(GatewayInterface):
         on_fill: FillCallback,
         on_order_update: OrderUpdateCallback,
         on_account_update=None,
+        *,
+        on_ws_connected: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
-        await self._orders.start(on_fill=on_fill, on_order=on_order_update, on_account=on_account_update)
+        await self._orders.start(
+            on_fill=on_fill,
+            on_order=on_order_update,
+            on_account=on_account_update,
+            on_ws_connected=on_ws_connected,
+        )
 
     async def place_order(self, order: ChildOrder) -> ChildOrder:
         return await self._orders.place_order(order)

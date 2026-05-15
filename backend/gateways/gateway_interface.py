@@ -19,8 +19,8 @@ class DepthDiff:
     """L2 book diff event from the venue WebSocket.
 
     `bids` and `asks` are lists of `(price, qty)`. `qty == 0` means the
-    level is removed. `final_update_id` is the venue sequence number used
-    to drop out-of-order or stale diffs.
+    level is removed. Binance uses ``U`` / ``u`` / ``pu`` for sequencing;
+    other venues may leave ``prev_final_update_id`` unset.
     """
 
     symbol: str
@@ -28,6 +28,7 @@ class DepthDiff:
     asks: list[tuple[float, float]]
     first_update_id: int
     final_update_id: int
+    prev_final_update_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +60,7 @@ FillCallback = Callable[[Fill], Awaitable[None]]
 OrderUpdateCallback = Callable[[ChildOrder], Awaitable[None]]
 AccountUpdateCallback = Callable[[dict], Awaitable[None]]
 QuoteVolume24hCallback = Callable[[str, float], Awaitable[None]]
+MarketReconnectCallback = Callable[[list[str]], Awaitable[None]]
 
 
 class GatewayInterface(ABC):
@@ -81,12 +83,17 @@ class GatewayInterface(ABC):
         on_trade: TradeCallback,
         *,
         on_quote_volume_24h: QuoteVolume24hCallback | None = None,
+        on_reconnect: MarketReconnectCallback | None = None,
     ) -> None:
         """Subscribe to market data.
 
         Venues that expose rolling 24h quote volume on the public WebSocket
         (e.g. Binance ``!ticker@arr``) should call ``on_quote_volume_24h``
         so the engine can avoid high-frequency REST ``/ticker/24hr`` polls.
+
+        ``on_reconnect`` is invoked after a market WebSocket drops and
+        reconnects so the engine can REST-resync order books before applying
+        buffered depth diffs.
         """
         ...
 

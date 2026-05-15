@@ -106,6 +106,7 @@ class IBKRGateway(GatewayInterface):
         on_trade: TradeCallback,
         *,
         on_quote_volume_24h=None,
+        on_reconnect=None,
     ) -> None:
         # TODO: build IB Contract objects from `symbols`, call reqMktData /
         # reqMktDepth / reqTickByTickData, attach ib.pendingTickersEvent,

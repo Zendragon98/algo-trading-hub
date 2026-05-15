@@ -15,9 +15,23 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from common.enums import EventType
 from common.events import EventBus
 
 from .dependencies import get_bus
+
+# Dashboard stream types — excludes TICK (BBO firehose; not consumed by the UI).
+_WS_STREAM_TYPES: tuple[EventType, ...] = (
+    EventType.FILL,
+    EventType.ORDER_UPDATE,
+    EventType.PARENT_UPDATE,
+    EventType.EXECUTION_REPORT,
+    EventType.POSITION,
+    EventType.EQUITY,
+    EventType.LOG,
+    EventType.STATUS,
+    EventType.BREAKER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +45,7 @@ async def stream(websocket: WebSocket) -> None:
     logger.info("ws client connected (total=%d)", bus.subscriber_count + 1)
 
     try:
-        async with bus.subscribe() as queue:
+        async with bus.subscribe(types=_WS_STREAM_TYPES) as queue:
             while True:
                 event = await queue.get()
                 msg = {

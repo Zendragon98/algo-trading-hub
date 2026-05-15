@@ -48,6 +48,7 @@ class OrderConnection:
         self._on_fill: FillCallback | None = None
         self._on_order: OrderUpdateCallback | None = None
         self._on_account: Callable[[dict], Awaitable[None]] | None = None
+        self._on_ws_connected: Callable[[], Awaitable[None]] | None = None
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task[None]] = []
         # symbol -> (step_size, tick_size)
@@ -100,10 +101,18 @@ class OrderConnection:
         adj = n * tick
         return format(adj.normalize(), "f").rstrip("0").rstrip(".") or "0"
 
-    async def start(self, on_fill: FillCallback, on_order: OrderUpdateCallback, on_account=None) -> None:
+    async def start(
+        self,
+        on_fill: FillCallback,
+        on_order: OrderUpdateCallback,
+        on_account=None,
+        *,
+        on_ws_connected: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self._on_fill = on_fill
         self._on_order = on_order
         self._on_account = on_account
+        self._on_ws_connected = on_ws_connected
         self._stop.clear()
         self._listen_key = await self._rest.listen_key()
         self._tasks = [
@@ -168,6 +177,13 @@ class OrderConnection:
 
     # --- User-data stream ---
 
+    def _user_ws_url(self) -> str:
+        """Binance USD-M user streams use the ``/private/ws/<listenKey>`` route."""
+        base = self._ws_base.rstrip("/")
+        if base.endswith("/private"):
+            return f"{base}/ws/{self._listen_key}"
+        return f"{base}/private/ws/{self._listen_key}"
+
     async def _keepalive_loop(self) -> None:
         while not self._stop.is_set():
             try:
@@ -191,13 +207,18 @@ class OrderConnection:
             if self._listen_key is None:
                 await asyncio.sleep(1.0)
                 continue
-            url = f"{self._ws_base}/ws/{self._listen_key}"
+            url = self._user_ws_url()
             try:
-                logger.info("user_ws connecting")
-                async with websockets.connect(url, ping_interval=15, ping_timeout=20) as ws:
+                logger.info("user_ws connecting %s", url)
+                async with websockets.connect(
+                    url, ping_interval=15, ping_timeout=20, open_timeout=30,
+                ) as ws:
                     backoff = 1.0
+                    logger.info("user_ws connected")
+                    if self._on_ws_connected is not None:
+                        await self._on_ws_connected()
                     await self._read_loop(ws)
-            except (ConnectionClosed, OSError) as exc:
+            except (ConnectionClosed, OSError, TimeoutError) as exc:
                 logger.warning("user_ws disconnected: %s; retry in %.1fs", exc, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)

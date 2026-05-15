@@ -152,9 +152,20 @@ class Portfolio:
 
     # --- Reads ---
 
-    def snapshot(self) -> PortfolioSnapshot:
+    @staticmethod
+    def _unrealized_pnl(positions: list[Position], *, use_mark: bool) -> float:
+        """Sum open PnL; prefer live marks when venue user-data is stale."""
+        total = 0.0
+        for p in positions:
+            if use_mark and p.mark_price > 0 and p.qty != 0:
+                total += (p.mark_price - p.avg_entry_price) * p.qty
+            else:
+                total += p.unrealized_pnl
+        return total
+
+    def snapshot(self, *, use_mark_pnl: bool = False) -> PortfolioSnapshot:
         positions = self._tracker.all()
-        unrealized = sum(p.unrealized_pnl for p in positions)
+        unrealized = self._unrealized_pnl(positions, use_mark=use_mark_pnl)
         realized = sum(p.realized_pnl for p in positions)
         gross = sum(p.notional for p in positions)
         net = sum(p.notional * (1 if p.qty > 0 else -1) for p in positions)
@@ -172,14 +183,18 @@ class Portfolio:
 
     # --- Periodic recompute ---
 
-    async def mark_to_market(self) -> EquityPoint:
+    async def mark_to_market(self, *, use_mark_pnl: bool = False) -> EquityPoint:
         """Recompute equity and append a curve point.
 
         Called from the engine clock at ~1Hz. Cheap because it only
         re-aggregates already-current position objects.
+
+        When ``use_mark_pnl`` is set (user-data stream stale), unrealized
+        PnL is derived from the latest tick marks so the equity curve moves
+        with the market instead of freezing on the last ACCOUNT_UPDATE.
         """
         async with self._lock:
-            snap = self.snapshot()
+            snap = self.snapshot(use_mark_pnl=use_mark_pnl)
             point = EquityPoint(ts=time(), equity=snap.equity)
             self._equity_curve.append(point)
             if len(self._equity_curve) > self._curve_size:

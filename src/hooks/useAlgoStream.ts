@@ -8,6 +8,7 @@ import {
   api,
   getAlgoWsUrl,
   toBreakerList,
+  toBreakerStatus,
   toExecutionAggregate,
   toExecutionParent,
   toStrategyInfo,
@@ -235,6 +236,7 @@ export function useAlgoStream(): AlgoStream {
   useEffect(() => {
     let cancelled = false;
     let statusPoll: number | null = null;
+    let equityPoll: number | null = null;
 
     const publishStatus = (next: { status: AlgoStatus; uptime_sec: number; paper_mode?: boolean }) => {
       startedAtRef.current = Date.now() / 1000 - next.uptime_sec;
@@ -265,6 +267,7 @@ export function useAlgoStream(): AlgoStream {
     (async () => {
       try {
         await refresh();
+        startEquityPoll();
       } catch {
         if (cancelled) return;
         try {
@@ -279,7 +282,35 @@ export function useAlgoStream(): AlgoStream {
 
     const ws = new WebSocket(getAlgoWsUrl());
     wsRef.current = ws;
-    ws.onopen = () => setStream((prev) => ({ ...prev, connected: true, error: null }));
+    const syncEquityFromApi = async () => {
+      if (cancelled) return;
+      try {
+        const eq = await api.equity();
+        if (!eq.equity.length) return;
+        const curve = eq.equity.length > 256 ? eq.equity.slice(-256) : eq.equity;
+        setStream((prev) => {
+          const prevLast = prev.equity[prev.equity.length - 1];
+          const nextLast = curve[curve.length - 1];
+          if (prev.equity.length === curve.length && prevLast === nextLast) {
+            return prev;
+          }
+          return { ...prev, equity: curve };
+        });
+      } catch {
+        // keep WS-driven updates; poll is a safety net
+      }
+    };
+
+    const startEquityPoll = () => {
+      if (equityPoll !== null) return;
+      equityPoll = window.setInterval(() => void syncEquityFromApi(), 2000);
+    };
+
+    ws.onopen = () => {
+      setStream((prev) => ({ ...prev, connected: true, error: null }));
+      void syncEquityFromApi();
+      startEquityPoll();
+    };
     ws.onclose = () => {
       setStream((prev) => ({ ...prev, connected: false }));
       ensureStatusPoll();
@@ -309,6 +340,10 @@ export function useAlgoStream(): AlgoStream {
       if (statusPoll !== null) {
         window.clearInterval(statusPoll);
         statusPoll = null;
+      }
+      if (equityPoll !== null) {
+        window.clearInterval(equityPoll);
+        equityPoll = null;
       }
     };
   }, [refresh]);
@@ -436,6 +471,27 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
         msg: event.data.msg,
       };
       return { ...prev, logs: [log, ...prev.logs].slice(0, 80) };
+    }
+
+    case "breaker": {
+      const incoming = toBreakerStatus(event.data);
+      const others = prev.breakers.active.filter(
+        (b) => b.code !== incoming.code || b.target !== incoming.target,
+      );
+      const active =
+        incoming.state === "armed" ? others : [...others.filter((b) => b.code !== incoming.code), incoming];
+      const history =
+        incoming.state === "armed"
+          ? [incoming, ...prev.breakers.history.filter((b) => b.code !== incoming.code)].slice(0, 80)
+          : prev.breakers.history;
+      const activeCodes = active.map((b) => b.code);
+      return {
+        ...prev,
+        breakers: { active, history },
+        systemHealth: prev.systemHealth
+          ? { ...prev.systemHealth, activeBreakers: activeCodes }
+          : prev.systemHealth,
+      };
     }
 
     case "tick":

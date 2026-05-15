@@ -15,9 +15,10 @@ def test_shard_counts_respect_binance_limit() -> None:
     assert len(shards) >= 2
 
 
-def test_small_universe_single_shard() -> None:
+def test_small_universe_ticker_isolated() -> None:
     syms = ["btcusdt", "ethusdt"]
     shards = _shard_symbols_for_streams(syms)
-    assert len(shards) == 1
-    assert shards[0][1] is True
-    assert len(shards[0][0]) == 2
+    assert len(shards) == 2
+    assert shards[0] == ([], True)
+    assert shards[1][1] is False
+    assert len(shards[1][0]) == 2

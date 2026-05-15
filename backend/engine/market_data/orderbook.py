@@ -37,6 +37,13 @@ class OrderBook:
 
     # --- Mutators ---
 
+    def invalidate(self) -> None:
+        """Drop sync state after a market WebSocket reconnect."""
+        self.bids.clear()
+        self.asks.clear()
+        self.last_update_id = 0
+        self._ready = False
+
     def apply_snapshot(self, bids: Iterable[tuple[float, float]],
                        asks: Iterable[tuple[float, float]],
                        last_update_id: int) -> None:

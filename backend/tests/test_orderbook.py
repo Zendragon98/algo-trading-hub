@@ -56,6 +56,19 @@ def test_diff_inserts_and_removes() -> None:
     assert book.asks[0].qty == 4.0
 
 
+def test_invalidate_clears_ready() -> None:
+    book = OrderBook(symbol="BTCUSDT")
+    book.apply_snapshot(
+        bids=[(100.0, 1.0)],
+        asks=[(100.5, 1.0)],
+        last_update_id=5,
+    )
+    assert book.ready()
+    book.invalidate()
+    assert not book.ready()
+    assert book.last_update_id == 0
+
+
 def test_imbalance_signs() -> None:
     book = OrderBook(symbol="BTCUSDT")
     book.apply_snapshot(

@@ -287,6 +287,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   state: () => request<StateDTO>("/api/state"),
   status: () => request<StatusDTO>("/api/status"),
+  equity: () => request<EquityDTO>("/api/equity"),
   positions: () => request<Position[]>("/api/positions"),
   trades: (limit = 40) => request<Trade[]>(`/api/trades?limit=${limit}`),
   logs: (limit = 60) => request<LogEntry[]>(`/api/logs?limit=${limit}`),
@@ -353,7 +354,8 @@ export type WsEvent =
   | { type: "position"; ts: number; data: Position & { unrealized_pnl: number; notional: number } }
   | { type: "equity"; ts: number; data: { equity: number; cash: number; ts: number } }
   | { type: "log"; ts: number; data: { level: LogEntry["level"]; msg: string; logger?: string } }
-  | { type: "status"; ts: number; data: StatusEventData };
+  | { type: "status"; ts: number; data: StatusEventData }
+  | { type: "breaker"; ts: number; data: BreakerStatusDTO & { action?: string } };
 
 // --- camelCase mappers (DTO -> view model) ---
 

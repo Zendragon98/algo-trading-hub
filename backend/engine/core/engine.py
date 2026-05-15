@@ -54,7 +54,7 @@ from ..risk.limits import Limits
 from ..risk.loss_tracker import LossTracker
 from ..risk.market_data_guard import MarketDataGuard
 from ..risk.pnl_tracker import PnLTracker
-from ..market_data.data_quality import DataQualityMonitor
+from ..market_data.data_quality import DataQualityMonitor, DiffAction
 from ..observability.alert_manager import AlertManager
 from ..observability.latency_tracker import LatencyTracker
 from ..risk.pretrade_validator import PreTradeValidator
@@ -70,6 +70,9 @@ from .reconciliation import Reconciler
 from .state import EngineSnapshot, EngineState
 
 logger = logging.getLogger(__name__)
+
+# Cap REST book resnapshots per clock tick so mark-to-market stays ~1 Hz.
+_MAX_MD_RESNAPSHOTS_PER_TICK = 5
 
 
 def _venue_symbol_list(candidates: Iterable[str], fallback: Iterable[str]) -> list[str]:
@@ -200,6 +203,7 @@ class Engine:
             stale_resnapshot_sec=settings.md_stale_resnapshot_sec,
             crossed_book_breaker=settings.md_crossed_book_breaker,
         )
+        self._md_bootstrap_done = False
         self._clock_skew_ms: float = 0.0
         self._router = ExecutionRouter(
             wheel=self._wheel,
@@ -447,7 +451,11 @@ class Engine:
                 )
             )
 
-        # Public market WebSocket first: ``bookTicker`` for mids, depth for L2,
+        # Seed L2 books over REST before the public WS so the first depth diff
+        # does not race a half-built book (avoids startup sequence-gap storms).
+        await self._resync_symbol_books(self._symbols, reason="startup")
+
+        # Public market WebSocket: ``bookTicker`` for mids, depth for L2,
         # ``!ticker@arr`` for rolling 24h volumes (avoids REST ``/ticker/24hr``).
         await self._gateway.subscribe_market_data(
             symbols=self._symbols,
@@ -455,7 +463,12 @@ class Engine:
             on_depth=self._on_depth,
             on_trade=self._on_trade,
             on_quote_volume_24h=self._on_quote_volume_24h,
+            on_reconnect=self._on_market_ws_reconnect,
         )
+
+        # REST-sync every L2 book before applying depth diffs (avoids million-id gaps).
+        await self._bootstrap_order_books()
+        self._md_bootstrap_done = True
 
         # Prime mids from WS where possible; REST ``/depth`` only for stragglers.
         await self._prime_symbol_prices()
@@ -464,15 +477,21 @@ class Engine:
         balances, positions = await self._gateway.fetch_balances_and_positions()
         self._portfolio.seed_balances(balances)
         self._positions.seed(positions)
+        self._oms.touch_user_data_activity()
+        # REST account snapshot is fresh account state even before user-data WS events.
+        self._oms.touch_user_data_activity()
 
         if getattr(self._settings, "order_reconcile_on_startup", True):
             await self._order_reconciler.sync_startup()
 
-        await self._gateway.subscribe_user_data(
-            on_fill=self._on_fill,
-            on_order_update=self._on_order_update,
-            on_account_update=self._on_account_update,
-        )
+        subscribe_kw: dict[str, Any] = {
+            "on_fill": self._on_fill,
+            "on_order_update": self._on_order_update,
+            "on_account_update": self._on_account_update,
+        }
+        if self._settings.venue == "binance":
+            subscribe_kw["on_ws_connected"] = self._on_user_ws_connected
+        await self._gateway.subscribe_user_data(**subscribe_kw)
 
         # Initial volume snapshot so liquidity-weighted strategies can size
         # their reference at the first tick rather than after the 30 min
@@ -501,6 +520,27 @@ class Engine:
         self._alert_task = asyncio.create_task(self._alert_pump(), name="engine-alerts")
         logger.info("engine running")
 
+    async def _bootstrap_order_books(self) -> None:
+        """REST snapshot every symbol's L2 book before the depth stream is applied."""
+        if not self._symbols:
+            return
+        sem = asyncio.Semaphore(8)
+
+        async def _one(symbol: str) -> None:
+            async with sem:
+                await self._snapshot_book(symbol)
+
+        results = await asyncio.gather(
+            *(_one(sym) for sym in self._symbols), return_exceptions=True,
+        )
+        failures = sum(1 for r in results if isinstance(r, Exception))
+        logger.info(
+            "order book bootstrap: %d/%d symbols synced (failed=%d)",
+            len(self._symbols) - failures,
+            len(self._symbols),
+            failures,
+        )
+
     async def _prime_symbol_prices(self) -> None:
         """Seed mids from ``bookTicker`` WS when possible; REST ``/depth`` for stragglers."""
         if not self._symbols:
@@ -528,14 +568,26 @@ class Engine:
         sem = asyncio.Semaphore(8)
 
         async def _one(symbol: str) -> None:
+            book = self._books.get(symbol)
+            if book.ready():
+                mid = book.mid()
+                if mid is not None:
+                    self._latest_tick[symbol] = Tick(
+                        symbol=symbol,
+                        bid=book.best_bid() or mid,
+                        ask=book.best_ask() or mid,
+                        ts=time.time(),
+                    )
+                return
             async with sem:
                 data = await self._gateway.book_snapshot(symbol, depth=5)
-            self._books.get(symbol).apply_snapshot(
+            last_id = int(data.get("lastUpdateId", 0))
+            book.apply_snapshot(
                 bids=[(float(p), float(q)) for p, q in data.get("bids", [])],
                 asks=[(float(p), float(q)) for p, q in data.get("asks", [])],
-                last_update_id=int(data.get("lastUpdateId", 0)),
+                last_update_id=last_id,
             )
-            book = self._books.get(symbol)
+            self._md_quality.on_snapshot(symbol, last_id)
             mid = book.mid()
             if mid is not None:
                 self._latest_tick[symbol] = Tick(
@@ -747,26 +799,76 @@ class Engine:
         self._state.last_tick_ts = recv_ts
         self._latency.on_tick(tick.symbol)
         await self._positions.on_tick(tick)
-        await self._bus.publish(
-            Event(
-                type=EventType.TICK,
-                payload={"symbol": tick.symbol, "bid": tick.bid, "ask": tick.ask, "mid": tick.mid},
+        # TICK is a firehose (one event per BBO change × symbol). Only publish when
+        # tick archival is enabled; otherwise it floods subscriber queues and drops
+        # STATUS/EQUITY events the dashboard relies on.
+        if self._settings.persist_record_ticks:
+            await self._bus.publish(
+                Event(
+                    type=EventType.TICK,
+                    payload={
+                        "symbol": tick.symbol,
+                        "bid": tick.bid,
+                        "ask": tick.ask,
+                        "mid": tick.mid,
+                    },
+                )
             )
-        )
 
     async def _on_depth(self, diff: DepthDiff) -> None:
+        if not self._md_bootstrap_done:
+            return
         self._state.last_tick_ts = time.time()
-        # Lazy snapshot: the first diff for an unseen symbol triggers a
-        # REST snapshot fetch; subsequent diffs are folded straight in.
         book = self._books.get(diff.symbol)
-        if not book.ready():
+        action, gap = self._md_quality.assess(
+            diff,
+            book_ready=book.ready(),
+            book_last_update_id=book.last_update_id,
+        )
+        if action is DiffAction.RESNAPSHOT:
+            if gap > 0:
+                self._md_quality.record_gap(diff.symbol, gap)
             await self._snapshot_book(diff.symbol)
+            action, gap = self._md_quality.assess(
+                diff,
+                book_ready=book.ready(),
+                book_last_update_id=book.last_update_id,
+            )
+        if action is DiffAction.DROP_STALE:
+            return
+        if action is DiffAction.RESNAPSHOT:
+            return
         book.apply_diff(diff)
-        health = self._md_quality.on_diff(
+        self._md_quality.on_applied(
             diff, best_bid=book.best_bid(), best_ask=book.best_ask(),
         )
-        if health.needs_resnapshot:
-            await self._snapshot_book(diff.symbol)
+
+    async def _on_market_ws_reconnect(self, symbols: list[str]) -> None:
+        """REST-resync L2 books after a public market WebSocket reconnect."""
+        await self._resync_symbol_books(symbols, reason="reconnect")
+
+    async def _resync_symbol_books(self, symbols: list[str], *, reason: str) -> None:
+        if not symbols:
+            return
+        logger.info("%s: resyncing %d symbol L2 book(s)", reason, len(symbols))
+        self._md_quality.invalidate(symbols)
+        for sym in symbols:
+            self._books.get(sym).invalidate()
+        sem = asyncio.Semaphore(8)
+
+        async def _one(symbol: str) -> None:
+            async with sem:
+                await self._snapshot_book(symbol)
+
+        results = await asyncio.gather(*(_one(s) for s in symbols), return_exceptions=True)
+        failures = sum(1 for r in results if isinstance(r, Exception))
+        if failures:
+            logger.warning(
+                "%s book resync: %d/%d snapshots failed",
+                reason,
+                failures,
+                len(symbols),
+            )
 
     async def _on_trade(self, trade: TapeTrade) -> None:
         self._state.last_tick_ts = time.time()
@@ -820,6 +922,9 @@ class Engine:
             except Exception:  # noqa: BLE001
                 logger.exception("strategy %s on_fill raised", active.name)
 
+    async def _on_user_ws_connected(self) -> None:
+        self._oms.touch_user_data_activity()
+
     async def _on_account_update(self, update: dict) -> None:
         """Apply exchange-reported wallet + position state.
 
@@ -843,8 +948,14 @@ class Engine:
 
     # --- Heartbeat ---
 
+    def _user_data_fresh(self) -> bool:
+        ts = self._oms.last_user_data_ts
+        if ts <= 0:
+            return False
+        return (time.time() - ts) < float(self._settings.reconcile_user_data_fresh_sec)
+
     async def _on_clock_tick(self) -> None:
-        await self._portfolio.mark_to_market()
+        await self._portfolio.mark_to_market(use_mark_pnl=not self._user_data_fresh())
         # Refresh portfolio guards before the breaker advances so a
         # newly tripped MAJOR is honoured this same tick.
         self._pnl.update()
@@ -864,15 +975,18 @@ class Engine:
         # via `_flatten_in_progress`: subsequent ticks during an active
         # flatten don't spawn duplicates.
         await self._maybe_flatten_for_breaker()
+        # Ops metrics (tick age, md_health, breakers) must update even when paused
+        # so the console stays live while the operator inspects a halt.
+        await self._publish_ops_status()
         if self._state.status is not EngineStatus.RUNNING:
             return
 
         # Risk-driven exits first; an exit can't be vetoed by risk again
         # because it's already a closing trade.
         await self._latency.maybe_emit(self._settings.latency_metrics_interval_sec)
-        for sym in self._md_quality.tick_staleness(now=time.time()):
+        stale = self._md_quality.tick_staleness(now=time.time())
+        for sym in stale[:_MAX_MD_RESNAPSHOTS_PER_TICK]:
             await self._snapshot_book(sym)
-        await self._publish_ops_status()
         await self._evaluate_exits()
         await self._evaluate_strategies()
 

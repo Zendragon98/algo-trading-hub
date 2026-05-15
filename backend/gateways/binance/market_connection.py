@@ -5,8 +5,8 @@ subscriptions fail or stall — bookTicker never arrives and startup falls back
 to hundreds of REST ``/depth`` calls (slow).
 
 We shard large universes across multiple sockets:
-    - Shard 0: ``!ticker@arr`` + first chunk of symbols (bookTicker, aggTrade, depth)
-    - Further shards: remaining symbol chunks only (no duplicate ``!ticker@arr``).
+    - Shard 0: ``!ticker@arr`` only (isolates the heavy all-market fan-out)
+    - Further shards: symbol chunks (bookTicker, aggTrade, depth) without ``!ticker@arr``.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from common.types import TapeTrade, Tick
 from ..gateway_interface import (
     DepthCallback,
     DepthDiff,
+    MarketReconnectCallback,
     QuoteVolume24hCallback,
     TickCallback,
     TradeCallback,
@@ -40,29 +41,21 @@ _MAX_STREAMS_PER_CONNECTION = 1024
 def _shard_symbols_for_streams(symbols: list[str]) -> list[tuple[list[str], bool]]:
     """Split ``symbols`` into chunks that fit under the 1024-stream cap.
 
-    Each symbol adds three streams (bookTicker, aggTrade, depth). The first
-    chunk also carries ``!ticker@arr`` (+1 stream).
+    Each symbol adds three streams (bookTicker, aggTrade, depth). ``!ticker@arr``
+    lives on its own socket so a 1 Hz all-market array cannot starve depth pings.
 
     Returns list of ``(symbol_chunk, include_ticker_arr)``.
     """
     if not symbols:
         return []
 
-    first_cap = (_MAX_STREAMS_PER_CONNECTION - 1) // 3
-    rest_cap = _MAX_STREAMS_PER_CONNECTION // 3
-
-    chunks: list[tuple[list[str], bool]] = []
+    sym_cap = _MAX_STREAMS_PER_CONNECTION // 3
+    chunks: list[tuple[list[str], bool]] = [([], True)]
     pos = 0
-    # First shard: reserve one slot for !ticker@arr
-    take = min(len(symbols), first_cap)
-    chunks.append((symbols[pos : pos + take], True))
-    pos += take
-
     while pos < len(symbols):
-        take = min(rest_cap, len(symbols) - pos)
+        take = min(sym_cap, len(symbols) - pos)
         chunks.append((symbols[pos : pos + take], False))
         pos += take
-
     return chunks
 
 
@@ -76,8 +69,10 @@ class MarketConnection:
         self._on_depth: DepthCallback | None = None
         self._on_trade: TradeCallback | None = None
         self._on_quote_vol: QuoteVolume24hCallback | None = None
+        self._on_reconnect: MarketReconnectCallback | None = None
         self._tasks: list[asyncio.Task[None]] = []
         self._stop = asyncio.Event()
+        self._shard_had_session: dict[int, bool] = {}
 
     async def start(
         self,
@@ -87,6 +82,7 @@ class MarketConnection:
         on_trade: TradeCallback,
         *,
         on_quote_volume_24h: QuoteVolume24hCallback | None = None,
+        on_reconnect: MarketReconnectCallback | None = None,
     ) -> None:
         self._symbols = [s.lower() for s in symbols]
         self._wanted = set(self._symbols)
@@ -94,7 +90,9 @@ class MarketConnection:
         self._on_depth = on_depth
         self._on_trade = on_trade
         self._on_quote_vol = on_quote_volume_24h
+        self._on_reconnect = on_reconnect
         self._stop.clear()
+        self._shard_had_session.clear()
 
         shards = _shard_symbols_for_streams(self._symbols)
         self._tasks = []
@@ -164,8 +162,26 @@ class MarketConnection:
                     len(symbols),
                     ", !ticker@arr" if include_ticker_arr else "",
                 )
-                async with websockets.connect(url, ping_interval=15, ping_timeout=20) as ws:
+                # Generous keepalive: a full ``!ticker@arr`` fan-out can briefly
+                # saturate the event loop; tight ping timeouts look like 1011s.
+                async with websockets.connect(
+                    url,
+                    ping_interval=20,
+                    ping_timeout=60,
+                    close_timeout=10,
+                    max_size=2**22,
+                ) as ws:
                     backoff = 1.0
+                    if self._shard_had_session.get(shard_id) and self._on_reconnect is not None:
+                        shard_syms = [s.upper() for s in symbols]
+                        try:
+                            await self._on_reconnect(shard_syms)
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "market_ws shard %d reconnect handler raised",
+                                shard_id,
+                            )
+                    self._shard_had_session[shard_id] = True
                     await self._read_loop(ws)
             except (ConnectionClosed, OSError) as exc:
                 logger.warning(
@@ -208,6 +224,7 @@ class MarketConnection:
         """Fan out 24h quote volume from the all-markets ticker array."""
         if self._on_quote_vol is None:
             return
+        tasks: list[Awaitable[None]] = []
         for row in rows:
             sym = str(row.get("s", "")).lower()
             if sym not in self._wanted:
@@ -219,7 +236,9 @@ class MarketConnection:
                 qv = float(q_raw)
             except (TypeError, ValueError):
                 continue
-            await self._on_quote_vol(sym.upper(), qv)
+            tasks.append(self._on_quote_vol(sym.upper(), qv))
+        if tasks:
+            await asyncio.gather(*tasks)
 
     async def _dispatch(self, stream: str, data: dict) -> None:
         # Stream names look like "btcusdt@bookTicker". Split once on '@'.
@@ -259,12 +278,22 @@ def _parse_agg_trade(symbol: str, data: dict) -> TapeTrade:
 
 
 def _parse_depth_diff(symbol: str, data: dict) -> DepthDiff:
+    pu_raw = data.get("pu")
+    prev_final: int | None
+    if pu_raw is None:
+        prev_final = None
+    else:
+        try:
+            prev_final = int(pu_raw)
+        except (TypeError, ValueError):
+            prev_final = None
     return DepthDiff(
         symbol=symbol,
         bids=[(float(p), float(q)) for p, q in data.get("b", [])],
         asks=[(float(p), float(q)) for p, q in data.get("a", [])],
         first_update_id=int(data.get("U", 0)),
         final_update_id=int(data.get("u", 0)),
+        prev_final_update_id=prev_final,
     )
 
 
