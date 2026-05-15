@@ -123,7 +123,7 @@ class Settings(BaseSettings):
     max_symbol_notional_pct: float = 0.20   # per-symbol exposure cap
     min_free_margin_pct: float = 0.10       # equity headroom required to enter
     # In-flight execution
-    max_open_parents: int = 8               # max simultaneous in-flight parents
+    max_open_parents: int = 16              # max simultaneous in-flight parents
     submit_rate_per_sec: float = 5.0        # global REST submit throttle
     reject_cooldown_sec: float = 30.0       # symbol pause after K rejects
     max_consecutive_rejects: int = 3
@@ -145,8 +145,19 @@ class Settings(BaseSettings):
     # instead of REST polling. Set False to always verify via REST.
     reconcile_skip_rest_when_user_data_fresh: bool = True
     reconcile_user_data_fresh_sec: float = 120.0
+    # When REST qty differs from local, overwrite local from venue and still trip
+    # ``reconcile_mismatch`` so operators are alerted.
+    reconcile_heal_on_mismatch: bool = True
     flatten_on_stop: bool = True            # market-out residuals on engine.stop()
     flatten_timeout_sec: float = 30.0
+    # Flatten execution: market for tiny/wide/retry; passive VWAP for large+tight;
+    # aggressive VWAP (short schedule + market fallback) otherwise.
+    flatten_market_max_notional_usd: float = 250.0
+    flatten_vwap_min_notional_usd: float = 1_500.0
+    flatten_passive_spread_bps: float = 20.0
+    flatten_wide_spread_bps: float = 100.0
+    flatten_vwap_duration_sec: int = 18
+    flatten_vwap_slices: int = 4
     # Breaker lifecycle
     breaker_minor_cooldown_sec: float = 60.0
 
@@ -157,7 +168,7 @@ class Settings(BaseSettings):
     max_limit_deviation_bps: float = 50.0   # LIMIT peg collar vs mid (execution layer)
 
     # --- Order reconciliation ---
-    reconcile_cancel_orphans: bool = False  # auto-cancel venue orders unknown to OMS
+    reconcile_cancel_orphans: bool = True   # auto-cancel venue orders unknown to OMS
     order_reconcile_on_startup: bool = True
 
     # --- Execution urgency ---

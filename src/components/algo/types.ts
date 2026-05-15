@@ -75,6 +75,13 @@ export type SystemHealth = {
   clockSkewMs: number;
   tickAgeSec: number;
   userDataAgeSec: number;
+  /** True when engine is running and OMS has working orders (staleness enforced). */
+  userDataMonitored: boolean;
+  /** True when monitored and age exceeds WS_STALE_PAUSE_SEC. */
+  userDataStale: boolean;
+  /** True when exposure is open and age exceeds reconcile_user_data_fresh_sec. */
+  userDataReconcileStale: boolean;
+  clockSkewSynced: boolean;
   activeBreakers: string[];
   grossNotional: number;
   netNotional: number;

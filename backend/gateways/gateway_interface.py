@@ -48,6 +48,7 @@ class SymbolFilters:
     step_size: float | None = None       # qty must be a multiple of this
     tick_size: float | None = None       # price must be a multiple of this
     min_qty: float | None = None         # smallest qty the venue accepts
+    max_qty: float | None = None         # largest qty per order (limit + market)
     min_notional: float | None = None    # smallest qty * price the venue accepts
 
 
@@ -193,6 +194,15 @@ class GatewayInterface(ABC):
         equal weights when the cache is empty.
         """
         return {}
+
+    # --- Clock sync (signed REST) ---
+    async def sync_clock(self) -> None:
+        """Align local timestamps with the venue clock (no-op on mocks)."""
+        return None
+
+    def clock_skew_ms(self) -> float:
+        """Signed offset: venue_time_ms - local_time_ms (0 when unknown)."""
+        return 0.0
 
     # --- Reference data ---
     @abstractmethod

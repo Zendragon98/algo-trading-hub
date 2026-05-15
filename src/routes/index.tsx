@@ -265,12 +265,7 @@ function Index() {
                 />
                 <HealthChip
                   label="User-data age"
-                  value={
-                    systemHealth.userDataAgeSec >= 0
-                      ? `${systemHealth.userDataAgeSec.toFixed(1)}s`
-                      : "—"
-                  }
-                  ok={systemHealth.userDataAgeSec >= 0 && systemHealth.userDataAgeSec < 60}
+                  {...userDataAgeDisplay(systemHealth)}
                 />
                 <HealthChip
                   label="Order reconcile"
@@ -292,18 +287,15 @@ function Index() {
                 />
                 <HealthChip
                   label="p95 tick→submit"
-                  value={`${(systemHealth.latency.tick_to_submit_ms?.p95 ?? 0).toFixed(0)} ms`}
-                  ok
+                  {...latencyP95Display(systemHealth.latency, "tick_to_submit_ms", 500)}
                 />
                 <HealthChip
                   label="p95 submit→ack"
-                  value={`${(systemHealth.latency.submit_to_ack_ms?.p95 ?? 0).toFixed(0)} ms`}
-                  ok={(systemHealth.latency.submit_to_ack_ms?.p95 ?? 0) < 500}
+                  {...latencyP95Display(systemHealth.latency, "submit_to_ack_ms", 500)}
                 />
                 <HealthChip
                   label="Clock skew"
-                  value={`${systemHealth.clockSkewMs.toFixed(0)} ms`}
-                  ok={Math.abs(systemHealth.clockSkewMs) < 250}
+                  {...clockSkewDisplay(systemHealth)}
                 />
                 <HealthChip
                   label="Gross notional"
@@ -893,6 +885,52 @@ function BreakerRow({ breaker, onRearm }: { breaker: BreakerStatus; onRearm: () 
       ) : null}
     </div>
   );
+}
+
+const CLOCK_SKEW_WARN_MS = 250;
+
+function latencyP95Display(
+  latency: SystemHealth["latency"],
+  key: string,
+  warnMs: number,
+): { value: string; ok: boolean } {
+  const bucket = latency[key];
+  if (!bucket || bucket.count < 1) {
+    return { value: "—", ok: true };
+  }
+  const p95 = bucket.p95;
+  return {
+    value: `${p95.toFixed(0)} ms`,
+    ok: p95 < warnMs,
+  };
+}
+
+function userDataAgeDisplay(health: SystemHealth): { value: string; ok: boolean } {
+  if (health.userDataAgeSec < 0) {
+    return { value: "—", ok: true };
+  }
+  const age = `${health.userDataAgeSec.toFixed(1)}s`;
+  if (health.userDataStale) {
+    return { value: age, ok: false };
+  }
+  if (health.userDataReconcileStale) {
+    return { value: `${age} (REST)`, ok: false };
+  }
+  if (!health.userDataMonitored) {
+    return { value: `${age} (idle)`, ok: true };
+  }
+  return { value: age, ok: true };
+}
+
+function clockSkewDisplay(health: SystemHealth): { value: string; ok: boolean } {
+  if (!health.clockSkewSynced) {
+    return { value: "—", ok: true };
+  }
+  const ms = Math.abs(health.clockSkewMs);
+  return {
+    value: `${ms.toFixed(0)} ms`,
+    ok: ms < CLOCK_SKEW_WARN_MS,
+  };
 }
 
 function HealthChip({

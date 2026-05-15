@@ -169,6 +169,10 @@ export type SystemHealthDTO = {
   clock_skew_ms: number;
   tick_age_sec: number;
   user_data_age_sec: number;
+  user_data_monitored?: boolean;
+  user_data_stale?: boolean;
+  user_data_reconcile_stale?: boolean;
+  clock_skew_synced?: boolean;
   active_breakers: string[];
   gross_notional: number;
   net_notional: number;
@@ -228,6 +232,10 @@ export type StatusEventData = {
   clock_skew_ms?: number;
   tick_age_sec?: number;
   user_data_age_sec?: number;
+  user_data_monitored?: boolean;
+  user_data_stale?: boolean;
+  user_data_reconcile_stale?: boolean;
+  clock_skew_synced?: boolean;
   active_breakers?: string[];
   gross_notional?: number;
   net_notional?: number;
@@ -492,6 +500,10 @@ export function toSystemHealth(d: SystemHealthDTO): import("@/components/algo/ty
     clockSkewMs: d.clock_skew_ms,
     tickAgeSec: d.tick_age_sec,
     userDataAgeSec: d.user_data_age_sec,
+    userDataMonitored: Boolean(d.user_data_monitored),
+    userDataStale: Boolean(d.user_data_stale),
+    userDataReconcileStale: Boolean(d.user_data_reconcile_stale),
+    clockSkewSynced: Boolean(d.clock_skew_synced),
     activeBreakers: d.active_breakers ?? [],
     grossNotional: d.gross_notional,
     netNotional: d.net_notional,

@@ -126,7 +126,7 @@ async def shutdown(
 
 @router.post("/flatten", response_model=StatusDTO)
 async def flatten(engine: Engine = Depends(get_engine)) -> StatusDTO:
-    await _run_or_500("flatten", engine.flatten)
+    await _run_or_500("flatten", engine._flatten_and_wait_for_flat)
     return _status(engine)
 
 

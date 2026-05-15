@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from common.config import Settings, normalize_strategy_name
-from common.enums import EngineStatus, EventType, LogLevel, OrderStatus, Side, Urgency
+from common.enums import EngineStatus, EventType, LogLevel, OrderStatus, OrderType, Side, Urgency
 from common.events import Event, EventBus
 from common.types import ChildOrder, Fill, ParentOrder, Position, Signal, TapeTrade, Tick
 from gateways.gateway_interface import DepthDiff, GatewayInterface
@@ -39,7 +39,7 @@ from ..execution.vwap_executor import VwapExecutor
 from ..market_data.feature_store import FeatureStore
 from ..market_data.orderbook import OrderBookStore
 from ..market_data.trade_tape import TradeTape
-from ..orders.order_manager import OrderManager, _fill_to_dict
+from ..orders.order_manager import OrderManager, new_client_order_id, _fill_to_dict
 from ..performance.fill_classification import classify_fill
 from ..performance.performance_tracker import PerformanceTracker
 from ..portfolio.portfolio import Portfolio
@@ -62,7 +62,7 @@ from ..observability.latency_tracker import LatencyTracker
 from ..risk.pretrade_validator import PreTradeValidator
 from ..risk.risk_manager import ExitIntent, RiskManager
 from ..risk.stop_loss import StopLossMonitor
-from ..risk.venue_sizing import venue_min_qty
+from ..risk.venue_sizing import venue_cap_qty, venue_min_qty
 from ..strategies.signal_netter import NettedSignal, net_strategy_signals
 from ..strategies.strategy_base import StrategyBase
 from ..persistence.journal import replay_wal_async
@@ -224,6 +224,8 @@ class Engine:
         self._book_snapshot_sem = asyncio.Semaphore(8)
         self._resnapshot_inflight: set[str] = set()
         self._clock_skew_ms: float = 0.0
+        self._clock_skew_synced: bool = False
+        self._clock_skew_sync_tick: int = 0
         self._router = ExecutionRouter(
             wheel=self._wheel,
             executor=self._executor,
@@ -489,6 +491,7 @@ class Engine:
             return
         logger.info("engine starting")
         await self._gateway.connect()
+        await self._refresh_clock_skew()
 
         if self._settings.recover_on_start and self._recovery_wal is not None:
             summary = await replay_wal_async(
@@ -684,21 +687,41 @@ class Engine:
         await self._publish_status()
 
     async def _flatten_and_wait_for_flat(self) -> None:
-        """Submit reduce-only flatten orders and wait until flat or timeout."""
-        await self.flatten()
-        timeout = float(getattr(self._settings, "flatten_timeout_sec", 30.0))
-        deadline = asyncio.get_event_loop().time() + max(0.0, timeout)
-        poll = 0.5
-        while asyncio.get_event_loop().time() < deadline:
-            if not self._positions.all():
-                return
-            await asyncio.sleep(poll)
-        remaining = [p.symbol for p in self._positions.all()]
-        if remaining:
-            logger.warning(
-                "flatten timeout: %d positions still open: %s",
-                len(remaining), ",".join(remaining),
-            )
+        """Submit reduce-only flatten orders and wait until venue is flat."""
+        was_running = self._state.status is EngineStatus.RUNNING
+        if was_running:
+            await self.pause()
+        try:
+            await self.flatten()
+            base_timeout = float(getattr(self._settings, "flatten_timeout_sec", 30.0))
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + max(base_timeout, 15.0)
+            poll = 0.75
+            while loop.time() < deadline:
+                open_pos = await self._fetch_venue_open_positions()
+                await self._positions.sync_from_venue(open_pos)
+                if not open_pos:
+                    logger.info("flatten complete: venue reports flat")
+                    return
+                logger.info(
+                    "flatten wait: %d position(s) still open on venue, retrying",
+                    len(open_pos),
+                )
+                await self._close_positions_for_flatten(open_pos, retry=True)
+                await asyncio.sleep(poll)
+            remaining = [p.symbol for p in await self._fetch_venue_open_positions()]
+            if remaining:
+                logger.warning(
+                    "flatten timeout: %d positions still open on venue: %s",
+                    len(remaining),
+                    ",".join(remaining),
+                )
+        finally:
+            try:
+                open_pos = await self._fetch_venue_open_positions()
+                await self._positions.sync_from_venue(open_pos)
+            except Exception:  # noqa: BLE001
+                logger.exception("final venue position sync after flatten failed")
 
     async def _cancel_refresh_loops(self) -> None:
         """Cancel + await the background resync tasks spawned in start().
@@ -811,27 +834,152 @@ class Engine:
                 continue
             self._touch_symbol_from_book(sym, book)
 
-    async def flatten(self) -> None:
-        """Cancel working orders + market-out all positions."""
-        logger.warning("flattening all positions")
-        try:
-            await self._gateway.cancel_all_open_orders()
-        except Exception:  # noqa: BLE001
-            logger.exception("venue cancel_all_open_orders failed during flatten")
-        await self._oms.cancel_all()
-        for position in list(self._positions.all()):
+    async def _fetch_venue_open_positions(self) -> list[Position]:
+        rows = await self._gateway.fetch_positions()
+        return [p for p in rows if abs(p.qty) > 1e-12]
+
+    def _flatten_close_mode(self, position: Position, *, retry: bool) -> str:
+        """Pick market vs passive/aggressive VWAP for a flatten leg.
+
+        Returns ``market``, ``flatten_passive`` (limit-heavy schedule), or
+        ``flatten`` (short urgent VWAP with market fallback).
+        """
+        if retry:
+            return "market"
+        mid = self._mid_for(position.symbol)
+        if mid is None or mid <= 0:
+            return "market"
+        notional = abs(position.qty) * mid
+        max_market = float(getattr(self._settings, "flatten_market_max_notional_usd", 250.0))
+        min_passive = float(getattr(self._settings, "flatten_vwap_min_notional_usd", 1500.0))
+        wide_bps = float(getattr(self._settings, "flatten_wide_spread_bps", 100.0))
+        passive_bps = float(getattr(self._settings, "flatten_passive_spread_bps", 20.0))
+        feat = self._features.snapshot(position.symbol)
+        spread = feat.spread_bps
+        if notional <= max_market:
+            return "market"
+        if spread is not None and spread > wide_bps:
+            return "market"
+        if notional >= min_passive and spread is not None and spread <= passive_bps:
+            return "flatten_passive"
+        return "flatten"
+
+    async def _close_positions_for_flatten(
+        self,
+        positions: list[Position],
+        *,
+        retry: bool = False,
+    ) -> None:
+        for position in positions:
             if abs(position.qty) <= 0:
                 continue
+            mode = self._flatten_close_mode(position, retry=retry)
             side = Side.SELL if position.qty > 0 else Side.BUY
-            await self._dispatch_single(
-                Signal(
+            qty = abs(position.qty)
+            if mode == "market":
+                await self._market_reduce_only(position.symbol, side, qty)
+                continue
+            try:
+                await self._router.submit(
                     symbol=position.symbol,
                     side=side,
-                    qty=abs(position.qty),
-                    reason="flatten",
+                    qty=qty,
+                    notes=mode,
                     reduce_only=True,
+                    urgency=(
+                        Urgency.PASSIVE
+                        if mode == "flatten_passive"
+                        else Urgency.AGGRESSIVE
+                    ),
                 )
+                logger.info(
+                    "flatten vwap %s %s %s qty=%.8f",
+                    mode,
+                    side.value,
+                    position.symbol,
+                    qty,
+                )
+            except ParentSubmissionRejected as exc:
+                logger.warning(
+                    "flatten vwap rejected %s (%s), falling back to market: %s",
+                    position.symbol,
+                    mode,
+                    exc,
+                )
+                await self._market_reduce_only(position.symbol, side, qty)
+
+    async def _market_reduce_only(
+        self,
+        symbol: str,
+        side: Side,
+        qty: float,
+    ) -> None:
+        """One-shot market reduce-only child; bypasses the VWAP router."""
+        parent_id = f"P-flat-{symbol[:12]}"
+        child = ChildOrder(
+            id=new_client_order_id(parent_id, 0),
+            parent_id=parent_id,
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            price=None,
+            order_type=OrderType.MARKET,
+            reduce_only=True,
+        )
+        try:
+            await self._oms.submit_child(child)
+            logger.info(
+                "flatten market %s %s qty=%.8f",
+                side.value,
+                symbol,
+                qty,
             )
+        except Exception as exc:  # noqa: BLE001
+            if getattr(exc, "code", None) == -2022:
+                logger.info("flatten skip %s: already flat at venue", symbol)
+                return
+            logger.warning("flatten market failed %s: %s", symbol, exc)
+
+    async def flatten(self) -> None:
+        """Cancel working orders + close all venue positions (market or VWAP)."""
+        if self._auto_flatten_in_progress:
+            logger.warning("flatten skipped: flatten already in progress")
+            return
+        self._auto_flatten_in_progress = True
+        logger.warning("flattening all positions")
+        try:
+            try:
+                await self._gateway.cancel_all_open_orders()
+            except Exception:  # noqa: BLE001
+                logger.exception("venue cancel_all_open_orders failed during flatten")
+            await self._oms.cancel_all()
+            rounds = max(3, int(getattr(self._settings, "flatten_rounds", 4)))
+            for attempt in range(rounds):
+                try:
+                    open_pos = await self._fetch_venue_open_positions()
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "fetch_positions failed during flatten (attempt %d)",
+                        attempt + 1,
+                    )
+                    open_pos = self._positions.all()
+                await self._positions.sync_from_venue(open_pos)
+                if not open_pos:
+                    logger.info("flatten: venue flat after attempt %d", attempt + 1)
+                    return
+                logger.info(
+                    "flatten attempt %d/%d: closing %d position(s)",
+                    attempt + 1,
+                    rounds,
+                    len(open_pos),
+                )
+                await self._close_positions_for_flatten(
+                    open_pos,
+                    retry=attempt > 0,
+                )
+                await asyncio.sleep(1.5)
+        finally:
+            self._auto_flatten_in_progress = False
 
     async def operator_halt(
         self,
@@ -1090,7 +1238,25 @@ class Engine:
             logger.exception("strategy %s on_fill raised", strategy_name)
 
     async def _on_user_ws_connected(self) -> None:
-        """User-data WS is up; freshness is tracked on real ACCOUNT_UPDATE / fills."""
+        """Resync wallet + positions after user-data WS reconnect.
+
+        Events may have been missed while the socket was down; REST is authoritative.
+        """
+        if self._settings.venue != "binance":
+            return
+        try:
+            balances, positions = await self._gateway.fetch_balances_and_positions()
+        except Exception:  # noqa: BLE001
+            logger.exception("user_ws reconnect: venue snapshot failed")
+            return
+        if balances:
+            self._portfolio.update_balances(balances)
+        open_pos = [p for p in positions if abs(p.qty) > 1e-12]
+        await self._positions.sync_from_venue(open_pos)
+        # Treat a successful post-reconnect REST snapshot like fresh user-data so
+        # age / reconcile-skip reflect recovered venue connectivity, not silence.
+        self._oms.touch_user_data_activity()
+        logger.info("user_ws reconnect: synced %d open position(s) from venue", len(open_pos))
 
     async def _on_account_update(self, update: dict) -> None:
         """Apply exchange-reported wallet + position state.
@@ -1127,12 +1293,25 @@ class Engine:
             return False
         return self._user_data_fresh()
 
+    async def _refresh_clock_skew(self) -> None:
+        try:
+            await self._gateway.sync_clock()
+            self._clock_skew_ms = float(self._gateway.clock_skew_ms())
+            self._clock_skew_synced = True
+        except Exception:  # noqa: BLE001
+            logger.debug("clock skew sync failed", exc_info=True)
+
     async def _on_clock_tick(self) -> None:
+        self._clock_skew_sync_tick += 1
+        if self._clock_skew_sync_tick % 60 == 0:
+            await self._refresh_clock_skew()
+
         await self._portfolio.mark_to_market(use_mark_pnl=not self._user_data_fresh())
         # Refresh portfolio guards before the breaker advances so a
         # newly tripped MAJOR is honoured this same tick.
         self._pnl.update()
-        self._loss_tracker.update()
+        if not self._auto_flatten_in_progress:
+            self._loss_tracker.update()
         self._exec_quality_guard.evaluate()
         has_working_orders = any(True for _ in self._oms.working_children())
         self._connection_monitor.evaluate(
@@ -1179,14 +1358,9 @@ class Engine:
         active = [s for s in self._breaker.active() if s.scope is BreakerScope.ENGINE]
         if not any(s.severity is BreakerSeverity.MAJOR for s in active):
             return
-        self._auto_flatten_in_progress = True
         codes = ",".join(s.code for s in active)
         logger.error("auto-flatten triggered by engine breaker(s): %s", codes)
         try:
-            try:
-                await self._gateway.cancel_all_open_orders()
-            except Exception:  # noqa: BLE001
-                logger.exception("venue cancel_all before auto-flatten failed")
             await self.flatten()
         except Exception:  # noqa: BLE001
             logger.exception("auto-flatten failed")
@@ -1369,6 +1543,12 @@ class Engine:
                 return
             min_allowed = min(min_allowed, decision.qty)
         pair_qty = min_allowed
+        for leg in legs:
+            filt = self._gateway.get_symbol_filters(leg.symbol)
+            pair_qty = min(pair_qty, venue_cap_qty(pair_qty, filt))
+        if pair_qty <= 0:
+            logger.info("group %s aborted: venue max_qty caps pair to zero", group_id)
+            return
         result = self._pretrade.validate_group(
             legs,
             pair_qty,
@@ -1511,10 +1691,46 @@ class Engine:
             )
         )
 
+    def _user_data_health(self, now: float) -> dict[str, float | bool]:
+        """User-data freshness for ops UI (matches ConnectionMonitor rules)."""
+        last_ts = self._oms.last_user_data_ts
+        age = (now - last_ts) if last_ts > 0 else -1.0
+        monitored = (
+            self._state.status is EngineStatus.RUNNING
+            and any(True for _ in self._oms.working_children())
+        )
+        stale = (
+            monitored
+            and last_ts > 0
+            and age > float(self._settings.ws_stale_pause_sec)
+        )
+        has_exposure = self.snapshot().gross_notional > 1e-6
+        reconcile_stale = (
+            self._state.status is EngineStatus.RUNNING
+            and has_exposure
+            and last_ts > 0
+            and age > float(self._settings.reconcile_user_data_fresh_sec)
+        )
+        return {
+            "user_data_age_sec": age,
+            "user_data_monitored": monitored,
+            "user_data_stale": stale,
+            "user_data_reconcile_stale": reconcile_stale,
+        }
+
+    def _portfolio_health(self) -> dict[str, float]:
+        snap = self.snapshot()
+        return {
+            "gross_notional": snap.gross_notional,
+            "net_notional": snap.net_notional,
+            "realized_pnl": snap.realized_pnl,
+            "unrealized_pnl": snap.unrealized_pnl,
+            "equity": snap.equity,
+        }
+
     async def _publish_ops_status(self) -> None:
         now = time.time()
         tick_age = (now - self._state.last_tick_ts) if self._state.last_tick_ts > 0 else -1.0
-        user_age = (now - self._oms.last_user_data_ts) if self._oms.last_user_data_ts > 0 else -1.0
         await self._bus.publish(
             Event(
                 type=EventType.STATUS,
@@ -1524,8 +1740,10 @@ class Engine:
                     "order_reconcile": dict(self._order_reconciler.last_result),
                     "md_health": self._md_quality.metrics(),
                     "clock_skew_ms": self._clock_skew_ms,
+                    "clock_skew_synced": self._clock_skew_synced,
                     "tick_age_sec": tick_age,
-                    "user_data_age_sec": user_age,
+                    **self._user_data_health(now),
+                    **self._portfolio_health(),
                     "active_breakers": [s.code for s in self._breaker.active()],
                 },
                 source="engine",
@@ -1560,22 +1778,16 @@ class Engine:
     def system_health(self) -> dict[str, object]:
         """Snapshot for REST /api/state."""
         now = time.time()
-        snap = self.snapshot()
         return {
             "latency": self._latency.histograms(),
             "order_reconcile": dict(self._order_reconciler.last_result),
             "md_health": self._md_quality.metrics(),
             "clock_skew_ms": self._clock_skew_ms,
+            "clock_skew_synced": self._clock_skew_synced,
             "tick_age_sec": (now - self._state.last_tick_ts) if self._state.last_tick_ts > 0 else -1.0,
-            "user_data_age_sec": (
-                (now - self._oms.last_user_data_ts) if self._oms.last_user_data_ts > 0 else -1.0
-            ),
+            **self._user_data_health(now),
             "active_breakers": [s.code for s in self._breaker.active()],
-            "gross_notional": snap.gross_notional,
-            "net_notional": snap.net_notional,
-            "realized_pnl": snap.realized_pnl,
-            "unrealized_pnl": snap.unrealized_pnl,
-            "equity": snap.equity,
+            **self._portfolio_health(),
         }
 
 

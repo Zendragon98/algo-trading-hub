@@ -63,11 +63,13 @@ class Reconciler:
         self._interval = max(5.0, interval_sec)
         self._qty_tolerance = max(0.0, qty_tolerance)
         self._skip_rest_poll = skip_rest_poll
+        self._heal_on_mismatch = True
         self._task: asyncio.Task[None] | None = None
 
     def apply_settings(self, settings: Settings) -> None:
         self._interval = max(5.0, float(settings.reconcile_interval_sec))
         self._qty_tolerance = max(0.0, settings.reconcile_qty_tolerance)
+        self._heal_on_mismatch = bool(settings.reconcile_heal_on_mismatch)
 
     @classmethod
     def from_settings(
@@ -79,7 +81,7 @@ class Reconciler:
         breaker: CircuitBreaker,
         skip_rest_poll: Callable[[], bool] | None = None,
     ) -> "Reconciler":
-        return cls(
+        inst = cls(
             gateway=gateway,
             positions=positions,
             portfolio=portfolio,
@@ -88,6 +90,8 @@ class Reconciler:
             qty_tolerance=settings.reconcile_qty_tolerance,
             skip_rest_poll=skip_rest_poll,
         )
+        inst._heal_on_mismatch = bool(settings.reconcile_heal_on_mismatch)
+        return inst
 
     def start(self) -> None:
         if self._task is not None:
@@ -150,6 +154,7 @@ class Reconciler:
         venue_by_symbol = {p.symbol: p for p in venue_positions}
         local_by_symbol = {p.symbol: p for p in self._positions.all()}
         symbols = set(venue_by_symbol) | set(local_by_symbol)
+        mismatches: list[tuple[str, float, float]] = []
         for symbol in symbols:
             venue_qty = (
                 venue_by_symbol[symbol].qty if symbol in venue_by_symbol else 0.0
@@ -159,6 +164,17 @@ class Reconciler:
             )
             if abs(venue_qty - local_qty) <= self._qty_tolerance:
                 continue
+            mismatches.append((symbol, venue_qty, local_qty))
+
+        if mismatches and self._heal_on_mismatch:
+            open_positions = [p for p in venue_positions if abs(p.qty) > 1e-12]
+            await self._positions.sync_from_venue(open_positions)
+            logger.warning(
+                "reconcile healed %d symbol(s) from venue REST snapshot",
+                len(mismatches),
+            )
+
+        for symbol, venue_qty, local_qty in mismatches:
             logger.error(
                 "reconcile mismatch on %s: venue=%.10f local=%.10f",
                 symbol, venue_qty, local_qty,

@@ -27,6 +27,7 @@ from gateways.gateway_interface import GatewayInterface, SymbolFilters
 
 from ..market_data.feature_store import FeatureStore
 from ..orders.order_manager import OrderManager, new_client_order_id
+from ..risk.venue_sizing import venue_cap_qty, venue_qty_in_bounds
 from .slicer import Slice, build_schedule
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,22 @@ class VwapExecutor:
     # --- Public ---
 
     def _cfg_for_parent(self, parent: ParentOrder) -> ExecutorConfig:
+        if parent.notes == "flatten_passive":
+            return ExecutorConfig(
+                duration_sec=int(
+                    getattr(self._settings, "flatten_vwap_duration_sec", 18) or 18
+                ),
+                n_slices=int(getattr(self._settings, "flatten_vwap_slices", 4) or 4),
+                slice_timeout_sec=max(6.0, self._cfg.slice_timeout_sec),
+                market_fallback=True,
+            )
+        if parent.notes == "flatten":
+            return ExecutorConfig(
+                duration_sec=int(self._settings.urgent_duration_sec),
+                n_slices=int(self._settings.urgent_num_slices),
+                slice_timeout_sec=min(6.0, self._cfg.slice_timeout_sec),
+                market_fallback=True,
+            )
         if parent.urgency is Urgency.AGGRESSIVE:
             return ExecutorConfig(
                 duration_sec=int(self._settings.urgent_duration_sec),
@@ -210,13 +227,20 @@ class VwapExecutor:
                 try:
                     await self._submit_slice(parent, slc)
                 except Exception as exc:  # noqa: BLE001
-                    # Include exception text because the UI log stream does not show tracebacks.
-                    logger.exception(
-                        "slice %d failed; aborting parent %s: %s",
-                        slc.index,
-                        parent.id,
-                        exc,
-                    )
+                    if _is_reduce_only_reject(exc):
+                        logger.warning(
+                            "slice %d aborted (reduce_only) parent=%s: %s",
+                            slc.index,
+                            parent.id,
+                            exc,
+                        )
+                    else:
+                        logger.exception(
+                            "slice %d failed; aborting parent %s: %s",
+                            slc.index,
+                            parent.id,
+                            exc,
+                        )
                     await self._om.cancel_parent(parent.id)
                     return
 
@@ -254,9 +278,10 @@ class VwapExecutor:
         # out of the gateway and spamming logs.
         filters = self._gateway.get_symbol_filters(parent.symbol)
         ref_price = price if price is not None else self._price(parent.symbol)
-        if not _slice_satisfies(slc.qty, filters, ref_price, reduce_only=parent.reduce_only):
+        slice_qty = venue_cap_qty(slc.qty, filters)
+        if not _slice_satisfies(slice_qty, filters, ref_price, reduce_only=parent.reduce_only):
             raise ValueError(
-                f"slice qty violates venue filters (symbol={parent.symbol} qty={slc.qty:.10f} "
+                f"slice qty violates venue filters (symbol={parent.symbol} qty={slice_qty:.10f} "
                 f"ref_price={'-' if ref_price is None else f'{ref_price:.8f}'} filters={filters})"
             )
         child = ChildOrder(
@@ -264,7 +289,7 @@ class VwapExecutor:
             parent_id=parent.id,
             symbol=parent.symbol,
             side=parent.side,
-            qty=slc.qty,
+            qty=slice_qty,
             price=price,
             order_type=order_type,
             reduce_only=parent.reduce_only,
@@ -289,7 +314,7 @@ class VwapExecutor:
                     parent_id=parent.id,
                     symbol=parent.symbol,
                     side=parent.side,
-                    qty=slc.qty,
+                    qty=slice_qty,
                     price=None,
                     order_type=OrderType.MARKET,
                     reduce_only=parent.reduce_only,
@@ -350,6 +375,10 @@ class VwapExecutor:
         residual = max(0.0, child_after.qty - child_after.filled_qty)
         if residual <= 0:
             return
+        filt = self._gateway.get_symbol_filters(child_after.symbol)
+        residual = venue_cap_qty(residual, filt)
+        if residual <= 0:
+            return
         market = ChildOrder(
             id=new_client_order_id(child_after.parent_id, 99),
             parent_id=child_after.parent_id,
@@ -398,29 +427,10 @@ def _slice_satisfies(
     *,
     reduce_only: bool = False,
 ) -> bool:
-    """Return True if `qty` clears the venue's per-order constraints.
-
-    When ``reduce_only`` is set the venue waives the MIN_NOTIONAL floor
-    (Binance Futures explicitly: "Order's notional must be no smaller
-    than 50 (unless you choose reduce only)."), so an SL/TP that closes
-    a sub-min-notional position must be allowed through.
-    """
-    if filters is None:
-        return True
-    if filters.step_size is not None and filters.step_size > 0:
-        # Floor to step; a qty smaller than one step rounds to zero.
-        if qty + 1e-12 < filters.step_size:
-            return False
-    if filters.min_qty is not None and qty + 1e-12 < filters.min_qty:
-        return False
-    if (
-        not reduce_only
-        and filters.min_notional is not None
-        and ref_price is not None
-        and qty * ref_price + 1e-9 < filters.min_notional
-    ):
-        return False
-    return True
+    """Return True if `qty` clears the venue's per-order constraints."""
+    return venue_qty_in_bounds(
+        qty, filters, ref_price, reduce_only=reduce_only,
+    )
 
 
 def _single_shot_delay(mode: AlgoMode, duration_sec: float) -> float:

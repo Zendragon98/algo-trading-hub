@@ -19,6 +19,7 @@ Repo overview: [`../README.md`](../README.md).
 - [Module deep-dives](#module-deep-dives)
   - [Market making](#strategy--enginestrategiesmarket_makingpy)
   - [Multi-strategy `all`](#multi-strategy-mode--all)
+  - [Operator flatten](#operator-flatten-post-apicontrolflatten)
 - [Failsafes](#failsafes--circuit-breaker-matrix)
 - [Configuration](#configuration-reference)
 - [Run archive](#run-archive)
@@ -288,6 +289,10 @@ Live, hot-path microstructure features:
 - `engine/market_data/orderbook.py` — incremental L2 book (snapshot + diff). Exposes `imbalance(top_n)`, `micro_price`, `spread_bps`.
 - `engine/market_data/trade_tape.py` — `window_sec`-rolling tape. Classifies each trade as bid-hit (sell-init) or ask-hit (buy-init) using Binance's `m` flag and computes the ratio fed to the AlgoWheel.
 - `engine/market_data/feature_store.py` — read-through `Features` snapshot, the only object strategies see.
+- `engine/market_data/data_quality.py` — depth sequence validation (apply-after-snapshot), crossed-book detection (`bid > ask` only), bulk resnapshot on WS reconnect.
+- `gateways/binance/market_connection.py` — shards `!ticker@arr` separately from per-symbol streams; relaxed WS keepalive; parallel ticker volume dispatch.
+
+**Stale-tick handling:** `bookTicker` only fires when the BBO changes, so illiquid symbols can look “stale” while quotes are still valid. The engine refreshes tick timestamps from L2 depth and from the synced order book each heartbeat for the active strategy universe, which avoids false `stale_tick` vetoes without masking a dead feed.
 
 Offline calibration (in `analytics/`):
 
@@ -434,17 +439,44 @@ composite = mm_skew_scale * skew_avg + mm_imbalance_scale * imbalance + mm_tape_
 - **`fade`** (default) — buy when composite is very negative, sell when very positive (mean-reversion).
 - **`follow`** — buy on positive composite, sell on negative (short-term continuation).
 
-Universe via `MM_SYMBOLS` (CSV or `AUTO` → engine `SYMBOLS`). Sizing is equity-budgeted (`MM_RISK_PER_TRADE_PCT` / `DEFAULT_STOP_LOSS_PCT`) with `MM_QTY` fallback at boot. Per-symbol cooldown (`MM_COOLDOWN_SEC`). Does **not** manage its own SL/TP — engine `StopLossMonitor` stays armed. Hot-swap: `POST /api/control/strategy { "name": "market_making" }`.
+Universe via `MM_SYMBOLS` (CSV or `AUTO` → full engine `SYMBOLS` list, e.g. all 88 perps when `SYMBOLS=AUTO`). Sizing is equity-budgeted (`MM_RISK_PER_TRADE_PCT` / `DEFAULT_STOP_LOSS_PCT`) with `MM_QTY` fallback at boot. Per-symbol cooldown (`MM_COOLDOWN_SEC`).
+
+**At scale:** `MM_MAX_ENTRIES_PER_TICK` (default `4`) caps new MM entries per 1 Hz tick by signal score so the engine does not flood `MAX_OPEN_PARENTS`. Exits (`reduce_only`) are not capped.
+
+Does **not** manage its own SL/TP — engine `StopLossMonitor` stays armed. Hot-swap: `POST /api/control/strategy { "name": "market_making" }`.
 
 ### Multi-strategy mode — `all`
 
 Set boot default `STRATEGY=all` or hot-swap to `all`. Every registered strategy ticks each heartbeat; `engine/strategies/signal_netter.py` nets opposing signals per symbol before the shared risk + execution path. Per-strategy positions are tracked in `engine/position/strategy_ledger.py` when netting is active.
 
+### Operator flatten — `POST /api/control/flatten`
+
+Dashboard **Flatten all positions** calls `POST /api/control/flatten`, which runs `_flatten_and_wait_for_flat()`:
+
+1. **Pause** the engine (no new strategy signals).
+2. **Cancel** all venue open orders and local working children.
+3. **`GET /fapi/v2/positionRisk`** — replace the local position book via `PositionTracker.sync_from_venue()` (drops symbols the venue no longer reports).
+4. **Close each open leg** using per-symbol execution mode (see table below).
+5. **Poll the venue** until flat or `FLATTEN_TIMEOUT_SEC`, retrying stragglers with **market-only** closes.
+6. Leave the engine **paused** — operator must **Resume** to trade again.
+
+| Condition | Close style |
+| --------- | ----------- |
+| Retry / still open after wait | **Market** reduce-only (immediate) |
+| Notional ≤ `FLATTEN_MARKET_MAX_NOTIONAL_USD` (default $250) | **Market** |
+| Spread > `FLATTEN_WIDE_SPREAD_BPS` (default 100 bps) | **Market** |
+| Large notional + tight spread (≥ `FLATTEN_VWAP_MIN_NOTIONAL_USD`, spread ≤ `FLATTEN_PASSIVE_SPREAD_BPS`) | **Passive VWAP** — `flatten_passive` schedule (`FLATTEN_VWAP_SLICES` / `FLATTEN_VWAP_DURATION_SEC`), limit pegs, market fallback |
+| Otherwise | **Aggressive VWAP** — short urgent schedule (`URGENT_*` slices), market fallback |
+
+If VWAP submit is rejected by `SubmitGuard`, the engine falls back to market for that symbol. Binance `-2022` (reduce-only rejected, already flat) is logged as a warning, not a hard failure. Loss-tracker updates are suppressed during flatten so partial closes do not immediately re-trip `consecutive_losses` mid-flatten.
+
+`engine.stop()` still uses the same flatten path when `FLATTEN_ON_STOP=true`.
+
 ### Risk module — `engine/risk/` + `engine/portfolio/` + `engine/position/`
 
-Pre-trade gate (`PreTradeValidator` → `RiskManager.check`): single entry for single-leg and pair-group signals. Caps signal qty at `max_risk_pct` of equity, rejects on `max_gross_notional` breach, and applies optional fat-finger limits (`MAX_ORDER_NOTIONAL_USD`, `MAX_QTY_VS_POSITION_MULTIPLE`), signal dedup (`SIGNAL_DEDUP_TTL_SEC`), and venue floors via `venue_sizing.venue_min_qty`. Additional vetoes flow through `MarketDataGuard` (stale tick; wide spread) and `ExposureTracker` (per-symbol notional cap, free-margin floor). Pair groups use the same per-leg `RiskManager.check` path; partial basket failure triggers compensating reduce-only unwinds.
+Pre-trade gate (`PreTradeValidator` → `RiskManager.check`): single entry for single-leg and pair-group signals. Caps signal qty at `max_risk_pct` of equity, rejects on `max_gross_notional` breach, and applies optional fat-finger limits (`MAX_ORDER_NOTIONAL_USD`, `MAX_QTY_VS_POSITION_MULTIPLE`), signal dedup (`SIGNAL_DEDUP_TTL_SEC`), and venue limits via `venue_sizing` (`venue_min_qty` floor, `venue_cap_qty` ceiling from Binance `LOT_SIZE` / `MARKET_LOT_SIZE` `maxQty`). Additional vetoes flow through `MarketDataGuard` (stale tick; wide spread) and `ExposureTracker` (per-symbol notional cap, free-margin floor). Pair groups use the same per-leg `RiskManager.check` path; partial basket failure triggers compensating reduce-only unwinds.
 
-Order-level reconcile (`engine/core/order_reconciliation.py`) compares venue `openOrders` to OMS working children on the same cadence as position reconcile. Mismatch trips minor `order_reconcile_mismatch` (optional `RECONCILE_CANCEL_ORPHANS` to cancel venue-only orders).
+Order-level reconcile (`engine/core/order_reconciliation.py`) compares venue `openOrders` to OMS working children on the same cadence as position reconcile. When `RECONCILE_CANCEL_ORPHANS=true` (default), venue-only orphans are cancelled and the `order_reconcile_mismatch` breaker is cleared once the books match. Mismatch still trips minor `order_reconcile_mismatch` if orders remain out of sync after the cancel pass.
 
 Execution urgency: `Signal.score` ≥ `URGENT_SCORE_THRESHOLD` or reduce-only exits use shorter VWAP schedules (`URGENT_DURATION_SEC`, `URGENT_NUM_SLICES`, `URGENT_MAX_SLIPPAGE_BPS`). Passive LIMIT slices peg to best bid/ask with `MAX_LIMIT_DEVIATION_BPS` collar. Child `clientOrderId` values are deterministic per parent slice for safe retries.
 
@@ -459,6 +491,36 @@ Risk-driven exits (SL, TP, max-drawdown, operator flatten) are submitted with `r
 `PositionTracker` folds fills into a per-symbol weighted-entry position, splits realised PnL on partial closes, and handles flips (short → long) cleanly. A venue-side close (`pa==0` row in `ACCOUNT_UPDATE`) pops the symbol so the dashboard never holds a stale long.
 
 `Portfolio` sits on top: cash + positions + equity curve, all read by the dashboard. Cash is held as a per-asset wallet map (`{"USDT": 100.0, "USDC": 50.0, ...}`) so a partial `ACCOUNT_UPDATE` event — Binance only ships the assets that *changed* — merges cleanly without zeroing out unreported wallets. The single-number `cash` view sums the USDT + USDC stablecoin wallets when `BASE_CURRENCY` is one of them. Wallet and position figures are applied live from the user-data WebSocket (`ACCOUNT_UPDATE`). Periodic reconcile uses REST only when user-data has been idle longer than `RECONCILE_USER_DATA_FRESH_SEC` (or when `RECONCILE_SKIP_REST_WHEN_USER_DATA_FRESH=false`). On Binance USDT-M that is a single `GET /fapi/v2/account` (balances plus embedded `positions`), which matches Binance’s guidance to prefer the stream over polling and halves reconcile weight versus two endpoints. Optional `BALANCE_RESYNC_SEC` > 0 adds another GET `/account` loop (default `0`).
+
+### Position & dashboard sync
+
+Binance is the source of truth for open qty. The engine and dashboard are kept aligned through stacked layers:
+
+| Layer | When | What happens |
+| ----- | ---- | ------------ |
+| **Startup REST** | `engine.connect()` | One `fetch_balances_and_positions()` seeds portfolio + `PositionTracker` before user-data WS subscribes. |
+| **User-data WS** | Every `ACCOUNT_UPDATE` | `apply_exchange_positions()` merges changed symbols; `pa==0` rows pop stale symbols. While user-data is fresh, fill handlers skip `on_fill()` so qty is not doubled when events arrive out of order. |
+| **User-data reconnect** | Binance user WS reconnects | `Engine._on_user_ws_connected()` pulls REST again and `sync_from_venue()` so missed events while the socket was down do not leave ghost positions. |
+| **Periodic reconcile** | Every `RECONCILE_INTERVAL_SEC` when user-data idle | `Reconciler` diffs local qty vs REST; on mismatch, optionally **heals** local from venue (`RECONCILE_HEAL_ON_MISMATCH`, default `true`) and still trips MAJOR `reconcile_mismatch` so operators are alerted. |
+| **Order reconcile** | Same cadence + startup | Compares venue `openOrders` to OMS working children (`ORDER_RECONCILE_ON_STARTUP`). |
+| **Dashboard poll** | Every 5 s + WS reconnect + tab focus | `useAlgoStream` calls `GET /api/state` so the React table matches `engine.snapshot().positions` even if incremental WS events were missed. |
+
+```mermaid
+flowchart LR
+  BN[Binance]
+  GW[Gateway]
+  PT[PositionTracker]
+  API["GET /api/state + WS position"]
+  UI[Dashboard]
+
+  BN -->|ACCOUNT_UPDATE| GW
+  BN -->|REST reconcile / reconnect| GW
+  GW --> PT
+  PT --> API
+  API --> UI
+```
+
+**Operator signals** (System Health panel): keep **User-data age** under ~60 s; **Order reconcile** should read OK; any **`reconcile_mismatch` breaker** means drift was detected (and healed if `RECONCILE_HEAL_ON_MISMATCH=true`) — investigate before resuming. Set `RECONCILE_SKIP_REST_WHEN_USER_DATA_FRESH=false` if you want REST position checks every reconcile interval even while user-data WS is active.
 
 ### Failsafes — circuit-breaker matrix
 
@@ -477,7 +539,7 @@ Every safety trip flows through one shared `CircuitBreaker` (`engine/risk/circui
 | `daily_loss` | major | engine | equity drop since UTC midnight >= `DAILY_LOSS_KILL_PCT` | flatten + latch |
 | `consecutive_losses` | major | engine | `MAX_CONSECUTIVE_LOSSES` losing trades in a row | flatten + latch |
 | `exec_quality` | major | engine | rolling avg slippage > `EXEC_QUALITY_KILL_BPS` | flatten + latch |
-| `reconcile_mismatch` | major | engine | venue vs local qty diff > `RECONCILE_QTY_TOLERANCE` | flatten + latch |
+| `reconcile_mismatch` | major | engine | venue vs local qty diff > `RECONCILE_QTY_TOLERANCE` on REST reconcile (local healed from venue when `RECONCILE_HEAL_ON_MISMATCH=true`) | flatten + latch |
 | `order_reconcile_mismatch` | minor | engine | open-order set differs between venue and OMS | pause; auto-resume |
 | `group_unwind_failed` | major | symbol | compensating unwind after partial pair submit failed | latch symbol |
 | `operator_halt` | major | engine | operator `POST /api/control/breakers/trip` or dashboard **Halt** | flatten + latch |
@@ -488,7 +550,7 @@ Pre-submit guards (`SubmitGuard`) enforce three additional ceilings without trip
 - `SUBMIT_RATE_PER_SEC` — global token-bucket throttle on REST submits, so a runaway loop cannot spam the venue and earn a ban.
 - Reduce-only orders bypass both engine- and symbol-scope breakers so flattens / SL exits always reach the venue.
 
-Engine `stop()` market-outs residuals before disconnect when `FLATTEN_ON_STOP=true` (default) and waits up to `FLATTEN_TIMEOUT_SEC` for positions to clear.
+Engine `stop()` market-outs residuals before disconnect when `FLATTEN_ON_STOP=true` (default) via the same flatten path and waits up to `FLATTEN_TIMEOUT_SEC` for the venue to report flat.
 
 Operator endpoints:
 
@@ -558,6 +620,7 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `MM_ENTRY_TILT` / `MM_EXIT_TILT` | `8.0` / `0`                      | Entry threshold; exit = 35% of entry when exit is `0` |
 | `MM_SKEW_WINDOW_SEC`         | `300`                                | Rolling window for micro-price skew average |
 | `MM_RISK_PER_TRADE_PCT` / `MM_QTY` / `MM_COOLDOWN_SEC` | `0.005` / `0.001` / `12` | Sizing + per-symbol cooldown |
+| `MM_MAX_ENTRIES_PER_TICK`    | `4`                                  | Max new MM entries per 1 Hz tick (by score); exits uncapped |
 | `SMA_FAST_WINDOW` / `SMA_SLOW_WINDOW` | `10` / `30`                | Fast / slow SMA windows (sample count; see `SMA_BAR_INTERVAL_SEC`) |
 | `SMA_BAR_INTERVAL_SEC`       | `0`                                  | Bar length in seconds for each SMA sample (`0` = one sample per ~1s heartbeat); e.g. `300` = 5m bars |
 | `SMA_RISK_PER_TRADE_PCT`     | `0.005`                              | Equity slice per SMA entry (uses `DEFAULT_STOP_LOSS_PCT` as the sizing denominator) |
@@ -580,7 +643,7 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `SPREAD_DYNAMIC_ENABLED` / `SPREAD_BASELINE_ALPHA` / `SPREAD_WIDE_MULTIPLIER` / `SPREAD_WIDE_FLOOR_BPS` / `SPREAD_WIDE_CEILING_BPS` | see `Settings` | EWMA spread gate — **edit defaults in `common/config.py`** |
 | `MAX_SYMBOL_NOTIONAL_PCT`    | `0.20`                               | Per-symbol exposure cap (fraction of equity) |
 | `MIN_FREE_MARGIN_PCT`        | `0.10`                               | Equity headroom required to enter a new position |
-| `MAX_OPEN_PARENTS`           | `8`                                  | Cap on simultaneous in-flight parents |
+| `MAX_OPEN_PARENTS`           | `16`                                 | Cap on simultaneous in-flight parents |
 | `SUBMIT_RATE_PER_SEC`        | `5.0`                                | Global REST submit throttle (token bucket) |
 | `MAX_CONSECUTIVE_REJECTS`    | `3`                                  | K rejects -> minor symbol pause |
 | `REJECT_COOLDOWN_SEC`        | `30.0`                               | Symbol-pause cooldown after repeat rejects |
@@ -594,7 +657,8 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `RECONCILE_SKIP_REST_WHEN_USER_DATA_FRESH` | `true`                  | Skip account REST snapshot while fills / orders / `ACCOUNT_UPDATE` were recent |
 | `RECONCILE_USER_DATA_FRESH_SEC` | `120.0`                           | Max age (seconds) for last user-data activity to treat WS as authoritative |
 | `RECONCILE_QTY_TOLERANCE`    | `1e-6`                               | Qty mismatch above this trips MAJOR `reconcile_mismatch` |
-| `RECONCILE_CANCEL_ORPHANS`   | `false`                              | Cancel venue open orders unknown to OMS during order reconcile |
+| `RECONCILE_HEAL_ON_MISMATCH` | `true`                               | Overwrite local positions from venue REST when reconcile finds qty drift (breaker still trips) |
+| `RECONCILE_CANCEL_ORPHANS`   | `true`                               | Cancel venue open orders unknown to OMS; clear mismatch when resolved |
 | `ORDER_RECONCILE_ON_STARTUP` | `true`                               | Sync OMS vs venue open orders after `connect()` |
 | `MAX_ORDER_NOTIONAL_USD`     | `0`                                  | Absolute USD cap per order (0 = disabled) |
 | `SIGNAL_DEDUP_TTL_SEC`       | `2.0`                                | Suppress duplicate signals within window |
@@ -609,8 +673,14 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `PER_SYMBOL_SUBMIT_RATE`     | `0`                                  | Per-symbol submit throttle (0 = global only) |
 | `MD_STALE_RESNAPSHOT_SEC`    | `30.0`                               | Force REST book resnapshot when diffs go stale |
 | `API_TOKEN`                  | ``                                   | Bearer token for `/api/control/*` when set |
-| `FLATTEN_ON_STOP`            | `true`                               | Market-out residuals before `engine.stop()` disconnects |
-| `FLATTEN_TIMEOUT_SEC`        | `30.0`                               | Max wait for `flatten()` to clear positions |
+| `FLATTEN_ON_STOP`            | `true`                               | Flatten residuals before `engine.stop()` disconnects |
+| `FLATTEN_TIMEOUT_SEC`        | `30.0`                               | Max wait for venue-flat after `POST /api/control/flatten` |
+| `FLATTEN_MARKET_MAX_NOTIONAL_USD` | `250.0`                         | Below this notional, flatten uses market only |
+| `FLATTEN_VWAP_MIN_NOTIONAL_USD` | `1500.0`                          | Above this + tight spread → passive VWAP flatten |
+| `FLATTEN_PASSIVE_SPREAD_BPS` | `20.0`                               | Max spread for passive VWAP flatten |
+| `FLATTEN_WIDE_SPREAD_BPS`    | `100.0`                              | Above this spread → market flatten |
+| `FLATTEN_VWAP_DURATION_SEC`  | `18`                                 | Passive flatten VWAP schedule duration |
+| `FLATTEN_VWAP_SLICES`        | `4`                                  | Passive flatten VWAP slice count |
 | `BREAKER_MINOR_COOLDOWN_SEC` | `60.0`                               | Default cooldown for minor scoped breaches |
 
 ## Run archive
@@ -667,14 +737,14 @@ All payloads use the same field names as `src/components/algo/types.ts` so the f
 | POST   | `/api/control/resume`      |                     | new `StatusDTO`                      |
 | POST   | `/api/control/stop`        |                     | new `StatusDTO` (halts engine; API keeps running) |
 | POST   | `/api/control/shutdown`    |                     | new `StatusDTO` (exit process; only when `create_app` is wired with `request_shutdown`, e.g. `main.py`) |
-| POST   | `/api/control/flatten`     |                     | new `StatusDTO`                      |
+| POST   | `/api/control/flatten`     |                     | Pause, flatten all venue positions (wait until flat or timeout), return `StatusDTO` (engine stays paused) |
 | POST   | `/api/control/strategy`    | `{name}`            | Hot-swap the active strategy (400 on unknown name) |
 | PATCH  | `/api/control/risk`        | `{max_risk_pct}`    | new `StatusDTO`                      |
 | GET    | `/api/settings`            |                     | `{ settings: <full Settings JSON, secrets masked> }` |
 | PATCH  | `/api/settings`            | partial fields      | `{ ok: true, settings: ... }` merge into live runtime config |
 | WS     | `/ws`                      |                     | stream of `{type, ts, data}` events  |
 
-WebSocket event types: `tick`, `fill`, `order`, `parent`, `execution`, `position`, `equity`, `log`, `status`, `breaker`. `parent` is emitted on every child fill of an in-flight VWAP; `execution` is the post-trade report when a parent completes; `breaker` is a circuit-breaker trip or clear. The dashboard hook in `src/hooks/useAlgoStream.ts` is the canonical consumer.
+WebSocket event types: `tick`, `fill`, `order`, `parent`, `execution`, `position`, `equity`, `log`, `status`, `breaker`. `parent` is emitted on every child fill of an in-flight VWAP; `execution` is the post-trade report when a parent completes; `breaker` is a circuit-breaker trip or clear. The dashboard hook in `src/hooks/useAlgoStream.ts` is the canonical consumer: it applies incremental WS events and **also** polls `GET /api/state` every 5 s, on WebSocket reconnect, when the tab regains focus, and while the socket is down — so positions/orders do not drift after missed events.
 
 Control routes require `Authorization: Bearer <API_TOKEN>` when `API_TOKEN` is set in config.
 
@@ -698,7 +768,12 @@ Highlights:
 - `test_portfolio_balance_merge.py` pins per-asset wallet merge: a partial `ACCOUNT_UPDATE` must not zero out unreported assets, and `seed_balances` / `update_balances` / `update_asset_balance` keep the per-asset map intact.
 - `test_strategy_toggle.py` covers `Engine.set_active_strategy` (only the active strategy ticks + receives fills), `StopLossMonitor.set_externally_managed` (newly-managed symbols disarm), and the multi-symbol SMA scanner (per-symbol state + equity-budgeted sizing).
 - `test_signal_netter.py` / `test_multi_strategy.py` cover `STRATEGY=all` signal netting and per-strategy ledger positions.
-- `test_market_making.py` covers skew/imbalance/tape composite and fade vs follow modes.
+- `test_market_making.py` covers skew/imbalance/tape composite, fade vs follow, full-universe `AUTO`, and `MM_MAX_ENTRIES_PER_TICK` capping.
+- `test_flatten_mode.py` covers per-leg market vs passive vs aggressive VWAP flatten selection.
+- `test_position_sync.py` covers `sync_from_venue` dropping flat symbols.
+- `test_order_reconcile.py` covers orphan cancel + breaker clear.
+- `test_venue_sizing.py` covers `maxQty` clamping.
+- `test_data_quality.py` / `test_market_connection_shard.py` cover depth sequencing and WS sharding.
 - `test_connection_monitor.py` covers WS/user-data staleness breaches.
 - `test_vwap_executor.py` runs the executor end-to-end against an in-test `MockGateway`.
 - `test_impact_model.py` covers sign convention + square-root scaling of synthetic impact.
@@ -716,3 +791,7 @@ Highlights:
 - **Log shows `group ... aborted: leg ... notional=X > per-trade cap=Y`** — your stop-loss-budgeted sizing implies a larger per-leg notional than the risk ceiling allows. The sizing target is \( \text{leg\_notional} = \text{equity} \times \frac{\text{RISK\_PER\_TRADE\_PCT}}{\text{DEFAULT\_STOP\_LOSS\_PCT}} \) while the cap is \( \text{cap} = \text{equity} \times \text{MAX\_RISK\_PCT} \). For entries to be possible you need \( \frac{\text{RISK\_PER\_TRADE\_PCT}}{\text{DEFAULT\_STOP\_LOSS\_PCT}} \le \text{MAX\_RISK\_PCT} \). Fix by lowering `RISK_PER_TRADE_PCT`, widening `DEFAULT_STOP_LOSS_PCT`, or increasing `MAX_RISK_PCT` (and ensure `MAX_GROSS_NOTIONAL` still makes sense if multiple pairs can open).
 - **Order rejected with code -4164 (`Order's notional must be no smaller than X`)** — your sizing is below the venue's `MIN_NOTIONAL` for that symbol. The engine bumps the pair qty up to whichever leg has the strictest floor, but if even that breaches `MAX_RISK_PCT * equity` it aborts the whole group rather than send a naked leg. Check the dashboard log for `group ... aborted: leg ... notional=X > per-trade cap=Y` and either lift `MAX_RISK_PCT` or raise `RISK_PER_TRADE_PCT` so the natural sizing already clears the venue floor.
 - **Engine boots but no signals fire** — pairs-trading needs ~30 samples to compute a z-score; with 1Hz ticks expect ~30s of warm-up before any entry signals. Confirm both legs of a pair appear in `SYMBOLS`.
+- **Flatten clicked but positions remain** — check `app.log` for `flatten timeout` and `flatten complete`. Ensure the backend build includes venue-sync flatten (not stale local qty). Orphans from a prior session can block entries until cleared — with `RECONCILE_CANCEL_ORPHANS=true` they are cancelled on startup/reconcile. After flatten the engine stays **paused**; click **Resume** only when you intend to trade again.
+- **`reduce_only rejected` (-2022) during flatten** — usually the venue is already flat while the local book still showed size; flatten now syncs from `positionRisk` first. Benign `-2022` lines are warnings only.
+- **`order_reconcile_mismatch` / kill switch after restart** — stale open orders on the testnet account; default `RECONCILE_CANCEL_ORPHANS=true` cancels them on the next reconcile cycle.
+- **Many `max_open_parents` / `free_margin_floor` vetoes** — too many concurrent pair/MM legs for equity; lower universe size, raise `MAX_OPEN_PARENTS`, or reduce concurrent signals (`MM_MAX_ENTRIES_PER_TICK`).

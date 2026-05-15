@@ -153,13 +153,23 @@ In dev, Vite proxies `/api` and `/ws` to `http://127.0.0.1:8000` (same-origin, n
 
 ## Dashboard behaviour
 
+The UI **never talks to Binance directly** — it mirrors the engine’s `PositionTracker` and portfolio via REST + WebSocket.
+
 - **Hydrate** — `GET /api/state` on load; strategy labels, paper/live mode, and KPIs come from the backend (nothing hardcoded in the UI). There is **no mock data** wired in dev or prod — mocks live only under `backend/tests/`.
-- **Live stream** — `/ws` pushes fills, orders, equity, logs, `breaker`, and status events.
-- **Controls** — Start / Pause / Stop / Flatten / Halt, risk slider, and strategy picker call REST; status flows back over the socket.
+- **Live stream** — `/ws` pushes fills, orders, equity, `position`, logs, `breaker`, and status events.
+- **Stay in sync** (`src/hooks/useAlgoStream.ts`):
+  - **Every 5 s** — `GET /api/state` refreshes positions, orders, execution, and system health (safety net if WS events were missed).
+  - **On WebSocket reconnect** — debounced full trading-state resync from `/api/state`.
+  - **While WS is down** — same 5 s poll instead of status-only updates.
+  - **On tab focus** — resync when you return to the dashboard tab.
+  - **Manual** — the **refresh** control runs a full hydrate (logs, settings, breakers too).
+- **Controls** — Start / Pause / Stop / Flatten / Halt, risk slider, and strategy picker call REST; status flows back over the socket. **Flatten** pauses the engine, syncs positions from the venue, closes each leg (market or VWAP per size/spread), waits until the exchange reports flat (or times out), and leaves the engine **paused** — hit **Resume** when you want trading again.
 - **Charts** — position candles via `GET /api/klines`.
 - **Panels** — OMS, Execution Quality, and System Health (latency, breakers, connection freshness).
 
-Equity is anchored to the venue: wallets are tracked **per asset** (USDT + USDC on Binance Futures) so a partial `ACCOUNT_UPDATE` never wipes an unreported leg. Reconcile uses REST when the user-data stream has been idle (`RECONCILE_USER_DATA_FRESH_SEC`); optional `BALANCE_RESYNC_SEC` > 0 adds a periodic `GET /account` safety net.
+Watch **User-data age**, **Order reconcile**, and **Breakers** in System Health. If user-data is stale or `reconcile_mismatch` appears, treat open positions as untrusted until the engine recovers — Binance is ground truth.
+
+Equity is anchored to the venue: wallets are tracked **per asset** (USDT + USDC on Binance Futures) so a partial `ACCOUNT_UPDATE` never wipes an unreported leg. The engine keeps positions aligned via user-data WS, REST reconcile, and self-heal on drift — see [`backend/README.md` — Position & dashboard sync](backend/README.md#position--dashboard-sync).
 
 In **LIVE** mode the backend **refuses to start** if the gateway still points at a sandbox/testnet host, so portfolio cash/equity always seeds from your **real account balance**.
 
@@ -172,7 +182,7 @@ A unified circuit breaker covers the engine end-to-end:
 | Stage | What runs |
 |-------|-----------|
 | **Pre-trade** | `PreTradeValidator` — fat-finger, signal dedup, limit collar, group parity |
-| **Matching / reconcile** | Order reconcile vs venue open orders; position reconcile; optional `RECOVER_ON_START` WAL replay |
+| **Matching / reconcile** | Order reconcile vs venue open orders (orphans auto-cancelled by default); position REST reconcile with auto-heal (`RECONCILE_HEAL_ON_MISMATCH`); user-data WS reconnect resync; optional `RECOVER_ON_START` WAL replay |
 | **In-flight** | Urgency profiles, passive bid/ask peg, deterministic client order IDs, per-parent slippage abort, submit throttles |
 | **Portfolio** | HWM drawdown, daily-loss kill, consecutive-loss streak, execution-quality blowout (`MAJOR`, latched until re-arm) |
 | **System** | MD quality (gaps, crossed book, resnapshot), WS/user-data staleness pause, webhook alerts, `/health` + `/ready` |
@@ -188,5 +198,6 @@ See [`backend/README.md` — Failsafes](backend/README.md#failsafes--circuit-bre
 | Topic | Where |
 |-------|--------|
 | Module walk-through, env vars, API contract | [`backend/README.md`](backend/README.md) |
+| Position & dashboard sync (engine + UI) | [`backend/README.md` — Position & dashboard sync](backend/README.md#position--dashboard-sync) |
 | Code style for contributors | [`backend/AGENTS.md`](backend/AGENTS.md) |
 | Diagram sources | [`backend/docs/`](backend/docs/) |

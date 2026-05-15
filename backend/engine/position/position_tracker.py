@@ -85,6 +85,21 @@ class PositionTracker:
             # in the frontend can drop the symbol from the position panel.
             await self._publish(p)
 
+    async def sync_from_venue(self, positions: Iterable[Position]) -> None:
+        """Replace the local book with the venue open-position snapshot.
+
+        Unlike ``apply_exchange_positions``, symbols missing from the REST
+        response are removed locally (venue flat). Used by operator flatten.
+        """
+        open_positions = [p for p in positions if abs(p.qty) > 1e-12]
+        async with self._lock:
+            removed = set(self._positions) - {p.symbol for p in open_positions}
+            self._positions = {p.symbol: p for p in open_positions}
+        for sym in removed:
+            await self._publish(Position(symbol=sym, qty=0.0))
+        for p in open_positions:
+            await self._publish(p)
+
     # --- Read-only ---
 
     def all(self) -> list[Position]:

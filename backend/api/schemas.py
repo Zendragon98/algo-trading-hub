@@ -176,6 +176,10 @@ class SystemHealthDTO(BaseModel):
     clock_skew_ms: float = 0.0
     tick_age_sec: float = -1.0
     user_data_age_sec: float = -1.0
+    user_data_monitored: bool = False
+    user_data_stale: bool = False
+    user_data_reconcile_stale: bool = False
+    clock_skew_synced: bool = False
     active_breakers: list[str] = []
     gross_notional: float = 0.0
     net_notional: float = 0.0

@@ -58,6 +58,12 @@ class BinanceGateway(GatewayInterface):
         # Highest selectable leverage per symbol from GET /fapi/v1/leverageBracket (bracket 1).
         self._max_leverage_by_symbol: dict[str, int] = {}
 
+    async def sync_clock(self) -> None:
+        await self._rest.sync_server_time()
+
+    def clock_skew_ms(self) -> float:
+        return float(self._rest.time_offset_ms)
+
     async def connect(self) -> None:
         # Sanity check — also surfaces bad credentials early instead of mid-trade.
         try:
@@ -325,6 +331,7 @@ def _parse_symbol_filters(info: dict[str, Any]) -> dict[str, SymbolFilters]:
         step_size: float | None = None
         tick_size: float | None = None
         min_qty: float | None = None
+        max_qty: float | None = None
         min_notional: float | None = None
         for f in sym.get("filters") or []:
             ft = f.get("filterType")
@@ -333,6 +340,9 @@ def _parse_symbol_filters(info: dict[str, Any]) -> dict[str, SymbolFilters]:
                 mq = _safe_float(f.get("minQty"))
                 if mq is not None:
                     min_qty = mq if min_qty is None else max(min_qty, mq)
+                xq = _safe_float(f.get("maxQty"))
+                if xq is not None:
+                    max_qty = xq if max_qty is None else min(max_qty, xq)
             elif ft == "PRICE_FILTER":
                 tick_size = _safe_float(f.get("tickSize")) or tick_size
             elif ft in ("MIN_NOTIONAL", "NOTIONAL"):
@@ -350,6 +360,7 @@ def _parse_symbol_filters(info: dict[str, Any]) -> dict[str, SymbolFilters]:
             step_size=step_size,
             tick_size=tick_size,
             min_qty=min_qty,
+            max_qty=max_qty,
             min_notional=min_notional,
         )
     return out

@@ -170,9 +170,16 @@ class OrderConnection:
     async def cancel_order(self, symbol: str, client_order_id: str) -> None:
         try:
             await self._rest.cancel_order(symbol=symbol, origClientOrderId=client_order_id)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             # -2011 = unknown order. Treat as benign because the order may
             # have just been filled or already cancelled.
+            if getattr(exc, "code", None) == -2011:
+                logger.debug(
+                    "cancel ignored (unknown order) %s/%s",
+                    symbol,
+                    client_order_id,
+                )
+                return
             logger.exception("cancel failed for %s/%s", symbol, client_order_id)
 
     # --- User-data stream ---

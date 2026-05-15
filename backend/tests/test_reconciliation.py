@@ -96,7 +96,7 @@ async def test_no_breach_when_positions_match() -> None:
 
 
 @pytest.mark.asyncio
-async def test_qty_mismatch_trips_major() -> None:
+async def test_qty_mismatch_trips_major_and_heals_local() -> None:
     local = Position(symbol="BTCUSDT", qty=0.5, avg_entry_price=100.0, mark_price=100.0)
     remote = Position(symbol="BTCUSDT", qty=0.7, avg_entry_price=100.0, mark_price=100.0)
     bus = EventBus()
@@ -112,6 +112,9 @@ async def test_qty_mismatch_trips_major() -> None:
     )
     await rec.reconcile_once()
     assert breaker.is_blocked(BreakerScope.ENGINE)
+    healed = pt.get("BTCUSDT")
+    assert healed is not None
+    assert abs(healed.qty - 0.7) < 1e-9
 
 
 @pytest.mark.asyncio

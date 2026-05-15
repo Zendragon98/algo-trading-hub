@@ -105,6 +105,11 @@ const TERMINAL_STATUSES: ReadonlyArray<WorkingOrder["status"]> = [
   "expired",
 ];
 
+/** Periodic REST hydrate so positions/orders stay aligned with the engine. */
+const TRADING_STATE_SYNC_MS = 5_000;
+/** Debounce rapid WS reconnects before pulling a full snapshot. */
+const WS_RESYNC_DEBOUNCE_MS = 250;
+
 const LATENCY_KEYS = new Set([
   "tick_to_signal_ms",
   "signal_to_risk_ms",
@@ -146,6 +151,26 @@ function mergeLatencyMetrics(
   return latency;
 }
 
+function applyTradingState(prev: AlgoStream, state: StateDTO): AlgoStream {
+  return {
+    ...prev,
+    status: state.status.status,
+    paperMode: state.status.paper_mode,
+    uptimeSec: Math.floor(state.status.uptime_sec),
+    strategy: state.strategy ? toStrategyInfo(state.strategy) : null,
+    strategies: state.strategies.map(toStrategyInfo),
+    equity: state.equity.equity,
+    positions: state.positions,
+    trades: state.trades.map(toTrade),
+    orders: state.orders.working.map(toWorkingOrder),
+    workingParents: state.execution.working.map(toExecutionParent),
+    executionHistory: state.execution.history.map(toExecutionParent),
+    executionAggregate: toExecutionAggregate(state.execution.aggregate),
+    systemHealth: state.system_health ? toSystemHealth(state.system_health) : null,
+    error: null,
+  };
+}
+
 function systemHealthFromStatus(
   prev: SystemHealth | null,
   data: StatusEventData,
@@ -157,6 +182,10 @@ function systemHealthFromStatus(
     clockSkewMs: 0,
     tickAgeSec: -1,
     userDataAgeSec: -1,
+    userDataMonitored: false,
+    userDataStale: false,
+    userDataReconcileStale: false,
+    clockSkewSynced: false,
     activeBreakers: [],
     grossNotional: 0,
     netNotional: 0,
@@ -183,6 +212,12 @@ function systemHealthFromStatus(
     clockSkewMs: Number(data.clock_skew_ms ?? base.clockSkewMs),
     tickAgeSec: Number(data.tick_age_sec ?? base.tickAgeSec),
     userDataAgeSec: Number(data.user_data_age_sec ?? base.userDataAgeSec),
+    userDataMonitored: Boolean(data.user_data_monitored ?? base.userDataMonitored),
+    userDataStale: Boolean(data.user_data_stale ?? base.userDataStale),
+    userDataReconcileStale: Boolean(
+      data.user_data_reconcile_stale ?? base.userDataReconcileStale,
+    ),
+    clockSkewSynced: Boolean(data.clock_skew_synced ?? base.clockSkewSynced),
     activeBreakers: (data.active_breakers as string[]) ?? base.activeBreakers,
     grossNotional: Number(data.gross_notional ?? base.grossNotional),
     netNotional: Number(data.net_notional ?? base.netNotional),
@@ -196,6 +231,16 @@ export function useAlgoStream(): AlgoStream {
   const [stream, setStream] = useState<AlgoStream>(EMPTY);
   const wsRef = useRef<WebSocket | null>(null);
   const startedAtRef = useRef<number | null>(null);
+  const syncTradingStateRef = useRef<(() => Promise<void>) | null>(null);
+  const wsResyncTimerRef = useRef<number | null>(null);
+
+  const syncTradingState = useCallback(async () => {
+    const state = await api.state();
+    startedAtRef.current = Date.now() / 1000 - state.status.uptime_sec;
+    setStream((prev) => applyTradingState(prev, state));
+  }, []);
+
+  syncTradingStateRef.current = syncTradingState;
 
   const refresh = useCallback(async () => {
     try {
@@ -208,25 +253,11 @@ export function useAlgoStream(): AlgoStream {
       const settings = settingsPayload.settings;
       startedAtRef.current = Date.now() / 1000 - state.status.uptime_sec;
       setStream((prev) => ({
-        ...prev,
-        status: state.status.status,
-        paperMode: state.status.paper_mode,
-        uptimeSec: Math.floor(state.status.uptime_sec),
-        strategy: state.strategy ? toStrategyInfo(state.strategy) : null,
-        strategies: state.strategies.map(toStrategyInfo),
-        equity: state.equity.equity,
-        positions: state.positions,
-        trades: state.trades.map(toTrade),
+        ...applyTradingState(prev, state),
         logs,
-        orders: state.orders.working.map(toWorkingOrder),
-        workingParents: state.execution.working.map(toExecutionParent),
-        executionHistory: state.execution.history.map(toExecutionParent),
-        executionAggregate: toExecutionAggregate(state.execution.aggregate),
-        systemHealth: state.system_health ? toSystemHealth(state.system_health) : null,
         maxRiskPct: numSetting(settings, "max_risk_pct", 0.35),
         maxGrossNotional: numSetting(settings, "max_gross_notional", 50_000),
         breakers: toBreakerList(breakersDto),
-        error: null,
       }));
     } catch (err) {
       setStream((prev) => ({ ...prev, error: (err as Error).message }));
@@ -236,48 +267,61 @@ export function useAlgoStream(): AlgoStream {
 
   useEffect(() => {
     let cancelled = false;
-    let statusPoll: number | null = null;
+    let fallbackPoll: number | null = null;
+    let tradingStatePoll: number | null = null;
     let equityPoll: number | null = null;
 
-    const publishStatus = (next: { status: AlgoStatus; uptime_sec: number; paper_mode?: boolean }) => {
-      startedAtRef.current = Date.now() / 1000 - next.uptime_sec;
-      setStream((prev) => ({
-        ...prev,
-        status: next.status,
-        uptimeSec: Math.floor(next.uptime_sec),
-        paperMode: next.paper_mode ?? prev.paperMode,
-      }));
+    const scheduleWsResync = () => {
+      if (wsResyncTimerRef.current !== null) {
+        window.clearTimeout(wsResyncTimerRef.current);
+      }
+      wsResyncTimerRef.current = window.setTimeout(() => {
+        wsResyncTimerRef.current = null;
+        if (cancelled) return;
+        void syncTradingStateRef.current?.().catch((err: Error) => {
+          if (!cancelled) {
+            setStream((prev) => ({ ...prev, error: err.message }));
+          }
+        });
+      }, WS_RESYNC_DEBOUNCE_MS);
     };
 
-    const ensureStatusPoll = () => {
-      if (statusPoll !== null) return;
-      statusPoll = window.setInterval(async () => {
+    const ensureFallbackPoll = () => {
+      if (fallbackPoll !== null) return;
+      fallbackPoll = window.setInterval(() => {
         if (cancelled) return;
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
-        try {
-          const st = await api.status();
-          if (!cancelled) publishStatus(st);
-        } catch (err) {
+        void syncTradingStateRef.current?.().catch((err: Error) => {
           if (!cancelled) {
-            setStream((prev) => ({ ...prev, error: (err as Error).message }));
+            setStream((prev) => ({ ...prev, error: err.message }));
           }
-        }
-      }, 2500);
+        });
+      }, TRADING_STATE_SYNC_MS);
+    };
+
+    const startTradingStatePoll = () => {
+      if (tradingStatePoll !== null) return;
+      tradingStatePoll = window.setInterval(() => {
+        if (cancelled) return;
+        void syncTradingStateRef.current?.().catch(() => {
+          // WS may still be delivering; ignore transient poll errors
+        });
+      }, TRADING_STATE_SYNC_MS);
     };
 
     (async () => {
       try {
         await refresh();
-        startEquityPoll();
+        startTradingStatePoll();
       } catch {
         if (cancelled) return;
         try {
-          const st = await api.status();
-          if (!cancelled) publishStatus(st);
+          await syncTradingStateRef.current?.();
         } catch {
-          // keep original error; the poll below will keep retrying
+          // keep original error; polls below will keep retrying
         }
-        ensureStatusPoll();
+        ensureFallbackPoll();
+        startTradingStatePoll();
       }
     })();
 
@@ -307,18 +351,27 @@ export function useAlgoStream(): AlgoStream {
       equityPoll = window.setInterval(() => void syncEquityFromApi(), 2000);
     };
 
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible" || cancelled) return;
+      scheduleWsResync();
+      void syncEquityFromApi();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
     ws.onopen = () => {
       setStream((prev) => ({ ...prev, connected: true, error: null }));
+      scheduleWsResync();
       void syncEquityFromApi();
       startEquityPoll();
+      startTradingStatePoll();
     };
     ws.onclose = () => {
       setStream((prev) => ({ ...prev, connected: false }));
-      ensureStatusPoll();
+      ensureFallbackPoll();
     };
     ws.onerror = () => {
       setStream((prev) => ({ ...prev, error: "ws error" }));
-      ensureStatusPoll();
+      ensureFallbackPoll();
     };
 
     ws.onmessage = (msg) => {
@@ -336,11 +389,20 @@ export function useAlgoStream(): AlgoStream {
 
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibility);
       ws.close();
       wsRef.current = null;
-      if (statusPoll !== null) {
-        window.clearInterval(statusPoll);
-        statusPoll = null;
+      if (wsResyncTimerRef.current !== null) {
+        window.clearTimeout(wsResyncTimerRef.current);
+        wsResyncTimerRef.current = null;
+      }
+      if (fallbackPoll !== null) {
+        window.clearInterval(fallbackPoll);
+        fallbackPoll = null;
+      }
+      if (tradingStatePoll !== null) {
+        window.clearInterval(tradingStatePoll);
+        tradingStatePoll = null;
       }
       if (equityPoll !== null) {
         window.clearInterval(equityPoll);
@@ -400,8 +462,36 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
 
     case "equity": {
       const point = event.data.equity;
-      const next = [...prev.equity, point];
-      return { ...prev, equity: next.length > 256 ? next.slice(-256) : next };
+      const nextEquity = [...prev.equity, point];
+      const trimmed = nextEquity.length > 256 ? nextEquity.slice(-256) : nextEquity;
+      const d = event.data as {
+        gross_notional?: number;
+        net_notional?: number;
+        realized_pnl?: number;
+        unrealized_pnl?: number;
+        equity?: number;
+      };
+      if (
+        prev.systemHealth &&
+        (d.gross_notional !== undefined ||
+          d.net_notional !== undefined ||
+          d.realized_pnl !== undefined ||
+          d.unrealized_pnl !== undefined)
+      ) {
+        return {
+          ...prev,
+          equity: trimmed,
+          systemHealth: {
+            ...prev.systemHealth,
+            grossNotional: Number(d.gross_notional ?? prev.systemHealth.grossNotional),
+            netNotional: Number(d.net_notional ?? prev.systemHealth.netNotional),
+            realizedPnl: Number(d.realized_pnl ?? prev.systemHealth.realizedPnl),
+            unrealizedPnl: Number(d.unrealized_pnl ?? prev.systemHealth.unrealizedPnl),
+            equity: Number(d.equity ?? point),
+          },
+        };
+      }
+      return { ...prev, equity: trimmed };
     }
 
     case "position": {

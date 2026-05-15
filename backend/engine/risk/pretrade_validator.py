@@ -15,7 +15,7 @@ from gateways.gateway_interface import GatewayInterface
 from ..portfolio.portfolio import Portfolio
 from ..position.position_tracker import PositionTracker
 from .risk_manager import RiskManager
-from .venue_sizing import venue_min_qty
+from .venue_sizing import venue_cap_qty, venue_min_qty
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,16 @@ class PreTradeValidator:
             return ValidationResult(False, reason="venue_veto", vetoes=vetoes)
 
         final_qty = max(qty, floor)
+        capped = venue_cap_qty(final_qty, filters)
+        if capped + 1e-12 < floor:
+            vetoes.append("venue_max_qty")
+            return ValidationResult(False, reason="venue_max_qty", vetoes=vetoes)
+        if capped + 1e-12 < final_qty:
+            logger.info(
+                "capping signal %s %.4f -> %.4f (venue max_qty)",
+                signal.symbol, final_qty, capped,
+            )
+            final_qty = capped
         if final_qty > qty + 1e-12:
             bump = self._venue_bump_ok(signal.symbol, final_qty, mid)
             if not bump.approved:

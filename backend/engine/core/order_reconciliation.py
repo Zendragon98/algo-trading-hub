@@ -118,14 +118,27 @@ class OrderReconciler:
                 ", ".join(sorted(orphans_venue)[:5]),
             )
             if self._cancel_orphans:
+                n_cancel = len(orphans_venue)
                 await asyncio.gather(
                     *(
-                        self._gateway.cancel_order(o.symbol, oid)
+                        self._gateway.cancel_order(o.symbol, o.id)
                         for o in venue_orders
                         if o.id in orphans_venue
                     ),
                     return_exceptions=True,
                 )
+                try:
+                    venue_orders = await self._gateway.fetch_open_orders()
+                except Exception:  # noqa: BLE001
+                    logger.exception("fetch_open_orders failed after orphan cancel")
+                else:
+                    venue_ids = {o.id for o in venue_orders}
+                    orphans_venue = venue_ids - local_ids
+                    if not orphans_venue:
+                        logger.info(
+                            "order reconcile: cleared %d venue orphan(s)",
+                            n_cancel,
+                        )
 
         if orphans_local:
             logger.warning(
@@ -152,7 +165,9 @@ class OrderReconciler:
                     source="order_reconciler",
                 )
             )
-        if not ok and self._on_mismatch is not None:
+        if ok:
+            self._breaker.rearm(code="order_reconcile_mismatch")
+        elif self._on_mismatch is not None:
             await self._on_mismatch(self.last_result)
         if trip_on_mismatch and (orphans_venue or orphans_local):
             self._breaker.trip(
