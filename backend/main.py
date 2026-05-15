@@ -103,37 +103,37 @@ async def _run() -> None:
             )
             try:
                 info = await rest.exchange_info()
+                updates: dict[str, list[str]] = {}
+                if symbols_auto:
+                    discovered = discover_usdt_usdc_pairs(info)
+                    updates["symbols"] = discovered
+                    bases = sorted({s.replace("USDT", "").replace("USDC", "") for s in discovered})
+                    logger.info(
+                        "SYMBOLS=AUTO -> %d symbols across %d bases: %s",
+                        len(discovered), len(bases),
+                        ", ".join(bases) if len(bases) <= 20 else f"{', '.join(bases[:20])}, ...",
+                    )
+                if sma_auto:
+                    sma_universe = discover_usdt_perps(info)
+                    cap = int(settings.sma_max_symbols)
+                    if cap > 0 and len(sma_universe) > cap:
+                        vols = await rest.fetch_24h_volumes(sma_universe)
+                        sma_universe = sorted(
+                            sma_universe,
+                            key=lambda s: vols.get(s, 0.0),
+                            reverse=True,
+                        )[:cap]
+                        logger.info(
+                            "SMA_SYMBOLS capped to top %d by 24h volume", cap,
+                        )
+                    updates["sma_symbols"] = sma_universe
+                    logger.info(
+                        "SMA_SYMBOLS=AUTO -> %d USDT perpetuals", len(sma_universe),
+                    )
+                if updates:
+                    settings = settings.model_copy(update=updates)
             finally:
                 await rest.close()
-            updates: dict[str, list[str]] = {}
-            if symbols_auto:
-                discovered = discover_usdt_usdc_pairs(info)
-                updates["symbols"] = discovered
-                bases = sorted({s.replace("USDT", "").replace("USDC", "") for s in discovered})
-                logger.info(
-                    "SYMBOLS=AUTO -> %d symbols across %d bases: %s",
-                    len(discovered), len(bases),
-                    ", ".join(bases) if len(bases) <= 20 else f"{', '.join(bases[:20])}, ...",
-                )
-            if sma_auto:
-                sma_universe = discover_usdt_perps(info)
-                cap = int(settings.sma_max_symbols)
-                if cap > 0 and len(sma_universe) > cap:
-                    vols = await rest.fetch_24h_volumes(sma_universe)
-                    sma_universe = sorted(
-                        sma_universe,
-                        key=lambda s: vols.get(s, 0.0),
-                        reverse=True,
-                    )[:cap]
-                    logger.info(
-                        "SMA_SYMBOLS capped to top %d by 24h volume", cap,
-                    )
-                updates["sma_symbols"] = sma_universe
-                logger.info(
-                    "SMA_SYMBOLS=AUTO -> %d USDT perpetuals", len(sma_universe),
-                )
-            if updates:
-                settings = settings.model_copy(update=updates)
 
     backend_root = Path(__file__).resolve().parent
     bootstrap = await bootstrap_run(settings, bus, backend_root)
