@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from time import time
 
-from .enums import AlgoMode, OrderStatus, OrderType, PositionSide, Side
+from .enums import AlgoMode, OrderStatus, OrderType, PositionSide, Side, Urgency
 
 
 @dataclass(slots=True)
@@ -87,6 +87,8 @@ class Signal:
     reason: str                        # human-readable, surfaced in the log stream
     score: float = 0.0                 # strategy-internal confidence in [0, 1]
     group_id: str | None = None        # legs sharing this id are submitted atomically
+    # When True the engine submits a position-reducing parent only (exits / flattens).
+    reduce_only: bool = False
     ts: float = field(default_factory=time)
 
 
@@ -113,6 +115,8 @@ class ParentOrder:
     # child so the venue is told the order can only reduce position size.
     # Binance Futures additionally waives MIN_NOTIONAL for reduce-only.
     reduce_only: bool = False
+    urgency: Urgency = Urgency.PASSIVE
+    signal_score: float = 0.0
 
 
 @dataclass(slots=True)

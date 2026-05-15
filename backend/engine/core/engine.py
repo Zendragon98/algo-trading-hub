@@ -19,13 +19,15 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Iterable
 
 from common.config import Settings, normalize_strategy_name
-from common.enums import EngineStatus, EventType, Side
+from common.enums import EngineStatus, EventType, LogLevel, OrderStatus, Side, Urgency
 from common.events import Event, EventBus
-from common.types import Fill, Position, Signal, TapeTrade, Tick
-from gateways.gateway_interface import DepthDiff, GatewayInterface, SymbolFilters
+from common.types import ChildOrder, Fill, ParentOrder, Position, Signal, TapeTrade, Tick
+from gateways.gateway_interface import DepthDiff, GatewayInterface
 
 from ..execution.algo_wheel import AlgoWheel
 from ..execution.execution_metrics import ExecutionTracker
@@ -52,11 +54,18 @@ from ..risk.limits import Limits
 from ..risk.loss_tracker import LossTracker
 from ..risk.market_data_guard import MarketDataGuard
 from ..risk.pnl_tracker import PnLTracker
+from ..market_data.data_quality import DataQualityMonitor
+from ..observability.alert_manager import AlertManager
+from ..observability.latency_tracker import LatencyTracker
+from ..risk.pretrade_validator import PreTradeValidator
 from ..risk.risk_manager import ExitIntent, RiskManager
 from ..risk.stop_loss import StopLossMonitor
+from ..risk.venue_sizing import venue_min_qty
 from ..strategies.strategy_base import StrategyBase
+from ..persistence.journal import replay_wal_async
 from .clock import Clock
 from .connection_monitor import ConnectionMonitor
+from .order_reconciliation import OrderReconciler
 from .reconciliation import Reconciler
 from .state import EngineSnapshot, EngineState
 
@@ -96,10 +105,13 @@ class Engine:
         bus: EventBus,
         gateway: GatewayInterface,
         strategies: list[StrategyBase],
+        *,
+        recovery_wal: Path | None = None,
     ) -> None:
         self._settings = settings
         self._bus = bus
         self._gateway = gateway
+        self._recovery_wal = recovery_wal
         self._strategies = strategies
         self._strategies_by_name: dict[str, StrategyBase] = {s.name: s for s in strategies}
         # Active strategy name used by ``_evaluate_strategies`` /``_on_fill``.
@@ -170,12 +182,41 @@ class Engine:
             settings=settings,
             on_parent_done=self._exec_tracker.close_parent,
         )
+        self._pretrade = PreTradeValidator(
+            settings=settings,
+            risk=self._risk,
+            gateway=gateway,
+            portfolio=self._portfolio,
+            positions=self._positions,
+        )
+        self._latency = LatencyTracker(bus=bus)
+        self._alerts = AlertManager(
+            bus=bus,
+            webhook_url=settings.alert_webhook_url,
+            cooldown_sec=settings.alert_cooldown_sec,
+        )
+        self._md_quality = DataQualityMonitor(
+            breaker=self._breaker,
+            stale_resnapshot_sec=settings.md_stale_resnapshot_sec,
+            crossed_book_breaker=settings.md_crossed_book_breaker,
+        )
+        self._clock_skew_ms: float = 0.0
         self._router = ExecutionRouter(
             wheel=self._wheel,
             executor=self._executor,
             features=self._features,
             tracker=self._exec_tracker,
+            settings=settings,
         )
+        self._order_reconciler = OrderReconciler(
+            gateway=gateway,
+            oms=self._oms,
+            breaker=self._breaker,
+            cancel_orphans=settings.reconcile_cancel_orphans,
+            on_mismatch=self._on_order_reconcile_mismatch,
+            bus=bus,
+        )
+        self._order_reconciler.apply_settings(settings)
 
         # Submission + slippage guards. Wired post-construction so the
         # OMS / router don't need a circular reference to ExecutionTracker.
@@ -237,6 +278,7 @@ class Engine:
         # Futures venues: symbols we've already POSTed configured leverage for
         # this session (lazy — avoids N REST calls at startup for every subscribe).
         self._leverage_applied_symbols: set[str] = set()
+        self._alert_task: asyncio.Task[None] | None = None
 
     def _reconcile_should_skip_rest(self) -> bool:
         """True when periodic reconcile should rely on user-data WS, not REST."""
@@ -339,6 +381,8 @@ class Engine:
         self._exec_quality_guard.apply_settings(s)
         self._connection_monitor.apply_settings(s)
         self._reconciler.apply_settings(s)
+        self._pretrade.apply_settings(s)
+        self._order_reconciler.apply_settings(s)
         for strat in self._strategies:
             strat.refresh_settings(s)
 
@@ -391,6 +435,18 @@ class Engine:
         logger.info("engine starting")
         await self._gateway.connect()
 
+        if self._settings.recover_on_start and self._recovery_wal is not None:
+            summary = await replay_wal_async(
+                self._recovery_wal, self._oms, self._positions,
+            )
+            await self._bus.publish(
+                Event(
+                    type=EventType.STATUS,
+                    payload={"replay_summary": asdict(summary)},
+                    source="journal",
+                )
+            )
+
         # Public market WebSocket first: ``bookTicker`` for mids, depth for L2,
         # ``!ticker@arr`` for rolling 24h volumes (avoids REST ``/ticker/24hr``).
         await self._gateway.subscribe_market_data(
@@ -409,9 +465,12 @@ class Engine:
         self._portfolio.seed_balances(balances)
         self._positions.seed(positions)
 
+        if getattr(self._settings, "order_reconcile_on_startup", True):
+            await self._order_reconciler.sync_startup()
+
         await self._gateway.subscribe_user_data(
             on_fill=self._on_fill,
-            on_order_update=self._oms.on_order_update,
+            on_order_update=self._on_order_update,
             on_account_update=self._on_account_update,
         )
 
@@ -438,6 +497,8 @@ class Engine:
         # Start the periodic venue reconciliation loop so OMS/Portfolio
         # drift from a missed user-data event is caught within one cycle.
         self._reconciler.start()
+        self._order_reconciler.start()
+        self._alert_task = asyncio.create_task(self._alert_pump(), name="engine-alerts")
         logger.info("engine running")
 
     async def _prime_symbol_prices(self) -> None:
@@ -522,9 +583,21 @@ class Engine:
             except Exception:  # noqa: BLE001
                 logger.exception("flatten_on_stop failed")
         await self._clock.stop()
+        if self._alert_task is not None:
+            self._alert_task.cancel()
+            try:
+                await self._alert_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._alert_task = None
         await self._reconciler.stop()
+        await self._order_reconciler.stop()
         await self._cancel_refresh_loops()
         await self._router.shutdown()
+        try:
+            await self._gateway.cancel_all_open_orders()
+        except Exception:  # noqa: BLE001
+            logger.exception("venue cancel_all_open_orders failed during stop")
         await self._oms.cancel_all()
         await self._gateway.disconnect()
         self._state.status = EngineStatus.STOPPED
@@ -638,6 +711,10 @@ class Engine:
     async def flatten(self) -> None:
         """Cancel working orders + market-out all positions."""
         logger.warning("flattening all positions")
+        try:
+            await self._gateway.cancel_all_open_orders()
+        except Exception:  # noqa: BLE001
+            logger.exception("venue cancel_all_open_orders failed during flatten")
         await self._oms.cancel_all()
         for position in list(self._positions.all()):
             if position.qty == 0:
@@ -668,6 +745,7 @@ class Engine:
         )
         # ConnectionMonitor: any public-WS activity (same reasoning as above).
         self._state.last_tick_ts = recv_ts
+        self._latency.on_tick(tick.symbol)
         await self._positions.on_tick(tick)
         await self._bus.publish(
             Event(
@@ -684,6 +762,11 @@ class Engine:
         if not book.ready():
             await self._snapshot_book(diff.symbol)
         book.apply_diff(diff)
+        health = self._md_quality.on_diff(
+            diff, best_bid=book.best_bid(), best_ask=book.best_ask(),
+        )
+        if health.needs_resnapshot:
+            await self._snapshot_book(diff.symbol)
 
     async def _on_trade(self, trade: TapeTrade) -> None:
         self._state.last_tick_ts = time.time()
@@ -697,15 +780,18 @@ class Engine:
         self._state.last_tick_ts = time.time()
         self._volume_weights[sym] = quote_vol
 
+    async def _on_order_update(self, update: ChildOrder) -> None:
+        await self._oms.on_order_update(update)
+        if update.status is OrderStatus.ACK:
+            self._latency.on_venue_ack(update.symbol)
+
     async def _on_fill(self, fill: Fill) -> None:
         # Exchange-reported fill price only for PnL; arrival vs VWAP slippage is in ExecutionTracker.
         fill.venue_price = fill.price
         fill.impact_bps = 0.0
 
-        # OMS fans out the FILL event onto the bus; we additionally
-        #    update position / perf / execution-quality state synchronously
-        #    so subsequent reads are coherent.
-        await self._oms.on_fill(fill)
+        if not await self._oms.on_fill(fill):
+            return
         await self._positions.on_fill(fill)
         position = self._positions.get(fill.symbol) or Position(symbol=fill.symbol)
         self._risk.on_fill(fill, position)
@@ -718,6 +804,7 @@ class Engine:
                 qty=fill.qty,
                 venue_price=fill.venue_price,
                 impact_bps=fill.impact_bps,
+                fee=fill.fee,
             )
             # In-flight slippage abort: cancel + breach when the parent's
             # realised VWAP moves past `max_slippage_bps` from arrival.
@@ -782,6 +869,10 @@ class Engine:
 
         # Risk-driven exits first; an exit can't be vetoed by risk again
         # because it's already a closing trade.
+        await self._latency.maybe_emit(self._settings.latency_metrics_interval_sec)
+        for sym in self._md_quality.tick_staleness(now=time.time()):
+            await self._snapshot_book(sym)
+        await self._publish_ops_status()
         await self._evaluate_exits()
         await self._evaluate_strategies()
 
@@ -800,6 +891,10 @@ class Engine:
         codes = ",".join(s.code for s in active)
         logger.error("auto-flatten triggered by engine breaker(s): %s", codes)
         try:
+            try:
+                await self._gateway.cancel_all_open_orders()
+            except Exception:  # noqa: BLE001
+                logger.exception("venue cancel_all before auto-flatten failed")
             await self.flatten()
         except Exception:  # noqa: BLE001
             logger.exception("auto-flatten failed")
@@ -854,82 +949,45 @@ class Engine:
             await self._dispatch_group(gid, legs)
 
     async def _dispatch_single(self, signal: Signal) -> None:
-        """Risk-check + venue-floor + submit one ungrouped signal."""
+        """Pre-trade validate + submit one ungrouped signal."""
         mid = self._mid_for(signal.symbol)
         if mid is None:
             return
         tick = self._latest_tick.get(signal.symbol)
         feat = self._features.snapshot(signal.symbol)
-        decision = self._risk.check(
+        self._latency.on_signal(signal.symbol)
+        result = self._pretrade.validate_single(
             signal,
             mid,
             tick_ts=tick.ts if tick is not None else None,
             spread_bps=feat.spread_bps,
         )
-        if not decision.approved:
-            logger.info("risk vetoed %s: %s", signal.symbol, decision.reason)
+        if not result.approved:
+            logger.info("pretrade vetoed %s: %s", signal.symbol, result.reason)
             return
-
-        filters = self._gateway.get_symbol_filters(signal.symbol)
-        venue_min_qty = _venue_min_qty(symbol=signal.symbol, mid=mid, filters=filters)
-        if venue_min_qty is None:
-            logger.info("venue vetoed %s: mid=%.6f filters=%s", signal.symbol, mid, filters)
-            return
-
-        final_qty = max(decision.qty, venue_min_qty)
-        if final_qty > decision.qty + 1e-12:
-            snap = self._portfolio.snapshot()
-            max_notional_per_trade = snap.equity * self._risk.limits.max_risk_pct
-            required_notional = final_qty * mid
-            projected_gross = snap.gross_notional + required_notional
-            if required_notional > max_notional_per_trade:
-                logger.info(
-                    "risk vetoed %s: venue_min_qty=%.10f forces notional=%.4f > max=%.4f",
-                    signal.symbol, venue_min_qty, required_notional, max_notional_per_trade,
-                )
-                return
-            if projected_gross > self._risk.limits.max_gross_notional:
-                logger.info(
-                    "risk vetoed %s: venue_min_qty=%.10f would breach max_gross_notional",
-                    signal.symbol, venue_min_qty,
-                )
-                return
-
+        self._latency.on_risk_passed(signal.symbol)
         try:
-            await self._ensure_leverage_before_entry(signal.symbol)
+            if not signal.reduce_only:
+                await self._ensure_leverage_before_entry(signal.symbol)
             await self._router.submit(
                 symbol=signal.symbol,
                 side=signal.side,
-                qty=final_qty,
+                qty=result.qty,
                 notes=signal.reason,
+                signal_score=signal.score,
+                reduce_only=signal.reduce_only,
             )
+            self._latency.on_child_submitted(signal.symbol)
         except ParentSubmissionRejected as exc:
             logger.info("router gated %s: %s", signal.symbol, exc)
 
     async def _dispatch_group(self, group_id: str, legs: list[Signal]) -> None:
-        """Submit a pair of legs atomically.
-
-        Pair semantics: every leg in the group must trade with the *same*
-        base qty (a single coin's USDT/USDC perps quote in the same base
-        unit). The group qty is bumped up to satisfy whichever leg has
-        the strictest venue floor; if any leg then breaches a risk
-        ceiling, we abort the whole group rather than leave a naked leg.
-        """
-        # Engine-scope breaker blocks every entry; symbol-scope blocks the leg.
-        if self._breaker.is_blocked(BreakerScope.ENGINE):
-            logger.info("group %s aborted: engine breaker active", group_id)
-            return
-        for leg in legs:
-            if self._breaker.is_blocked(BreakerScope.SYMBOL, leg.symbol):
-                logger.info(
-                    "group %s aborted: symbol breaker active for %s",
-                    group_id, leg.symbol,
-                )
-                return
-
-        # Collect mid + venue floor + freshness/spread for every leg.
+        """Submit pair legs with unified pre-trade checks and compensating unwind."""
         mids: dict[str, float] = {}
+        tick_ts: dict[str, float | None] = {}
+        spread_bps: dict[str, float | None] = {}
         floors: dict[str, float] = {}
+
         for leg in legs:
             mid = self._mid_for(leg.symbol)
             if mid is None or mid <= 0:
@@ -937,84 +995,104 @@ class Engine:
                 return
             tick = self._latest_tick.get(leg.symbol)
             feat = self._features.snapshot(leg.symbol)
-            md_breach = self._risk.evaluate_market_data(
-                symbol=leg.symbol,
-                tick_ts=tick.ts if tick is not None else None,
-                spread_bps=feat.spread_bps,
-            )
-            if md_breach is not None:
-                self._breaker.trip(md_breach)
-                logger.info(
-                    "group %s aborted: %s on %s (%s)",
-                    group_id, md_breach.code, leg.symbol, md_breach.detail,
-                )
-                return
-            filters = self._gateway.get_symbol_filters(leg.symbol)
-            min_qty = _venue_min_qty(symbol=leg.symbol, mid=mid, filters=filters)
-            if min_qty is None:
-                logger.info(
-                    "group %s aborted: venue vetoed %s (mid=%.6f filters=%s)",
-                    group_id, leg.symbol, mid, filters,
-                )
-                return
             mids[leg.symbol] = mid
-            floors[leg.symbol] = min_qty
+            tick_ts[leg.symbol] = tick.ts if tick is not None else None
+            spread_bps[leg.symbol] = feat.spread_bps
+            floor = venue_min_qty(
+                mid=mid,
+                filters=self._gateway.get_symbol_filters(leg.symbol),
+            )
+            if floor is None:
+                logger.info("group %s aborted: venue vetoed %s", group_id, leg.symbol)
+                return
+            floors[leg.symbol] = floor
 
-        # Strategy already sized each leg with stop-loss-budgeted notional;
-        # they should agree. Use the max so any per-leg rounding-up survives
-        # and bump further if a venue floor demands more base qty.
         strategy_qty = max((leg.qty for leg in legs if leg.qty > 0), default=0.0)
         pair_qty = max(strategy_qty, max(floors.values()))
-        if pair_qty <= 0:
-            logger.info("group %s aborted: strategy + venue floors both zero", group_id)
-            return
-
-        # Risk gate: every leg's notional must clear the per-trade and
-        # gross-notional ceilings at the agreed pair qty.
-        snap = self._portfolio.snapshot()
-        equity = snap.equity
-        if equity <= 0:
-            logger.info("group %s aborted: non-positive equity", group_id)
-            return
-        per_leg_cap = equity * self._risk.limits.max_risk_pct
-        projected_gross = snap.gross_notional
-        for leg in legs:
-            leg_notional = pair_qty * mids[leg.symbol]
-            if leg_notional > per_leg_cap:
-                logger.info(
-                    "group %s aborted: leg %s notional=%.2f > per-trade cap=%.2f",
-                    group_id, leg.symbol, leg_notional, per_leg_cap,
-                )
-                return
-            projected_gross += leg_notional
-        if projected_gross > self._risk.limits.max_gross_notional:
-            logger.info(
-                "group %s aborted: projected gross=%.2f > max_gross_notional=%.2f",
-                group_id, projected_gross, self._risk.limits.max_gross_notional,
-            )
-            return
-
-        # All-or-none submission. We submit sequentially (fast, single-loop
-        # latency) so the OMS sees both parents in one tick.
-        logger.info(
-            "group %s submitting %d legs at pair_qty=%.8f (per-leg notional≈%.2f, equity=%.2f)",
-            group_id, len(legs), pair_qty, pair_qty * mids[legs[0].symbol], equity,
+        result = self._pretrade.validate_group(
+            legs,
+            pair_qty,
+            mids,
+            tick_ts_by_symbol=tick_ts,
+            spread_bps_by_symbol=spread_bps,
         )
+        if not result.approved:
+            logger.info("group %s pretrade veto: %s", group_id, result.reason)
+            return
+
+        for leg in legs:
+            allowed, reason = self._submit_guard.can_submit_parent(leg.symbol)
+            if not allowed:
+                logger.info("group %s aborted: %s for %s", group_id, reason, leg.symbol)
+                return
+
+        logger.info(
+            "group %s submitting %d legs at pair_qty=%.8f",
+            group_id, len(legs), pair_qty,
+        )
+        submitted: list[tuple[Signal, ParentOrder]] = []
         for leg in legs:
             try:
                 await self._ensure_leverage_before_entry(leg.symbol)
-                await self._router.submit(
+                self._latency.on_risk_passed(leg.symbol)
+                parent = await self._router.submit(
                     symbol=leg.symbol,
                     side=leg.side,
                     qty=pair_qty,
                     notes=leg.reason,
+                    signal_score=leg.score,
+                    group_id=group_id,
                 )
+                self._latency.on_child_submitted(leg.symbol)
+                submitted.append((leg, parent))
             except ParentSubmissionRejected as exc:
-                logger.warning(
-                    "group %s leg %s gated: %s (other legs may now be naked)",
-                    group_id, leg.symbol, exc,
-                )
+                await self._compensate_group_submission(group_id, submitted, exc)
                 return
+
+    async def _compensate_group_submission(
+        self,
+        group_id: str,
+        submitted: list[tuple[Signal, ParentOrder]],
+        exc: ParentSubmissionRejected,
+    ) -> None:
+        logger.error(
+            "group %s partial failure after %d leg(s): %s — unwinding",
+            group_id, len(submitted), exc,
+        )
+        await self._bus.publish(
+            Event(
+                type=EventType.LOG,
+                payload={
+                    "level": LogLevel.ERROR.value,
+                    "message": (
+                        f"group {group_id} partial submit; compensating unwind "
+                        f"({len(submitted)} leg(s)): {exc}"
+                    ),
+                },
+                source="engine",
+            )
+        )
+        for leg, parent in submitted:
+            try:
+                await self._router.submit(
+                    symbol=leg.symbol,
+                    side=leg.side.opposite,
+                    qty=parent.qty,
+                    notes=f"compensate:{group_id}",
+                    reduce_only=True,
+                    urgency=Urgency.AGGRESSIVE,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("compensating unwind failed for %s", leg.symbol)
+                self._breaker.trip(
+                    Breach(
+                        code="group_unwind_failed",
+                        scope=BreakerScope.SYMBOL,
+                        severity=BreakerSeverity.MAJOR,
+                        target=leg.symbol,
+                        detail=f"group={group_id}",
+                    )
+                )
 
     # --- Helpers ---
 
@@ -1039,11 +1117,13 @@ class Engine:
         except Exception:  # noqa: BLE001
             logger.exception("book snapshot failed for %s", symbol)
             return
+        last_id = int(data.get("lastUpdateId", 0))
         self._books.get(symbol).apply_snapshot(
             bids=[(float(p), float(q)) for p, q in data.get("bids", [])],
             asks=[(float(p), float(q)) for p, q in data.get("asks", [])],
-            last_update_id=int(data.get("lastUpdateId", 0)),
+            last_update_id=last_id,
         )
+        self._md_quality.on_snapshot(symbol, last_id)
 
     def _mid_for(self, symbol: str) -> float | None:
         tick = self._latest_tick.get(symbol)
@@ -1063,41 +1143,71 @@ class Engine:
             )
         )
 
+    async def _publish_ops_status(self) -> None:
+        now = time.time()
+        tick_age = (now - self._state.last_tick_ts) if self._state.last_tick_ts > 0 else -1.0
+        user_age = (now - self._oms.last_user_data_ts) if self._oms.last_user_data_ts > 0 else -1.0
+        await self._bus.publish(
+            Event(
+                type=EventType.STATUS,
+                payload={
+                    "kind": "system_health",
+                    "latency": self._latency.histograms(),
+                    "order_reconcile": dict(self._order_reconciler.last_result),
+                    "md_health": self._md_quality.metrics(),
+                    "clock_skew_ms": self._clock_skew_ms,
+                    "tick_age_sec": tick_age,
+                    "user_data_age_sec": user_age,
+                    "active_breakers": [s.code for s in self._breaker.active()],
+                },
+                source="engine",
+            )
+        )
 
-def _venue_min_qty(
-    *,
-    symbol: str,
-    mid: float,
-    filters: SymbolFilters | None,
-) -> float | None:
-    """Return the venue-minimum tradable qty, or None to veto.
+    async def _alert_pump(self) -> None:
+        try:
+            async with self._bus.subscribe(types=[EventType.BREAKER]) as queue:
+                while True:
+                    event = await queue.get()
+                    sev = str(event.payload.get("severity", "")).lower()
+                    if sev == BreakerSeverity.MAJOR.value:
+                        await self._alerts.fire(
+                            "major_breaker",
+                            f"MAJOR breaker: {event.payload.get('code')}",
+                            extra=event.payload,
+                        )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("alert pump crashed")
 
-    We do not have access to the final limit price here, so we use `mid`
-    as a conservative proxy for MIN_NOTIONAL checks.
-    """
-    if mid <= 0:
-        return None
-    if filters is None:
-        # Unknown venue constraints (or a permissive/mock gateway). Treat as "no floor".
-        return 0.0
+    async def _on_order_reconcile_mismatch(self, result: dict[str, object]) -> None:
+        await self._alerts.fire(
+            "order_reconcile_mismatch",
+            f"order reconcile mismatch venue_only={result.get('venue_only')} "
+            f"local_only={result.get('local_only')}",
+            extra=result,
+        )
 
-    required = 0.0
+    def system_health(self) -> dict[str, object]:
+        """Snapshot for REST /api/state."""
+        now = time.time()
+        snap = self.snapshot()
+        return {
+            "latency": self._latency.histograms(),
+            "order_reconcile": dict(self._order_reconciler.last_result),
+            "md_health": self._md_quality.metrics(),
+            "clock_skew_ms": self._clock_skew_ms,
+            "tick_age_sec": (now - self._state.last_tick_ts) if self._state.last_tick_ts > 0 else -1.0,
+            "user_data_age_sec": (
+                (now - self._oms.last_user_data_ts) if self._oms.last_user_data_ts > 0 else -1.0
+            ),
+            "active_breakers": [s.code for s in self._breaker.active()],
+            "gross_notional": snap.gross_notional,
+            "net_notional": snap.net_notional,
+            "realized_pnl": snap.realized_pnl,
+            "unrealized_pnl": snap.unrealized_pnl,
+            "equity": snap.equity,
+        }
 
-    if filters.min_qty is not None and required + 1e-12 < filters.min_qty:
-        required = filters.min_qty
 
-    if filters.min_notional is not None:
-        min_qty_for_notional = filters.min_notional / mid
-        if required + 1e-12 < min_qty_for_notional:
-            required = min_qty_for_notional
-
-    if filters.step_size is not None and filters.step_size > 0:
-        # Ceil to step so we don't round down below venue minimums.
-        step = filters.step_size
-        n = int((required + step - 1e-15) / step)
-        required = n * step
-
-    # Last sanity: if rounding makes it zero or NaN-ish, veto.
-    if required <= 0:
-        return None
-    return required

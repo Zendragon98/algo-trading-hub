@@ -38,6 +38,8 @@ class Features:
     tape_bid_hit_count: int = 0
     tape_ask_hit_count: int = 0
     last_price: float | None = None
+    best_bid: float | None = None
+    best_ask: float | None = None
 
 
 class FeatureStore:
@@ -79,4 +81,6 @@ class FeatureStore:
             ask_hit_ratio=stats.ask_hit_ratio,
             tape_bid_hit_count=stats.bid_hit_count,
             tape_ask_hit_count=stats.ask_hit_count,
+            best_bid=book.best_bid(),
+            best_ask=book.best_ask(),
         )

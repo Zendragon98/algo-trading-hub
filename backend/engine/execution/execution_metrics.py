@@ -40,6 +40,8 @@ class ExecutionReport:
     arrival_price: float = 0.0
     vwap_price: float = 0.0
     slippage_bps: float = 0.0
+    fee_bps: float = 0.0
+    fee_adjusted_slippage_bps: float = 0.0
     impact_bps: float = 0.0  # reserved for API compatibility; use slippage_bps for TCA
     fill_ratio: float = 0.0
     duration_sec: float = 0.0
@@ -84,6 +86,8 @@ class ExecutionTracker:
         qty: float,
         venue_price: float,
         impact_bps: float,
+        *,
+        fee: float = 0.0,
     ) -> None:
         report = self._open.get(parent_id)
         if report is None:
@@ -107,6 +111,15 @@ class ExecutionTracker:
             else 0.0
         )
         report.slippage_bps = _slippage_bps(side, report.arrival_price, report.vwap_price)
+        notional = new_filled * report.vwap_price if report.vwap_price > 0 else 0.0
+        if notional > 0 and fee > 0:
+            fee_bps = fee / notional * 10_000.0
+            report.fee_bps = (
+                (report.fee_bps * prev_filled + fee_bps * qty) / new_filled
+                if new_filled > 0
+                else 0.0
+            )
+        report.fee_adjusted_slippage_bps = report.slippage_bps + report.fee_bps
         report.duration_sec = max(0.0, time() - report.started_at)
 
         if report.fill_ratio >= 1.0 - self._COMPLETE_EPSILON:
@@ -119,6 +132,20 @@ class ExecutionTracker:
         report = self._open.get(parent_id)
         if report is None:
             return
+        if (
+            report.requested_qty > 0
+            and report.fill_ratio < 1.0 - self._COMPLETE_EPSILON
+        ):
+            await self._bus.publish(
+                Event(
+                    type=EventType.STATUS,
+                    payload={
+                        "kind": "parent_underfill",
+                        "parent_id": parent_id,
+                        "fill_ratio": report.fill_ratio,
+                    },
+                )
+            )
         await self._mark_complete(report)
 
     # --- Reads ---

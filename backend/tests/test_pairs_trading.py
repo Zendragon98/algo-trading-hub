@@ -131,13 +131,58 @@ def test_size_pair_uses_stop_loss_budget() -> None:
     qty = strat._size_pair(usdt_mid=100.0, usdc_mid=100.0)  # type: ignore[attr-defined]
     assert qty == 100.0
 
-    # Halving stop_pct doubles the qty (same risk budget, tighter stop).
     settings2 = Settings(
         binance_api_key="x", binance_api_secret="y", symbols=PAIR_SYMBOLS,
         risk_per_trade_pct=0.005, default_stop_loss_pct=0.0025,
     )
     strat2 = PairsTradingStrategy(settings2, equity_provider=lambda: equity)
     assert strat2._size_pair(usdt_mid=100.0, usdc_mid=100.0) == 200.0  # type: ignore[attr-defined]
+
+
+def test_loads_pair_calibration_json(tmp_path) -> None:
+    cal = tmp_path / "pair_BTC.json"
+    cal.write_text(
+        '{"base": "BTC", "suggested_entry_z": 2.5, "suggested_exit_z": 0.4}',
+        encoding="utf-8",
+    )
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        symbols=PAIR_SYMBOLS,
+        pair_calibration_path=str(cal),
+    )
+    strat = PairsTradingStrategy(settings)
+    btc = next(p for p in strat._pairs if p.usdt_symbol == "BTCUSDT")  # type: ignore[attr-defined]
+    assert btc.entry_z == 2.5
+    assert btc.exit_z == 0.4
+
+
+def test_partial_pending_emits_reduce_only_abort() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        symbols=PAIR_SYMBOLS,
+        pair_partial_fill_abort_sec=1,
+    )
+    strat = PairsTradingStrategy(settings, equity_provider=lambda: 10_000.0)
+    key = "BTCUSDT|BTCUSDC"
+    stats = strat._stats[key]  # type: ignore[attr-defined]
+    pair = strat._pairs[0]  # type: ignore[attr-defined]
+    stats.pending_side = +1
+    stats.pending_qty = 0.05
+    stats.pending_usdt = pair.usdt_symbol
+    stats.pending_usdc = pair.usdc_symbol
+    stats.pending_fills_remaining = 1
+    stats.pending_since_ts = 0.0
+    stats.pending_filled_symbol = pair.usdc_symbol
+    stats.pending_is_close = False
+
+    sigs = strat._check_partial_pending(pair, stats, now=100.0)  # type: ignore[attr-defined]
+    assert len(sigs) == 1
+    assert sigs[0].reduce_only is True
+    assert sigs[0].symbol == pair.usdc_symbol
+    assert sigs[0].side is Side.BUY
+    assert stats.pending_fills_remaining == 0
 
 
 def test_pair_unwinds_when_basis_diverges_past_stop_z() -> None:

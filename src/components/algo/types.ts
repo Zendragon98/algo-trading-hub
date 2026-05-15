@@ -57,11 +57,27 @@ export type ExecutionParent = {
   arrivalPrice: number;
   vwapPrice: number;
   slippageBps: number;
+  feeAdjustedSlippageBps: number;
   impactBps: number;
   durationSec: number;
   algoMode: string | null;
   startedAt: number;
   completedAt: number | null;
+};
+
+export type SystemHealth = {
+  latency: Record<string, { p50: number; p95: number; p99: number; count: number }>;
+  orderReconcile: { ok?: boolean; venue_only?: number; local_only?: number; ts?: number };
+  mdHealth: Record<string, { sequence_gaps: number; crossed_count: number; last_diff_age_ms: number }>;
+  clockSkewMs: number;
+  tickAgeSec: number;
+  userDataAgeSec: number;
+  activeBreakers: string[];
+  grossNotional: number;
+  netNotional: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  equity: number;
 };
 
 export type ExecutionAggregate = {
@@ -92,4 +108,30 @@ export type Kline = {
   close: number;
   volume: number;
   closeTime: number;
+};
+
+export type BreakerStatus = {
+  code: string;
+  scope: "engine" | "symbol" | "parent";
+  severity: "minor" | "major";
+  target: string | null;
+  state: "armed" | "tripped" | "cooldown" | "latched";
+  trippedAt: number;
+  cooldownUntil: number | null;
+  detail: string;
+};
+
+export type BreakerList = {
+  active: BreakerStatus[];
+  history: BreakerStatus[];
+};
+
+export type DailyReport = {
+  runDir: string;
+  tradeCount: number;
+  realizedPnl: number;
+  avgSlippageBps: number;
+  breakerEvents: number;
+  reconcileMismatches: number;
+  notes: string[];
 };

@@ -98,11 +98,20 @@ async def run() -> None:
     settings = settings.model_copy(update={"strategy": boot})
     engine = Engine(settings=settings, bus=bus, gateway=gateway, strategies=strategies)
 
+    def _position_qty(symbol: str) -> float:
+        pos = engine._positions.get(symbol)  # noqa: SLF001
+        return pos.qty if pos is not None else 0.0
+
     for strat in strategies:
+        if isinstance(strat, PairsTradingStrategy):
+            strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
+            strat.attach_weight_provider(lambda: engine.volume_weights)
         if isinstance(strat, SmaCrossoverStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
+            strat.attach_position_provider(_position_qty)
         if isinstance(strat, MarketMakingStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
+            strat.attach_position_provider(_position_qty)
 
     await engine.start()
 

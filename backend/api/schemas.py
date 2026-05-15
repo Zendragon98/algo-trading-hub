@@ -104,6 +104,7 @@ class ParentOrderDTO(BaseModel):
     arrival_price: float
     vwap_price: float
     slippage_bps: float
+    fee_adjusted_slippage_bps: float = 0.0
     impact_bps: float
     duration_sec: float
     algo_mode: str | None
@@ -122,6 +123,7 @@ class ExecutionReportDTO(BaseModel):
     arrival_price: float
     vwap_price: float
     slippage_bps: float
+    fee_adjusted_slippage_bps: float = 0.0
     impact_bps: float
     duration_sec: float
     algo_mode: str | None
@@ -162,6 +164,31 @@ class KlineDTO(BaseModel):
     close_time: float
 
 
+class SystemHealthDTO(BaseModel):
+    latency: dict[str, dict[str, float]] = {}
+    order_reconcile: dict[str, object] = {}
+    md_health: dict[str, dict[str, float | int | bool]] = {}
+    clock_skew_ms: float = 0.0
+    tick_age_sec: float = -1.0
+    user_data_age_sec: float = -1.0
+    active_breakers: list[str] = []
+    gross_notional: float = 0.0
+    net_notional: float = 0.0
+    realized_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
+    equity: float = 0.0
+
+
+class DailyReportDTO(BaseModel):
+    run_dir: str
+    trade_count: int = 0
+    realized_pnl: float = 0.0
+    avg_slippage_bps: float = 0.0
+    breaker_events: int = 0
+    reconcile_mismatches: int = 0
+    notes: list[str] = []
+
+
 class StateDTO(BaseModel):
     """Full snapshot used for the initial dashboard hydrate."""
 
@@ -174,6 +201,7 @@ class StateDTO(BaseModel):
     trades: list[TradeDTO]
     orders: OrdersDTO
     execution: ExecutionStatsDTO
+    system_health: SystemHealthDTO | None = None
 
 
 class RiskUpdateDTO(BaseModel):

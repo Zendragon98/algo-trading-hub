@@ -21,6 +21,20 @@ const RAW_BASE = (import.meta as { env?: Record<string, string | undefined> }).e
 const DEFAULT_BASE = import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
 export const API_BASE = (RAW_BASE ?? DEFAULT_BASE).replace(/\/$/, "");
 
+const API_TOKEN = (
+  (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_TOKEN ?? ""
+).trim();
+
+function authHeaders(): Record<string, string> {
+  if (!API_TOKEN) return {};
+  return { authorization: `Bearer ${API_TOKEN}` };
+}
+
+function isControlMutation(path: string, method?: string): boolean {
+  const m = (method ?? "GET").toUpperCase();
+  return path.startsWith("/api/control") && m !== "GET" && m !== "HEAD";
+}
+
 function httpToWsBase(httpOrEmpty: string): string {
   if (!httpOrEmpty) {
     if (typeof window === "undefined") {
@@ -80,6 +94,7 @@ export type ParentOrderDTO = {
   arrival_price: number;
   vwap_price: number;
   slippage_bps: number;
+  fee_adjusted_slippage_bps?: number;
   impact_bps: number;
   duration_sec: number;
   algo_mode: string | null;
@@ -134,6 +149,21 @@ export type SettingsPayloadDTO = {
   ok?: boolean;
 };
 
+export type SystemHealthDTO = {
+  latency: Record<string, { p50: number; p95: number; p99: number; count: number }>;
+  order_reconcile: Record<string, unknown>;
+  md_health: Record<string, Record<string, number | boolean>>;
+  clock_skew_ms: number;
+  tick_age_sec: number;
+  user_data_age_sec: number;
+  active_breakers: string[];
+  gross_notional: number;
+  net_notional: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  equity: number;
+};
+
 export type StateDTO = {
   status: StatusDTO;
   strategy: StrategyInfoDTO | null;
@@ -144,6 +174,61 @@ export type StateDTO = {
   trades: Trade[];
   orders: OrdersDTO;
   execution: ExecutionStatsDTO;
+  system_health?: SystemHealthDTO | null;
+};
+
+export type BreakerStatusDTO = {
+  code: string;
+  scope: "engine" | "symbol" | "parent";
+  severity: "minor" | "major";
+  target: string | null;
+  state: "armed" | "tripped" | "cooldown" | "latched";
+  tripped_at: number;
+  cooldown_until: number | null;
+  detail: string;
+};
+
+export type BreakerListDTO = {
+  active: BreakerStatusDTO[];
+  history: BreakerStatusDTO[];
+};
+
+export type DailyReportDTO = {
+  run_dir: string;
+  trade_count: number;
+  realized_pnl: number;
+  avg_slippage_bps: number;
+  breaker_events: number;
+  reconcile_mismatches: number;
+  notes: string[];
+};
+
+/** Loose STATUS payload from WebSocket (engine status, system_health, replay, etc.). */
+export type StatusEventData = {
+  status?: AlgoStatus;
+  uptime_sec?: number;
+  paper_mode?: boolean;
+  kind?: string;
+  latency?: SystemHealthDTO["latency"];
+  order_reconcile?: Record<string, unknown>;
+  md_health?: SystemHealthDTO["md_health"];
+  clock_skew_ms?: number;
+  tick_age_sec?: number;
+  user_data_age_sec?: number;
+  active_breakers?: string[];
+  gross_notional?: number;
+  net_notional?: number;
+  realized_pnl?: number;
+  unrealized_pnl?: number;
+  equity?: number;
+  replay_summary?: {
+    events_read?: number;
+    fills_applied?: number;
+    orders_restored?: number;
+    open_children?: number;
+    wal_path?: string;
+    errors?: string[];
+  };
 };
 
 function formatApiErrorDetail(body: unknown): string {
@@ -168,8 +253,15 @@ function formatApiErrorDetail(body: unknown): string {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  if (isControlMutation(path, init?.method)) {
+    Object.assign(headers, authHeaders());
+  }
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+    headers,
     ...init,
   });
   if (!response.ok) {
@@ -229,6 +321,14 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+
+  reportsLatest: () => request<DailyReportDTO>("/api/reports/latest"),
+  listBreakers: () => request<BreakerListDTO>("/api/control/breakers"),
+  rearmBreakers: (body: { code?: string; target?: string } = {}) =>
+    request<BreakerListDTO>("/api/control/breakers/rearm", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 export type WsEvent =
@@ -253,7 +353,7 @@ export type WsEvent =
   | { type: "position"; ts: number; data: Position & { unrealized_pnl: number; notional: number } }
   | { type: "equity"; ts: number; data: { equity: number; cash: number; ts: number } }
   | { type: "log"; ts: number; data: { level: LogEntry["level"]; msg: string; logger?: string } }
-  | { type: "status"; ts: number; data: { status: AlgoStatus; uptime_sec: number } };
+  | { type: "status"; ts: number; data: StatusEventData };
 
 // --- camelCase mappers (DTO -> view model) ---
 
@@ -286,6 +386,7 @@ export function toExecutionParent(d: ParentOrderDTO | ExecutionReportDTO): Execu
     arrivalPrice: d.arrival_price,
     vwapPrice: d.vwap_price,
     slippageBps: d.slippage_bps,
+    feeAdjustedSlippageBps: d.fee_adjusted_slippage_bps ?? d.slippage_bps,
     impactBps: d.impact_bps,
     durationSec: d.duration_sec,
     algoMode: d.algo_mode,
@@ -307,6 +408,64 @@ export function toExecutionAggregate(d: ExecutionAggregateDTO): ExecutionAggrega
 
 export function toStrategyInfo(d: StrategyInfoDTO): StrategyInfo {
   return { name: d.name, label: d.label, description: d.description, active: d.active };
+}
+
+export function toBreakerStatus(d: BreakerStatusDTO): import("@/components/algo/types").BreakerStatus {
+  return {
+    code: d.code,
+    scope: d.scope,
+    severity: d.severity,
+    target: d.target,
+    state: d.state,
+    trippedAt: d.tripped_at,
+    cooldownUntil: d.cooldown_until,
+    detail: d.detail,
+  };
+}
+
+export function toBreakerList(d: BreakerListDTO): import("@/components/algo/types").BreakerList {
+  return {
+    active: d.active.map(toBreakerStatus),
+    history: d.history.map(toBreakerStatus),
+  };
+}
+
+export function toDailyReport(d: DailyReportDTO): import("@/components/algo/types").DailyReport {
+  return {
+    runDir: d.run_dir,
+    tradeCount: d.trade_count,
+    realizedPnl: d.realized_pnl,
+    avgSlippageBps: d.avg_slippage_bps,
+    breakerEvents: d.breaker_events,
+    reconcileMismatches: d.reconcile_mismatches,
+    notes: d.notes,
+  };
+}
+
+export function toSystemHealth(d: SystemHealthDTO): import("@/components/algo/types").SystemHealth {
+  return {
+    latency: d.latency ?? {},
+    orderReconcile: d.order_reconcile ?? {},
+    mdHealth: Object.fromEntries(
+      Object.entries(d.md_health ?? {}).map(([k, v]) => [
+        k,
+        {
+          sequence_gaps: Number(v.sequence_gaps ?? 0),
+          crossed_count: Number(v.crossed_count ?? 0),
+          last_diff_age_ms: Number(v.last_diff_age_ms ?? -1),
+        },
+      ]),
+    ),
+    clockSkewMs: d.clock_skew_ms,
+    tickAgeSec: d.tick_age_sec,
+    userDataAgeSec: d.user_data_age_sec,
+    activeBreakers: d.active_breakers ?? [],
+    grossNotional: d.gross_notional,
+    netNotional: d.net_notional,
+    realizedPnl: d.realized_pnl,
+    unrealizedPnl: d.unrealized_pnl,
+    equity: d.equity,
+  };
 }
 
 export function toKline(d: KlineDTO): Kline {

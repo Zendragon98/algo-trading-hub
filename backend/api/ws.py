@@ -34,13 +34,17 @@ async def stream(websocket: WebSocket) -> None:
         async with bus.subscribe() as queue:
             while True:
                 event = await queue.get()
-                await websocket.send_json(
-                    {
-                        "type": event.type.value,
-                        "ts": event.ts,
-                        "data": event.payload,
-                    }
-                )
+                msg = {
+                    "type": event.type.value,
+                    "ts": event.ts,
+                    "data": event.payload,
+                }
+                try:
+                    import orjson
+
+                    await websocket.send_text(orjson.dumps(msg).decode())
+                except ImportError:
+                    await websocket.send_json(msg)
     except WebSocketDisconnect:
         logger.info("ws client disconnected")
     except Exception:  # noqa: BLE001

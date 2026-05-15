@@ -130,3 +130,32 @@ def test_mm_follow_mapping() -> None:
         if sigs:
             break
     assert sigs[0].side is Side.BUY
+
+
+def test_mm_exits_when_composite_reverts() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        mm_symbols=["BTCUSDT"],
+        mm_skew_scale=0.0,
+        mm_imbalance_scale=0.0,
+        mm_tape_scale=0.0,
+        mm_entry_tilt=8.0,
+        mm_exit_tilt=3.0,
+        mm_signal_mode="fade",
+        mm_min_samples=3,
+        mm_qty=1.0,
+        mm_cooldown_sec=0.0,
+    )
+    strat = MarketMakingStrategy(settings)
+    strat.attach_position_provider(lambda _sym: 1.0)
+
+    # Warm skew buffer (composite will be 0 once micro == mid).
+    for _ in range(5):
+        list(strat.on_tick(_feat(mid=100.0, micro=100.1, imb=0.0)))
+
+    sigs = list(strat.on_tick(_feat(mid=100.0, micro=100.0, imb=0.0)))
+    assert len(sigs) == 1
+    assert sigs[0].reduce_only is True
+    assert sigs[0].side is Side.SELL
+    assert "mm_exit" in sigs[0].reason

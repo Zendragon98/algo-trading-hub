@@ -149,6 +149,36 @@ class Settings(BaseSettings):
     # Breaker lifecycle
     breaker_minor_cooldown_sec: float = 60.0
 
+    # --- Pre-trade validation (PreTradeValidator) ---
+    max_order_notional_usd: float = 0.0   # 0 = disabled; absolute USD cap per order
+    max_qty_vs_position_multiple: float = 0.0  # 0 = disabled; max entry qty vs |position|
+    signal_dedup_ttl_sec: float = 2.0       # suppress duplicate signals within window
+    max_limit_deviation_bps: float = 50.0   # LIMIT peg collar vs mid (execution layer)
+
+    # --- Order reconciliation ---
+    reconcile_cancel_orphans: bool = False  # auto-cancel venue orders unknown to OMS
+    order_reconcile_on_startup: bool = True
+
+    # --- Execution urgency ---
+    urgent_score_threshold: float = 0.85    # Signal.score at/above → AGGRESSIVE
+    urgent_duration_sec: int = 10
+    urgent_num_slices: int = 2
+    urgent_max_slippage_bps: float = 20.0
+
+    # --- Journal / observability ---
+    journal_enabled: bool = True
+    recover_on_start: bool = False
+    latency_metrics_interval_sec: float = 5.0
+    alert_webhook_url: str = ""
+    alert_cooldown_sec: float = 60.0
+    post_only_enabled: bool = False
+    per_symbol_submit_rate: float = 0.0  # 0 = global only; else max submits/sec per symbol
+    md_stale_resnapshot_sec: float = 30.0
+    md_crossed_book_breaker: bool = True
+    clock_skew_warn_ms: float = 500.0
+    api_token: str = ""  # when set, required on mutating /api/control/* routes
+    prune_runs_older_than_days: int = 0  # 0 = disabled
+
     # --- Pairs-trading risk (basis-spread space) ---
     # The pairs strategy enters when |z| >= pair_entry_z, takes profit
     # when |z| <= pair_exit_z (basis converged), and stops out when |z|
@@ -161,6 +191,7 @@ class Settings(BaseSettings):
     # for symbols owned by a pairs strategy — see
     # `engine.risk.stop_loss.StopLossMonitor` and
     # `engine.strategies.strategy_base.StrategyBase.manages_own_risk`.
+    pair_calibration_path: str = ""  # optional JSON from analytics.pair_analyzer
     pair_entry_z: float = 2.0
     pair_exit_z: float = 0.5
     pair_stop_z: float = 4.0
@@ -176,6 +207,12 @@ class Settings(BaseSettings):
     # linearly with |z|/entry_z above the entry floor, capped at this
     # multiplier so a transient z-spike can't blow up the leg notional.
     pair_size_scale_cap: float = 2.0
+    # Minimum deviation samples before z-score is trusted (1Hz ticks ≈ seconds).
+    pair_min_z_samples: int = 30
+    # Abort a one-legged pending open after this many seconds (reduce-only unwind).
+    pair_partial_fill_abort_sec: int = 90
+    # Signal.score floor on pair entries so the router uses urgent slicing.
+    pair_urgent_score: float = 0.85
     # Prefer Binance public WS ``!ticker@arr`` for 24h quote volume instead of
     # polling REST ``/ticker/24hr``. When False, periodic refresh always uses REST.
     pair_volume_from_websocket: bool = True
@@ -229,6 +266,8 @@ class Settings(BaseSettings):
     sma_risk_per_trade_pct: float = 0.005
     sma_qty: float = 0.001
     sma_cooldown_sec: int = 15
+    # Cap SMA_SYMBOLS=AUTO to the top-N USDT perps by 24h quote volume (0 = no cap).
+    sma_max_symbols: int = 20
 
     # --- Market-making tilt strategy (skew + imbalance + tape) ---
     # MM_SYMBOLS: CSV list; when empty, the first engine `symbols` entry is used.
@@ -236,13 +275,15 @@ class Settings(BaseSettings):
     # Rolling mean of (micro_price - mid)/mid in bps over this many seconds.
     mm_skew_window_sec: float = 300.0
     mm_skew_scale: float = 1.0
-    mm_imbalance_scale: float = 15.0
+    mm_imbalance_scale: float = 8.0
     # Count-based tape pressure uses TRADE_TAPE_WINDOW_SEC (default 300s): scale on
     # (ask_hit_count - bid_hit_count) / total_trades when total >= mm_min_tape_trades.
     mm_tape_scale: float = 12.0
     mm_min_tape_trades: int = 5
     # Composite = skew + imbalance + tape terms; act when |composite| >= this.
     mm_entry_tilt: float = 8.0
+    # Mean-reversion exit when |composite| falls below this (0 = 35% of mm_entry_tilt).
+    mm_exit_tilt: float = 0.0
     # "fade" = buy on very negative composite / sell on very positive; "follow" = opposite mapping.
     mm_signal_mode: str = "fade"
     mm_min_samples: int = 5

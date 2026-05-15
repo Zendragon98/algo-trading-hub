@@ -1,10 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   CircleDot,
   Cpu,
+  Download,
   Gauge,
   ListOrdered,
   Pause,
@@ -12,6 +13,7 @@ import {
   Power,
   RefreshCcw,
   Settings2,
+  ShieldAlert,
   Square,
   Target,
   TrendingDown,
@@ -33,11 +35,14 @@ import { PositionChartDialog } from "@/components/algo/PositionChartDialog";
 import { SettingsDialog } from "@/components/algo/SettingsDialog";
 import type {
   AlgoStatus,
+  BreakerList,
+  BreakerStatus,
   ExecutionAggregate,
   ExecutionParent,
   LogEntry,
   Position,
   StrategyInfo,
+  SystemHealth,
   Trade,
   WorkingOrder,
 } from "@/components/algo/types";
@@ -72,11 +77,24 @@ function Index() {
   const workingParents: ExecutionParent[] = live.workingParents;
   const executionHistory: ExecutionParent[] = live.executionHistory;
   const executionAggregate: ExecutionAggregate = live.executionAggregate;
+  const systemHealth = live.systemHealth;
+  const maxRiskPct = live.maxRiskPct;
+  const maxGrossNotional = live.maxGrossNotional;
+  const breakers = live.breakers;
+  const replaySummary = live.replaySummary;
 
   const [risk, setRisk] = useState<number[]>([35]);
+  const riskHydrated = useRef(false);
   const [autoCompound, setAutoCompound] = useState(true);
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (riskHydrated.current || maxRiskPct <= 0) return;
+    setRisk([Math.round(maxRiskPct * 100)]);
+    riskHydrated.current = true;
+  }, [maxRiskPct]);
 
   const totalEquity = equity.length ? equity[equity.length - 1] : 0;
   const startEquity = equity.length ? equity[0] : 0;
@@ -130,6 +148,29 @@ function Index() {
     });
   };
 
+  const onRearmBreakers = (code?: string) => {
+    handleControl(async () => {
+      await api.rearmBreakers(code ? { code } : {});
+      await live.refresh();
+    });
+  };
+
+  const onExportReport = async () => {
+    setExportError(null);
+    try {
+      const report = await api.reportsLatest();
+      const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `daily-report-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setExportError((err as Error).message);
+    }
+  };
+
   return (
     <div className="min-h-screen text-foreground">
       <TopBar
@@ -174,6 +215,129 @@ function Index() {
             value={strategy?.label ?? "—"}
             sub={strategy?.description ?? "Loading..."}
             tone="neutral"
+          />
+        </section>
+
+        {replaySummary ? (
+          <section className="mt-4">
+            <div className="rounded-md border border-bull/30 bg-bull/5 px-4 py-2 text-xs text-bull">
+              {replaySummary}
+            </div>
+          </section>
+        ) : null}
+
+        {systemHealth ? (
+          <section className="mt-4">
+            <Panel
+              title="SYSTEM HEALTH"
+              right={
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1 text-[11px]"
+                    onClick={() => void onExportReport()}
+                  >
+                    <Download className="size-3" /> export
+                  </Button>
+                  <LiveDot active={status === "running"} />
+                </div>
+              }
+            >
+              {exportError ? (
+                <p className="mb-2 px-4 text-[11px] text-bear">{exportError}</p>
+              ) : null}
+              <div className="grid grid-cols-2 gap-3 px-4 pb-2 text-xs md:grid-cols-4 lg:grid-cols-8">
+                <HealthChip
+                  label="Tick age"
+                  value={
+                    systemHealth.tickAgeSec >= 0
+                      ? `${systemHealth.tickAgeSec.toFixed(1)}s`
+                      : "—"
+                  }
+                  ok={systemHealth.tickAgeSec >= 0 && systemHealth.tickAgeSec < 15}
+                />
+                <HealthChip
+                  label="User-data age"
+                  value={
+                    systemHealth.userDataAgeSec >= 0
+                      ? `${systemHealth.userDataAgeSec.toFixed(1)}s`
+                      : "—"
+                  }
+                  ok={systemHealth.userDataAgeSec >= 0 && systemHealth.userDataAgeSec < 60}
+                />
+                <HealthChip
+                  label="Order reconcile"
+                  value={
+                    systemHealth.orderReconcile.ok === false
+                      ? `mismatch (${String(systemHealth.orderReconcile.venue_only ?? 0)}/${String(systemHealth.orderReconcile.local_only ?? 0)})`
+                      : "OK"
+                  }
+                  ok={systemHealth.orderReconcile.ok !== false}
+                />
+                <HealthChip
+                  label="Breakers"
+                  value={
+                    systemHealth.activeBreakers.length
+                      ? systemHealth.activeBreakers.join(", ")
+                      : "none"
+                  }
+                  ok={systemHealth.activeBreakers.length === 0}
+                />
+                <HealthChip
+                  label="p95 tick→submit"
+                  value={`${(systemHealth.latency.tick_to_submit_ms?.p95 ?? 0).toFixed(0)} ms`}
+                  ok
+                />
+                <HealthChip
+                  label="p95 submit→ack"
+                  value={`${(systemHealth.latency.submit_to_ack_ms?.p95 ?? 0).toFixed(0)} ms`}
+                  ok={(systemHealth.latency.submit_to_ack_ms?.p95 ?? 0) < 500}
+                />
+                <HealthChip
+                  label="Clock skew"
+                  value={`${systemHealth.clockSkewMs.toFixed(0)} ms`}
+                  ok={Math.abs(systemHealth.clockSkewMs) < 250}
+                />
+                <HealthChip
+                  label="Gross notional"
+                  value={`$${systemHealth.grossNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+                  ok={systemHealth.grossNotional <= maxGrossNotional}
+                />
+              </div>
+              {Object.keys(systemHealth.mdHealth).length > 0 ? (
+                <div className="mt-3 flex flex-wrap gap-2 px-4 pb-4">
+                  {Object.entries(systemHealth.mdHealth).map(([sym, h]) => (
+                    <span
+                      key={sym}
+                      className={cn(
+                        "rounded border px-2 py-0.5 text-[10px] tabular-nums",
+                        h.crossed_count > 0 || h.last_diff_age_ms > 30_000
+                          ? "border-bear/40 text-bear"
+                          : "border-border text-muted-foreground",
+                      )}
+                    >
+                      {sym} gaps={h.sequence_gaps} age=
+                      {h.last_diff_age_ms >= 0 ? `${(h.last_diff_age_ms / 1000).toFixed(0)}s` : "—"}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </Panel>
+          </section>
+        ) : null}
+
+        <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <RiskPanel
+            systemHealth={systemHealth}
+            maxRiskPct={maxRiskPct}
+            maxGrossNotional={maxGrossNotional}
+            totalEquity={totalEquity}
+          />
+          <BreakersPanel
+            breakers={breakers}
+            onRearmAll={() => onRearmBreakers()}
+            onRearmCode={(code) => onRearmBreakers(code)}
           />
         </section>
 
@@ -575,6 +739,160 @@ function StrategyPicker({
   );
 }
 
+function RiskPanel({
+  systemHealth,
+  maxRiskPct,
+  maxGrossNotional,
+  totalEquity,
+}: {
+  systemHealth: SystemHealth | null;
+  maxRiskPct: number;
+  maxGrossNotional: number;
+  totalEquity: number;
+}) {
+  const equity = systemHealth?.equity ?? totalEquity;
+  const gross = systemHealth?.grossNotional ?? 0;
+  const net = systemHealth?.netNotional ?? 0;
+  const grossPct = maxGrossNotional > 0 ? (gross / maxGrossNotional) * 100 : 0;
+  const perTradeCap = equity * maxRiskPct;
+
+  return (
+    <Panel title="RISK LIMITS">
+      <div className="grid grid-cols-2 gap-3 p-4 text-xs">
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Equity</div>
+          <div className="mt-1 font-mono text-sm tabular-nums">
+            ${equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Per-trade cap</div>
+          <div className="mt-1 font-mono text-sm tabular-nums">
+            ${perTradeCap.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            <span className="ml-1 text-muted-foreground">({(maxRiskPct * 100).toFixed(0)}%)</span>
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Gross notional</div>
+          <div
+            className={cn(
+              "mt-1 font-mono text-sm tabular-nums",
+              gross > maxGrossNotional ? "text-bear" : "text-foreground",
+            )}
+          >
+            ${gross.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            <span className="ml-1 text-muted-foreground">
+              / ${maxGrossNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            </span>
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground">{grossPct.toFixed(1)}% of limit</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Net notional</div>
+          <div className="mt-1 font-mono text-sm tabular-nums">
+            ${net.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+          </div>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function BreakersPanel({
+  breakers,
+  onRearmAll,
+  onRearmCode,
+}: {
+  breakers: BreakerList;
+  onRearmAll: () => void;
+  onRearmCode: (code: string) => void;
+}) {
+  return (
+    <Panel
+      title="CIRCUIT BREAKERS"
+      right={
+        breakers.active.length > 0 ? (
+          <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={onRearmAll}>
+            Rearm all
+          </Button>
+        ) : null
+      }
+    >
+      <div className="p-4">
+        {breakers.active.length === 0 ? (
+          <p className="text-center text-xs text-muted-foreground">No active breakers.</p>
+        ) : (
+          <ScrollArea className="h-[120px]">
+            <div className="space-y-2">
+              {breakers.active.map((b) => (
+                <BreakerRow key={`${b.code}-${b.target ?? ""}`} breaker={b} onRearm={() => onRearmCode(b.code)} />
+              ))}
+            </div>
+          </ScrollArea>
+        )}
+        {breakers.history.length > 0 ? (
+          <p className="mt-3 text-[10px] text-muted-foreground">
+            {breakers.history.length} recent event(s) in history
+          </p>
+        ) : null}
+      </div>
+    </Panel>
+  );
+}
+
+function BreakerRow({ breaker, onRearm }: { breaker: BreakerStatus; onRearm: () => void }) {
+  const latched = breaker.state === "latched" || breaker.state === "tripped";
+  return (
+    <div className="flex items-start gap-2 rounded-sm border border-border/60 bg-card/40 px-2.5 py-2 text-xs">
+      <ShieldAlert className={cn("mt-0.5 size-3.5 shrink-0", latched ? "text-bear" : "text-muted-foreground")} />
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono font-semibold">{breaker.code}</span>
+          <Badge variant="outline" className="text-[9px] uppercase">
+            {breaker.severity}
+          </Badge>
+          <Badge variant="outline" className="text-[9px] uppercase">
+            {breaker.state}
+          </Badge>
+          {breaker.target ? (
+            <span className="text-muted-foreground">{breaker.target}</span>
+          ) : null}
+        </div>
+        {breaker.detail ? (
+          <p className="mt-1 truncate text-[11px] text-muted-foreground">{breaker.detail}</p>
+        ) : null}
+      </div>
+      {latched ? (
+        <Button variant="ghost" size="sm" className="h-7 shrink-0 text-[10px]" onClick={onRearm}>
+          Rearm
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function HealthChip({
+  label,
+  value,
+  ok,
+}: {
+  label: string;
+  value: string;
+  ok: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded border px-2 py-1.5",
+        ok ? "border-border" : "border-bear/40 bg-bear/5",
+      )}
+    >
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
+      <div className={cn("mt-0.5 tabular-nums", ok ? "text-foreground" : "text-bear")}>{value}</div>
+    </div>
+  );
+}
+
 function LiveDot({ active }: { active: boolean }) {
   return (
     <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -849,6 +1167,10 @@ function ParentRow({
         <span className={cn("tabular-nums", parent.slippageBps > 0 ? "text-bear" : "text-bull")}>
           slippage {parent.slippageBps >= 0 ? "+" : ""}{parent.slippageBps.toFixed(1)} bps
         </span>
+        <span className={cn("tabular-nums", parent.feeAdjustedSlippageBps > 0 ? "text-bear" : "text-bull")}>
+          fee-adj {parent.feeAdjustedSlippageBps >= 0 ? "+" : ""}
+          {parent.feeAdjustedSlippageBps.toFixed(1)} bps
+        </span>
         <span className="tabular-nums">
           impact {parent.impactBps.toFixed(1)} bps
         </span>
@@ -960,12 +1282,21 @@ function ExecutionQualityPanel({
                   </span>
                   <span
                     className={cn(
-                      "ml-auto tabular-nums",
+                      "tabular-nums",
                       r.slippageBps > 0 ? "text-bear" : "text-bull",
                     )}
                   >
                     {r.slippageBps >= 0 ? "+" : ""}
-                    {r.slippageBps.toFixed(1)} bps
+                    {r.slippageBps.toFixed(1)}
+                  </span>
+                  <span
+                    className={cn(
+                      "tabular-nums",
+                      r.feeAdjustedSlippageBps > 0 ? "text-bear" : "text-bull",
+                    )}
+                  >
+                    fee {r.feeAdjustedSlippageBps >= 0 ? "+" : ""}
+                    {r.feeAdjustedSlippageBps.toFixed(1)} bps
                   </span>
                   <span className="tabular-nums text-muted-foreground">
                     {r.durationSec.toFixed(1)}s

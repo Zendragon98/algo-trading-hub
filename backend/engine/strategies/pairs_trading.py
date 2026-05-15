@@ -41,12 +41,14 @@ leak through a venue filter rejection.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import time
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 from common.config import Settings
 from common.enums import Side
@@ -110,9 +112,11 @@ class _DeviationStats:
         "pending_fills_remaining",
         "pending_since_ts",
         "pending_is_close",
+        "pending_filled_symbol",
+        "min_samples",
     )
 
-    def __init__(self, window_sec: int) -> None:
+    def __init__(self, window_sec: int, min_samples: int = 30) -> None:
         self.samples: deque[tuple[float, float]] = deque()
         self.window_sec = int(window_sec)
         self._sum: float = 0.0
@@ -137,6 +141,8 @@ class _DeviationStats:
         self.pending_fills_remaining: int = 0
         self.pending_since_ts: float = 0.0
         self.pending_is_close: bool = False
+        self.pending_filled_symbol: str = ""
+        self.min_samples = max(1, int(min_samples))
 
     def push(self, ts: float, value: float) -> None:
         self.samples.append((ts, value))
@@ -151,7 +157,7 @@ class _DeviationStats:
 
     def zscore(self, value: float) -> float | None:
         n = len(self.samples)
-        if n < 30:
+        if n < self.min_samples:
             return None
         mean = self._sum / n
         var = max(self._sumsq / n - mean * mean, 0.0)
@@ -192,16 +198,26 @@ class PairsTradingStrategy(StrategyBase):
             )
             for usdt, usdc in settings.pair_legs()
         ]
+        min_samples = int(settings.pair_min_z_samples)
         self._stats: dict[str, _DeviationStats] = {
-            self._key(p): _DeviationStats(window_sec=p.z_window_sec) for p in self._pairs
+            self._key(p): _DeviationStats(window_sec=p.z_window_sec, min_samples=min_samples)
+            for p in self._pairs
         }
         # Reference series so we can log how far the cross-coin consensus
         # has drifted; useful when calibrating thresholds offline.
         self._reference_history: deque[float] = deque(maxlen=600)
 
+        self._load_calibration(settings)
+
         if not self._pairs:
             logger.warning(
                 "PairsTradingStrategy enabled but no USDT/USDC pairs found in SYMBOLS"
+            )
+        elif len(self._pairs) < 2:
+            logger.warning(
+                "Pairs trading needs >=2 matched USDT/USDC bases for a consensus "
+                "(got %d). Set SYMBOLS=AUTO or add more pairs.",
+                len(self._pairs),
             )
 
     def refresh_settings(self, settings: Settings) -> None:
@@ -224,8 +240,59 @@ class PairsTradingStrategy(StrategyBase):
             if prev is not None and prev.window_sec == p.z_window_sec:
                 new_stats[key] = prev
             else:
-                new_stats[key] = _DeviationStats(window_sec=p.z_window_sec)
+                new_stats[key] = _DeviationStats(
+                    window_sec=p.z_window_sec,
+                    min_samples=int(settings.pair_min_z_samples),
+                )
         self._stats = new_stats
+        self._load_calibration(settings)
+
+    def _load_calibration(self, settings: Settings) -> None:
+        """Apply per-base entry/exit z from ``analytics.pair_analyzer`` JSON."""
+        path_str = (settings.pair_calibration_path or "").strip()
+        if not path_str:
+            return
+        path = Path(path_str)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parent.parent.parent / path_str
+        files: list[Path]
+        if path.is_file():
+            files = [path]
+        elif path.is_dir():
+            files = sorted(path.glob("pair_*.json"))
+        else:
+            logger.warning("pair_calibration_path not found: %s", path)
+            return
+
+        cal: dict[str, tuple[float, float]] = {}
+        for fpath in files:
+            try:
+                data = json.loads(fpath.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to read pair calibration %s", fpath)
+                continue
+            base = str(data.get("base", "")).strip().upper()
+            if not base:
+                continue
+            try:
+                cal[base] = (
+                    float(data["suggested_entry_z"]),
+                    float(data["suggested_exit_z"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                logger.warning("invalid pair calibration payload in %s", fpath)
+                continue
+
+        for pair in self._pairs:
+            base = pair.usdt_symbol.removesuffix("USDT").upper()
+            thresholds = cal.get(base)
+            if thresholds is None:
+                continue
+            pair.entry_z, pair.exit_z = thresholds
+            logger.info(
+                "pairs calibration %s: entry_z=%.2f exit_z=%.2f",
+                base, pair.entry_z, pair.exit_z,
+            )
 
     def attach_equity_provider(self, provider: EquityProvider) -> None:
         """Wire the equity callback after engine construction.
@@ -307,6 +374,9 @@ class PairsTradingStrategy(StrategyBase):
 
             usdt_mid, usdc_mid = mids_by_pair[key]
             signals.extend(
+                self._check_partial_pending(pair, stats, now),
+            )
+            signals.extend(
                 self._evaluate(pair, stats, z, basis, reference, usdt_mid, usdc_mid)
             )
         return signals
@@ -375,6 +445,8 @@ class PairsTradingStrategy(StrategyBase):
                 continue
 
             stats.pending_fills_remaining -= 1
+            if stats.pending_fills_remaining == 1:
+                stats.pending_filled_symbol = symbol
             if stats.pending_fills_remaining > 0:
                 continue
 
@@ -394,6 +466,7 @@ class PairsTradingStrategy(StrategyBase):
             stats.pending_usdc = ""
             stats.pending_since_ts = 0.0
             stats.pending_is_close = False
+            stats.pending_filled_symbol = ""
 
     # --- Read-only ---
 
@@ -401,6 +474,53 @@ class PairsTradingStrategy(StrategyBase):
         return self._reference_history[-1] if self._reference_history else None
 
     # --- Internals ---
+
+    def _clear_pending(self, stats: _DeviationStats) -> None:
+        stats.pending_side = 0
+        stats.pending_qty = 0.0
+        stats.pending_usdt = ""
+        stats.pending_usdc = ""
+        stats.pending_fills_remaining = 0
+        stats.pending_since_ts = 0.0
+        stats.pending_is_close = False
+        stats.pending_filled_symbol = ""
+
+    def _check_partial_pending(
+        self,
+        pair: PairConfig,
+        stats: _DeviationStats,
+        now: float,
+    ) -> list[Signal]:
+        """Unwind a single filled leg when the partner never arrives."""
+        if stats.pending_fills_remaining != 1 or stats.pending_is_close:
+            return []
+        abort_sec = float(self._settings.pair_partial_fill_abort_sec)
+        if abort_sec <= 0 or now - stats.pending_since_ts < abort_sec:
+            return []
+        filled = stats.pending_filled_symbol
+        if not filled:
+            self._clear_pending(stats)
+            return []
+        open_side = self._expected_side_for_symbol(stats, filled)
+        if open_side is None:
+            self._clear_pending(stats)
+            return []
+        qty = stats.pending_qty if stats.pending_qty > 0 else self._FALLBACK_QTY
+        signal_log(
+            logger,
+            f"PAIRS partial abort -> {open_side.opposite.value.upper()} {filled} "
+            f"qty={qty:.8f} (partner leg never filled)",
+        )
+        self._clear_pending(stats)
+        return [
+            Signal(
+                symbol=filled,
+                side=open_side.opposite,
+                qty=qty,
+                reason="pairs_partial_abort",
+                reduce_only=True,
+            ),
+        ]
 
     def _evaluate(
         self,
@@ -419,13 +539,7 @@ class PairsTradingStrategy(StrategyBase):
             if now - stats.pending_since_ts > float(self._settings.pair_pending_timeout_sec):
                 # Defensive: if we never got fills (disconnect/reject), allow the
                 # strategy to recover and try again later.
-                stats.pending_fills_remaining = 0
-                stats.pending_side = 0
-                stats.pending_qty = 0.0
-                stats.pending_usdt = ""
-                stats.pending_usdc = ""
-                stats.pending_since_ts = 0.0
-                stats.pending_is_close = False
+                self._clear_pending(stats)
             else:
                 return []
 
@@ -433,6 +547,9 @@ class PairsTradingStrategy(StrategyBase):
             return []
 
         score = min(abs(z) / 4.0, 1.0)
+        urgent_floor = float(self._settings.pair_urgent_score)
+        if urgent_floor > 0:
+            score = max(score, urgent_floor)
         reason_open = f"pairs_open z={z:.2f} basis={basis:.5f} ref={reference:.5f}"
         gid = self._key(pair)
 
@@ -451,6 +568,7 @@ class PairsTradingStrategy(StrategyBase):
                 stats.pending_fills_remaining = 2
                 stats.pending_since_ts = now
                 stats.pending_is_close = False
+                stats.pending_filled_symbol = ""
                 stats.last_action_ts = now
                 signal_log(
                     logger,
@@ -471,6 +589,7 @@ class PairsTradingStrategy(StrategyBase):
             stats.pending_fills_remaining = 2
             stats.pending_since_ts = now
             stats.pending_is_close = False
+            stats.pending_filled_symbol = ""
             stats.last_action_ts = now
             signal_log(
                 logger,

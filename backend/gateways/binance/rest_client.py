@@ -290,6 +290,15 @@ class BinanceRestClient:
     async def cancel_order(self, **params: Any) -> dict[str, Any]:
         return await self._delete(f"{_FAPI}/order", params=params, signed=True)
 
+    async def open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {}
+        if symbol is not None:
+            params["symbol"] = symbol.upper()
+        data = await self._get(f"{_FAPI}/openOrders", params=params, signed=True)
+        if isinstance(data, list):
+            return data
+        return []
+
     async def leverage_brackets(self, symbol: str | None = None) -> list[dict[str, Any]]:
         """Return cross-margin leverage brackets for one or all symbols.
 

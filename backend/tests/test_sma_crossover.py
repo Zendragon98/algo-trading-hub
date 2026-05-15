@@ -109,3 +109,30 @@ def test_sma_bar_interval_samples_once_per_bar(monkeypatch) -> None:
     assert len(sigs) == 1
     assert sigs[0].side is Side.SELL
 
+
+def test_sma_closes_long_before_short_entry() -> None:
+    """A cross-down while long must reduce-only close before opening short."""
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        sma_symbol="BTCUSDT",
+        sma_fast_window=3,
+        sma_slow_window=5,
+        sma_qty=1.0,
+        sma_cooldown_sec=0,
+    )
+    strat = SmaCrossoverStrategy(settings)
+    strat.attach_position_provider(lambda _sym: 0.05)
+
+    # Uptrend arms fast>slow, then downtrend crosses down while still long.
+    path = [90.0, 91.0, 92.0, 93.0, 94.0, 110.0, 111.0, 112.0, 100.0, 99.0, 98.0, 97.0]
+    for mid in path:
+        sigs = list(strat.on_tick(_features(mid)))
+        if sigs:
+            assert len(sigs) == 1
+            assert sigs[0].reduce_only is True
+            assert sigs[0].side is Side.SELL
+            assert sigs[0].qty == 0.05
+            return
+    raise AssertionError("expected a close signal on cross down while long")
+

@@ -1,11 +1,9 @@
 %%{init: {"flowchart": {"useMaxWidth": false, "htmlLabels": true, "nodeSpacing": 45, "rankSpacing": 60}, "themeVariables": {"fontSize": "18px"}}}%%
 flowchart TB
-    %% --- Outside world ---
     BinanceWs["Binance Futures WS<br/>depth + aggTrade + user-data"]
     BinanceRest["Binance Futures REST<br/>orders + account + klines"]
     IbkrTws["IBKR TWS / IB Gateway<br/>(7497 paper · 7496 live)"]
 
-    %% --- Pluggable gateway layer ---
     subgraph gw ["gateways/ (pluggable via factory)"]
         direction LR
         Factory["factory.create_gateway(VENUE)"]
@@ -18,32 +16,37 @@ flowchart TB
     BinanceRest <--> BinanceGw
     IbkrTws <--> IbkrGw
 
-    %% --- Engine ---
     subgraph eng ["engine/"]
         direction TB
-        MarketData["market_data<br/>OrderBook + TradeTape"]
+        MarketData["market_data<br/>OrderBook + TradeTape + DataQuality"]
         Features["FeatureStore"]
-        Strategy["strategies/<br/>PairsTrading — cross-coin USDT/USDC basis"]
-        Risk["risk/<br/>RiskManager (pre-trade)"]
-        Router["execution/<br/>ExecutionRouter"]
-        Wheel["execution/<br/>AlgoWheel — FRONTLOAD · NORMAL · BACKLOAD"]
+        Strategy["strategies/<br/>PairsTrading · SmaCrossover · MarketMaking"]
+        PreTrade["risk/<br/>PreTradeValidator"]
+        RiskMon2["risk/<br/>RiskManager + monitors"]
+        Router["execution/<br/>ExecutionRouter + Urgency"]
+        SubmitGuard["execution/<br/>SubmitGuard"]
+        Wheel["execution/<br/>AlgoWheel"]
         Slicer["execution/<br/>Slicer + VwapExecutor"]
         OrderMgr["orders/<br/>OrderManager (OMS)"]
-        Tracker["execution/<br/>ExecutionTracker (arrival, vwap, slippage)"]
+        OrdRec["core/<br/>OrderReconciler"]
+        PosRec["core/<br/>Position Reconciler"]
+        Tracker["execution/<br/>ExecutionTracker"]
         Impact["execution/<br/>ImpactModel (paper-only)"]
         Position["position/<br/>PositionTracker"]
         Portfolio["portfolio/<br/>Portfolio + PnLTracker"]
-        RiskMon["risk/<br/>StopLoss / TakeProfit monitor"]
+        Obs["observability/<br/>LatencyTracker + AlertManager"]
 
-        MarketData --> Features --> Strategy --> Risk --> Router
-        Router --> Wheel --> Slicer --> OrderMgr
+        MarketData --> Features --> Strategy --> PreTrade --> Router
+        PreTrade --> RiskMon2
+        Router --> SubmitGuard --> Wheel --> Slicer --> OrderMgr
         Router --> Tracker
-        Impact --> Position --> Portfolio --> RiskMon
+        OrdRec -.-> OrderMgr
+        PosRec -.-> Position
+        Impact --> Position --> Portfolio
         Impact --> Tracker
-        RiskMon -->|exit ParentOrder| Router
+        Obs -.-> Router
     end
 
-    %% --- Engine <-> gateways ---
     BinanceGw --> MarketData
     IbkrGw -.-> MarketData
     OrderMgr --> BinanceGw
@@ -51,24 +54,24 @@ flowchart TB
     BinanceGw -->|fills + balances| Impact
     IbkrGw -.->|fills + balances| Impact
 
-    %% --- Trading-mode safety gate ---
     Mode["TRADING_MODE<br/>paper · live"] -.->|live disables| Impact
 
-    %% --- Bus + sinks ---
     Bus["common/<br/>EventBus"]
     Portfolio --> Bus
     OrderMgr --> Bus
     Tracker --> Bus
     MarketData --> Bus
+    Obs --> Bus
 
+    Journal["persistence/<br/>EventJournal WAL"]
     Recorder["persistence/<br/>EventRecorder<br/>data/runs/&lt;id&gt;/*.jsonl"]
-    API["api/<br/>FastAPI REST + WebSocket"]
-    FE["React console<br/>OMS + Execution Quality panels"]
+    Bus --> Journal
     Bus --> Recorder
+    API["api/<br/>FastAPI REST + WebSocket<br/>/health · /ready"]
+    FE["React console<br/>OMS · Execution Quality · System Health"]
     Bus --> API
     API <--> FE
 
-    %% --- Offline analytics ---
-    Analytics["analytics/<br/>data_loader · pair_analyzer · orderbook_analyzer"]
+    Analytics["analytics/<br/>calibration · stress_runner · daily_report"]
     Analytics -.->|calibrates thresholds| Strategy
     Analytics -.->|calibrates| Wheel

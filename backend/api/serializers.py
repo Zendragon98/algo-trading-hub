@@ -29,6 +29,7 @@ from .schemas import (
     StateDTO,
     StatusDTO,
     StrategyInfoDTO,
+    SystemHealthDTO,
     TradeDTO,
 )
 
@@ -88,6 +89,7 @@ def execution_report_to_parent_dto(report: ExecutionReport) -> ParentOrderDTO:
         arrival_price=report.arrival_price,
         vwap_price=report.vwap_price,
         slippage_bps=report.slippage_bps,
+        fee_adjusted_slippage_bps=report.fee_adjusted_slippage_bps,
         impact_bps=report.impact_bps,
         duration_sec=report.duration_sec,
         algo_mode=report.algo_mode,
@@ -106,6 +108,7 @@ def execution_report_to_dto(report: ExecutionReport) -> ExecutionReportDTO:
         arrival_price=report.arrival_price,
         vwap_price=report.vwap_price,
         slippage_bps=report.slippage_bps,
+        fee_adjusted_slippage_bps=report.fee_adjusted_slippage_bps,
         impact_bps=report.impact_bps,
         duration_sec=report.duration_sec,
         algo_mode=report.algo_mode,
@@ -179,6 +182,7 @@ def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
         trades=[trade_to_dto(t) for t in snapshot.trades],
         orders=orders_dto(engine),
         execution=execution_stats_dto(engine),
+        system_health=SystemHealthDTO(**engine.system_health()),
     )
 
 

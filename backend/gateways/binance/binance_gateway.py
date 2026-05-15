@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from common.config import Settings
+from common.enums import OrderStatus, OrderType, Side
 from common.types import ChildOrder, Kline, Position
 
 from ..gateway_interface import (
@@ -45,7 +46,11 @@ class BinanceGateway(GatewayInterface):
             rest_pause_buffer_sec=settings.binance_rest_pause_buffer_sec,
         )
         self._market = MarketConnection(ws_base=settings.binance_ws_base)
-        self._orders = OrderConnection(rest=self._rest, ws_base=settings.binance_ws_base)
+        self._orders = OrderConnection(
+            rest=self._rest,
+            ws_base=settings.binance_ws_base,
+            post_only_enabled=settings.post_only_enabled,
+        )
         self._account = AccountConnection(rest=self._rest, base_currency=settings.base_currency)
         self._symbol_filters: dict[str, SymbolFilters] = {}
         # Highest selectable leverage per symbol from GET /fapi/v1/leverageBracket (bracket 1).
@@ -160,6 +165,13 @@ class BinanceGateway(GatewayInterface):
 
     async def cancel_order(self, symbol: str, client_order_id: str) -> None:
         await self._orders.cancel_order(symbol, client_order_id)
+
+    async def fetch_open_orders(self, symbol: str | None = None) -> list[ChildOrder]:
+        rows = await self._rest.open_orders(symbol)
+        return [_parse_open_order(row) for row in rows]
+
+    async def cancel_all_open_orders(self) -> None:
+        await super().cancel_all_open_orders()
 
     async def set_leverage(self, symbol: str, leverage: int) -> None:
         sym_u = symbol.upper()
@@ -339,3 +351,32 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_open_order(row: dict[str, Any]) -> ChildOrder:
+    client_id = str(row.get("clientOrderId", ""))
+    return ChildOrder(
+        id=client_id,
+        parent_id="",
+        symbol=str(row.get("symbol", "")),
+        side=Side(str(row.get("side", "BUY")).lower()),
+        qty=float(row.get("origQty", 0.0)),
+        price=_safe_float(row.get("price")),
+        order_type=OrderType(str(row.get("type", "LIMIT"))),
+        status=_map_open_status(str(row.get("status", "NEW"))),
+        filled_qty=float(row.get("executedQty", 0.0)),
+        avg_fill_price=float(row.get("avgPrice", 0.0) or 0.0),
+        venue_order_id=str(row.get("orderId", "")),
+    )
+
+
+def _map_open_status(raw: str) -> OrderStatus:
+    mapping = {
+        "NEW": OrderStatus.ACK,
+        "PARTIALLY_FILLED": OrderStatus.PARTIAL,
+        "FILLED": OrderStatus.FILLED,
+        "CANCELED": OrderStatus.CANCELLED,
+        "REJECTED": OrderStatus.REJECTED,
+        "EXPIRED": OrderStatus.CANCELLED,
+    }
+    return mapping.get(raw.upper(), OrderStatus.ACK)

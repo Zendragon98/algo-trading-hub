@@ -18,7 +18,8 @@ import logging
 import uuid
 from typing import Protocol
 
-from common.enums import Side
+from common.config import Settings
+from common.enums import Side, Urgency
 from common.types import ParentOrder
 
 from ..market_data.feature_store import FeatureStore
@@ -55,12 +56,14 @@ class ExecutionRouter:
         executor: VwapExecutor,
         features: FeatureStore,
         tracker: ExecutionTracker,
+        settings: Settings,
         submit_guard: _ParentGate | None = None,
     ) -> None:
         self._wheel = wheel
         self._executor = executor
         self._features = features
         self._tracker = tracker
+        self._settings = settings
         self._submit_guard = submit_guard
 
     def attach_submit_guard(self, guard: _ParentGate) -> None:
@@ -72,8 +75,12 @@ class ExecutionRouter:
         side: Side,
         qty: float,
         notes: str = "",
-        max_slippage_bps: float = 5.0,
+        max_slippage_bps: float | None = None,
         reduce_only: bool = False,
+        *,
+        urgency: Urgency | None = None,
+        signal_score: float = 0.0,
+        group_id: str | None = None,
     ) -> ParentOrder:
         if self._submit_guard is not None:
             # Reduce-only exits bypass the *symbol* gate so a paused symbol
@@ -82,14 +89,27 @@ class ExecutionRouter:
             if not allowed and not reduce_only:
                 logger.warning("router rejected %s submit: %s", symbol, reason)
                 raise ParentSubmissionRejected(reason)
+        resolved_urgency = urgency or self._resolve_urgency(
+            reduce_only=reduce_only, signal_score=signal_score,
+        )
+        slip_bps = max_slippage_bps
+        if slip_bps is None:
+            slip_bps = (
+                self._settings.urgent_max_slippage_bps
+                if resolved_urgency is Urgency.AGGRESSIVE
+                else 5.0
+            )
         parent = ParentOrder(
             id=_new_parent_id(),
             symbol=symbol,
             side=side,
             qty=qty,
             notes=notes,
-            max_slippage_bps=max_slippage_bps,
+            max_slippage_bps=slip_bps,
             reduce_only=reduce_only,
+            urgency=resolved_urgency,
+            signal_score=signal_score,
+            group_id=group_id,
         )
         feat = self._features.snapshot(symbol)
         parent.algo_mode = self._wheel.choose(parent, feat)
@@ -100,6 +120,13 @@ class ExecutionRouter:
         self._tracker.on_parent_submit(parent, arrival_price=arrival)
         await self._executor.execute(parent)
         return parent
+
+    def _resolve_urgency(self, *, reduce_only: bool, signal_score: float) -> Urgency:
+        if reduce_only:
+            return Urgency.AGGRESSIVE
+        if signal_score >= float(self._settings.urgent_score_threshold):
+            return Urgency.AGGRESSIVE
+        return Urgency.PASSIVE
 
     async def cancel(self, parent_id: str) -> None:
         await self._executor.cancel_parent(parent_id)

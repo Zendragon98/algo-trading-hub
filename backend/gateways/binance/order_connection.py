@@ -34,9 +34,16 @@ _LISTEN_KEY_KEEPALIVE_SEC = 30 * 60
 class OrderConnection:
     """REST + user-data stream for order management."""
 
-    def __init__(self, rest: BinanceRestClient, ws_base: str) -> None:
+    def __init__(
+        self,
+        rest: BinanceRestClient,
+        ws_base: str,
+        *,
+        post_only_enabled: bool = False,
+    ) -> None:
         self._rest = rest
         self._ws_base = ws_base.rstrip("/")
+        self._post_only_enabled = post_only_enabled
         self._listen_key: str | None = None
         self._on_fill: FillCallback | None = None
         self._on_order: OrderUpdateCallback | None = None
@@ -137,8 +144,9 @@ class OrderConnection:
             if order.price is None:
                 raise ValueError(f"LIMIT order {order.id} missing price")
             params["price"] = self._quantize_price(order.symbol, order.price, order.side)
-            # GTX = post-only; we use GTC so child orders cross when needed.
-            params["timeInForce"] = "GTC"
+            params["timeInForce"] = (
+                "GTX" if self._post_only_enabled and not order.reduce_only else "GTC"
+            )
         if order.reduce_only:
             # Binance Futures expects the literal string "true". Reduce-only
             # orders are also exempt from MIN_NOTIONAL, which is how a tiny

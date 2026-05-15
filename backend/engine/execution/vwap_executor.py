@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from common.config import Settings
-from common.enums import AlgoMode, OrderStatus, OrderType
+from common.enums import AlgoMode, OrderStatus, OrderType, Urgency
 from common.types import ChildOrder, ParentOrder
 
 from gateways.gateway_interface import GatewayInterface, SymbolFilters
@@ -64,6 +64,7 @@ class VwapExecutor:
         self._gateway = gateway
         self._features = features
         self._price = price_provider
+        self._settings = settings
         self._cfg = config or ExecutorConfig(
             duration_sec=settings.vwap_duration_sec,
             n_slices=settings.vwap_num_slices,
@@ -73,6 +74,7 @@ class VwapExecutor:
 
     def apply_settings(self, settings: Settings) -> None:
         """Refresh VWAP schedule defaults for *new* parents (in-flight unchanged)."""
+        self._settings = settings
         self._cfg = ExecutorConfig(
             duration_sec=settings.vwap_duration_sec,
             n_slices=settings.vwap_num_slices,
@@ -82,10 +84,20 @@ class VwapExecutor:
 
     # --- Public ---
 
+    def _cfg_for_parent(self, parent: ParentOrder) -> ExecutorConfig:
+        if parent.urgency is Urgency.AGGRESSIVE:
+            return ExecutorConfig(
+                duration_sec=int(self._settings.urgent_duration_sec),
+                n_slices=int(self._settings.urgent_num_slices),
+                slice_timeout_sec=self._cfg.slice_timeout_sec,
+                market_fallback=self._cfg.market_fallback,
+            )
+        return self._cfg
+
     async def execute(self, parent: ParentOrder) -> None:
         if parent.algo_mode is None:
             raise ValueError(f"parent {parent.id} missing algo_mode")
-        schedule = self._build_viable_schedule(parent)
+        schedule = self._build_viable_schedule(parent, self._cfg_for_parent(parent))
         self._om.register_parent(parent)
         task = asyncio.create_task(
             self._run_parent(parent, schedule), name=f"vwap-{parent.id}"
@@ -112,7 +124,10 @@ class VwapExecutor:
 
     # --- Internal ---
 
-    def _build_viable_schedule(self, parent: ParentOrder) -> list[Slice]:
+    def _build_viable_schedule(
+        self, parent: ParentOrder, cfg: ExecutorConfig | None = None,
+    ) -> list[Slice]:
+        cfg = cfg or self._cfg
         """Shrink the slice count until every child satisfies venue filters.
 
         Uses `GatewayInterface.get_symbol_filters` (cached at connect()
@@ -125,13 +140,13 @@ class VwapExecutor:
             raise ValueError(f"parent {parent.id} missing algo_mode")
         filters = self._gateway.get_symbol_filters(parent.symbol)
         ref_price = self._price(parent.symbol)
-        requested = self._cfg.n_slices
+        requested = cfg.n_slices
         schedule: list[Slice] | None = None
         for n in range(requested, 0, -1):
             candidate = build_schedule(
                 mode=algo_mode,
                 total_qty=parent.qty,
-                duration_sec=self._cfg.duration_sec,
+                duration_sec=cfg.duration_sec,
                 n_slices=n,
             )
             if all(
@@ -144,7 +159,7 @@ class VwapExecutor:
             schedule = build_schedule(
                 mode=algo_mode,
                 total_qty=parent.qty,
-                duration_sec=self._cfg.duration_sec,
+                duration_sec=cfg.duration_sec,
                 n_slices=1,
             )
         # When venue constraints force us down to a single slice, still use
@@ -152,7 +167,7 @@ class VwapExecutor:
         # place the parent-sized order so we can compare vs arrival/VWAP.
         if len(schedule) == 1 and requested > 1:
             schedule = [
-                Slice(index=0, qty=schedule[0].qty, delay_sec=_single_shot_delay(algo_mode, self._cfg.duration_sec))
+                Slice(index=0, qty=schedule[0].qty, delay_sec=_single_shot_delay(algo_mode, cfg.duration_sec))
             ]
         if len(schedule) < requested:
             logger.info(
@@ -220,7 +235,7 @@ class VwapExecutor:
                 f"ref_price={'-' if ref_price is None else f'{ref_price:.8f}'} filters={filters})"
             )
         child = ChildOrder(
-            id=new_client_order_id(),
+            id=new_client_order_id(parent.id, slc.index),
             parent_id=parent.id,
             symbol=parent.symbol,
             side=parent.side,
@@ -237,7 +252,7 @@ class VwapExecutor:
             # under exchange realities (partial/no fill/reject).
             if order_type is OrderType.LIMIT and self._cfg.market_fallback:
                 market = ChildOrder(
-                    id=new_client_order_id(),
+                    id=new_client_order_id(parent.id, min(slc.index + 50, 99)),
                     parent_id=parent.id,
                     symbol=parent.symbol,
                     side=parent.side,
@@ -301,7 +316,7 @@ class VwapExecutor:
         if residual <= 0:
             return
         market = ChildOrder(
-            id=new_client_order_id(),
+            id=new_client_order_id(child_after.parent_id, 99),
             parent_id=child_after.parent_id,
             symbol=child_after.symbol,
             side=child_after.side,
@@ -321,10 +336,24 @@ class VwapExecutor:
         feat = self._features.snapshot(parent.symbol)
         if feat.mid is None or feat.spread_bps is None:
             return None
-        # For a buy, rest at the bid (passive); for a sell, rest at the ask.
-        # Use the live top-of-book from the price provider for tighter pegging.
-        last = self._price(parent.symbol)
-        return last if last is not None else feat.mid
+        if parent.side.value == "buy":
+            price = feat.best_bid
+        else:
+            price = feat.best_ask
+        if price is None:
+            price = self._price(parent.symbol) or feat.mid
+        if price is None or feat.mid is None:
+            return None
+        cap_bps = float(self._settings.max_limit_deviation_bps)
+        if cap_bps > 0:
+            dev_bps = abs(price - feat.mid) / feat.mid * 10_000.0
+            if dev_bps > cap_bps:
+                logger.warning(
+                    "limit collar veto %s: dev=%.1fbps > cap=%.1fbps",
+                    parent.symbol, dev_bps, cap_bps,
+                )
+                return None
+        return price
 
 
 def _slice_satisfies(

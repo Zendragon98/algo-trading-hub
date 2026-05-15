@@ -12,6 +12,8 @@ pandas==2.2.3                     # tabular ops in analytics + reports
 scipy==1.14.1                     # stats helpers (zscore, percentiles)
 statsmodels==0.14.4               # cointegration / ADF for pair_analyzer
 pyarrow==18.0.0                   # parquet cache for analytics/data/
+orjson==3.10.12                   # fast JSON for WS + journal hot paths
+uvloop==0.21.0; sys_platform != 'win32'  # faster asyncio on Linux/macOS
 
 # Dev / test
 pytest==8.3.3

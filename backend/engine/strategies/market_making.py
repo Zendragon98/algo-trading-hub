@@ -38,11 +38,11 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from common.config import Settings
-from common.enums import Side
 from common.logging import signal_log
 from common.types import Signal
 
 from ..market_data.feature_store import Features
+from .position_sync import plan_directional_signal, side_from_qty
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger(__name__)
@@ -107,10 +107,23 @@ class MarketMakingStrategy(StrategyBase):
     def symbols(self) -> list[str]:
         return list(self._symbols)
 
+    def on_fill(self, symbol: str, qty: float, side: str) -> None:
+        state = self._state.get(symbol)
+        if state is not None:
+            self._sync_open_side_from_position(state, symbol)
+
+    def _exit_tilt(self) -> float:
+        explicit = float(getattr(self._settings, "mm_exit_tilt", 0.0) or 0.0)
+        if explicit > 0:
+            return explicit
+        entry = float(self._settings.mm_entry_tilt)
+        return max(entry * 0.35, 1.0)
+
     def on_tick(self, features: dict[str, Features]) -> Iterable[Signal]:
         now = time.time()
         cooldown = float(self._settings.mm_cooldown_sec)
         entry = float(self._settings.mm_entry_tilt)
+        exit_tilt = self._exit_tilt()
         if entry <= 0:
             return []
         signals: list[Signal] = []
@@ -120,6 +133,7 @@ class MarketMakingStrategy(StrategyBase):
             if feat is None:
                 continue
             state = self._state_for(symbol)
+            self._sync_open_side_from_position(state, symbol)
 
             if now - state.last_action_ts < cooldown:
                 self._record_skew(state, feat, now)
@@ -138,50 +152,83 @@ class MarketMakingStrategy(StrategyBase):
                 + float(self._settings.mm_tape_scale) * tape_p
             )
 
-            qty = self._size_for(feat.mid or 0.0)
-            if qty <= 0:
+            entry_qty = self._size_for(feat.mid or 0.0)
+            pos_qty = self._position_qty(symbol)
+            actual = side_from_qty(pos_qty)
+
+            if actual != 0 and abs(comp) <= exit_tilt:
+                sig = plan_directional_signal(
+                    symbol=symbol,
+                    target_side=0,
+                    entry_qty=entry_qty,
+                    position_qty=pos_qty,
+                    reason_open="mm_entry",
+                    reason_close=(
+                        f"mm_exit comp={comp:.4f} skew5m_bps={skew_avg:.4f} "
+                        f"imb={imb:.4f} tape_p={tape_p:.4f}"
+                    ),
+                    score=min(1.0, abs(comp) / max(exit_tilt, 1e-9)),
+                )
+                if sig is not None:
+                    state.last_action_ts = now
+                    signal_log(logger, f"MM exit -> {sig.side.value.upper()} {symbol} qty={sig.qty:.10f}")
+                    signals.append(sig)
+                continue
+
+            if entry_qty <= 0:
                 continue
 
             want_buy, want_sell = self._desired_sides(comp, entry)
-
-            if want_buy and state.open_side != +1:
-                state.open_side = +1
-                state.last_action_ts = now
-                reason = (
-                    f"mm comp={comp:.4f} skew5m_bps={skew_avg:.4f} imb={imb:.4f} "
-                    f"tape_p={tape_p:.4f} hits_ba={feat.tape_bid_hit_count}/{feat.tape_ask_hit_count} "
-                    f"mode={'fade' if self._fade else 'follow'}"
+            sig: Signal | None = None
+            if want_buy and actual != 1:
+                sig = plan_directional_signal(
+                    symbol=symbol,
+                    target_side=+1,
+                    entry_qty=entry_qty,
+                    position_qty=pos_qty,
+                    reason_open=(
+                        f"mm comp={comp:.4f} skew5m_bps={skew_avg:.4f} imb={imb:.4f} "
+                        f"tape_p={tape_p:.4f} hits_ba={feat.tape_bid_hit_count}/"
+                        f"{feat.tape_ask_hit_count} mode={'fade' if self._fade else 'follow'}"
+                    ),
+                    reason_close="mm_entry_close",
+                    score=min(1.0, abs(comp) / entry),
                 )
-                score = min(1.0, abs(comp) / entry)
-                signal_log(logger, f"MM tilt -> BUY {symbol} qty={qty:.10f} ({reason})")
-                signals.append(Signal(symbol=symbol, side=Side.BUY, qty=qty, reason=reason, score=score))
+            elif want_sell and actual != -1:
+                sig = plan_directional_signal(
+                    symbol=symbol,
+                    target_side=-1,
+                    entry_qty=entry_qty,
+                    position_qty=pos_qty,
+                    reason_open=(
+                        f"mm comp={comp:.4f} skew5m_bps={skew_avg:.4f} imb={imb:.4f} "
+                        f"tape_p={tape_p:.4f} hits_ba={feat.tape_bid_hit_count}/"
+                        f"{feat.tape_ask_hit_count} mode={'fade' if self._fade else 'follow'}"
+                    ),
+                    reason_close="mm_entry_close",
+                    score=min(1.0, abs(comp) / entry),
+                )
+
+            if sig is None:
                 continue
-
-            if want_sell and state.open_side != -1:
-                state.open_side = -1
-                state.last_action_ts = now
-                reason = (
-                    f"mm comp={comp:.4f} skew5m_bps={skew_avg:.4f} imb={imb:.4f} "
-                    f"tape_p={tape_p:.4f} hits_ba={feat.tape_bid_hit_count}/{feat.tape_ask_hit_count} "
-                    f"mode={'fade' if self._fade else 'follow'}"
-                )
-                score = min(1.0, abs(comp) / entry)
-                signal_log(logger, f"MM tilt -> SELL {symbol} qty={qty:.10f} ({reason})")
-                signals.append(Signal(symbol=symbol, side=Side.SELL, qty=qty, reason=reason, score=score))
+            state.last_action_ts = now
+            if not sig.reduce_only:
+                state.open_side = 1 if sig.side.value.lower() == "buy" else -1
+            signal_log(
+                logger,
+                f"MM {'close' if sig.reduce_only else 'tilt'} -> {sig.side.value.upper()} "
+                f"{symbol} qty={sig.qty:.10f}",
+            )
+            signals.append(sig)
 
         return signals
 
     def _desired_sides(self, comp: float, entry: float) -> tuple[bool, bool]:
-        """Return (want_buy, want_sell) from composite tilt and mode."""
         if self._fade:
             return comp <= -entry, comp >= entry
         return comp >= entry, comp <= -entry
 
     def _tape_pressure(self, feat: Features) -> float:
-        """Net buyer vs seller aggression from print counts in [-1, 1].
-
-        Positive => more offer lifts than bid hits in the tape window.
-        """
         bid_n = int(feat.tape_bid_hit_count)
         ask_n = int(feat.tape_ask_hit_count)
         total = bid_n + ask_n

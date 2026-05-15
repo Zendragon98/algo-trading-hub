@@ -108,6 +108,16 @@ class GatewayInterface(ABC):
     @abstractmethod
     async def cancel_order(self, symbol: str, client_order_id: str) -> None: ...
 
+    async def fetch_open_orders(self, symbol: str | None = None) -> list[ChildOrder]:
+        """Return working orders on the venue. Default: none (mocks / skeletons)."""
+        return []
+
+    async def cancel_all_open_orders(self) -> None:
+        """Cancel every open order on the venue."""
+        orders = await self.fetch_open_orders()
+        for order in orders:
+            await self.cancel_order(order.symbol, order.id)
+
     # --- Reference data cached at connect() ---
     def get_symbol_filters(self, symbol: str) -> SymbolFilters | None:
         """Return cached venue trading rules for `symbol`.

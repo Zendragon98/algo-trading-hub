@@ -7,20 +7,25 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   getAlgoWsUrl,
+  toBreakerList,
   toExecutionAggregate,
   toExecutionParent,
   toStrategyInfo,
+  toSystemHealth,
   toWorkingOrder,
   type StateDTO,
+  type StatusEventData,
   type WsEvent,
 } from "@/lib/api";
 import type {
   AlgoStatus,
+  BreakerList,
   ExecutionAggregate,
   ExecutionParent,
   LogEntry,
   Position,
   StrategyInfo,
+  SystemHealth,
   Trade,
   WorkingOrder,
 } from "@/components/algo/types";
@@ -29,6 +34,8 @@ const fmtTime = (epoch?: number) => {
   const date = epoch ? new Date(epoch * 1000) : new Date();
   return date.toLocaleTimeString("en-GB", { hour12: false });
 };
+
+const EMPTY_BREAKERS: BreakerList = { active: [], history: [] };
 
 export type AlgoStream = {
   status: AlgoStatus;
@@ -46,9 +53,11 @@ export type AlgoStream = {
   executionAggregate: ExecutionAggregate;
   connected: boolean;
   error: string | null;
-  // Force a full /api/state re-hydrate. Used by the dashboard after a
-  // strategy hot-swap so the panel reflects the new active strategy
-  // without waiting for the next periodic status poll.
+  systemHealth: SystemHealth | null;
+  maxRiskPct: number;
+  maxGrossNotional: number;
+  breakers: BreakerList;
+  replaySummary: string | null;
   refresh: () => Promise<void>;
 };
 
@@ -79,6 +88,11 @@ const EMPTY: AlgoStream = {
   executionAggregate: EMPTY_AGG,
   connected: false,
   error: null,
+  systemHealth: null,
+  maxRiskPct: 0.35,
+  maxGrossNotional: 50_000,
+  breakers: EMPTY_BREAKERS,
+  replaySummary: null,
   refresh: NOOP_REFRESH,
 };
 
@@ -88,22 +102,104 @@ const TERMINAL_STATUSES: ReadonlyArray<WorkingOrder["status"]> = [
   "rejected",
 ];
 
+const LATENCY_KEYS = new Set([
+  "tick_to_submit_ms",
+  "submit_to_ack_ms",
+  "tick_to_ack_ms",
+]);
+
+function numSetting(settings: Record<string, unknown>, key: string, fallback: number): number {
+  const v = settings[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+
+function formatReplaySummary(summary: NonNullable<StatusEventData["replay_summary"]>): string {
+  const parts = [
+    `WAL replay: ${summary.events_read ?? 0} events`,
+    `${summary.fills_applied ?? 0} fills`,
+    `${summary.orders_restored ?? 0} orders restored`,
+    `${summary.open_children ?? 0} open children`,
+  ];
+  if (summary.errors?.length) {
+    parts.push(`${summary.errors.length} error(s)`);
+  }
+  return parts.join(" · ");
+}
+
+function mergeLatencyMetrics(
+  prev: SystemHealth | null,
+  data: StatusEventData,
+): SystemHealth["latency"] {
+  const latency = { ...(prev?.latency ?? {}) };
+  for (const [key, val] of Object.entries(data)) {
+    if (key === "kind" || !LATENCY_KEYS.has(key)) continue;
+    if (val && typeof val === "object" && "p95" in val) {
+      latency[key] = val as SystemHealth["latency"][string];
+    }
+  }
+  return latency;
+}
+
+function systemHealthFromStatus(
+  prev: SystemHealth | null,
+  data: StatusEventData,
+): SystemHealth {
+  const base = prev ?? {
+    latency: {},
+    orderReconcile: {},
+    mdHealth: {},
+    clockSkewMs: 0,
+    tickAgeSec: -1,
+    userDataAgeSec: -1,
+    activeBreakers: [],
+    grossNotional: 0,
+    netNotional: 0,
+    realizedPnl: 0,
+    unrealizedPnl: 0,
+    equity: 0,
+  };
+  return {
+    latency: data.latency ? { ...base.latency, ...data.latency } : base.latency,
+    orderReconcile:
+      (data.order_reconcile as SystemHealth["orderReconcile"]) ?? base.orderReconcile,
+    mdHealth: data.md_health
+      ? Object.fromEntries(
+          Object.entries(data.md_health).map(([k, v]) => [
+            k,
+            {
+              sequence_gaps: Number(v.sequence_gaps ?? 0),
+              crossed_count: Number(v.crossed_count ?? 0),
+              last_diff_age_ms: Number(v.last_diff_age_ms ?? -1),
+            },
+          ]),
+        )
+      : base.mdHealth,
+    clockSkewMs: Number(data.clock_skew_ms ?? base.clockSkewMs),
+    tickAgeSec: Number(data.tick_age_sec ?? base.tickAgeSec),
+    userDataAgeSec: Number(data.user_data_age_sec ?? base.userDataAgeSec),
+    activeBreakers: (data.active_breakers as string[]) ?? base.activeBreakers,
+    grossNotional: Number(data.gross_notional ?? base.grossNotional),
+    netNotional: Number(data.net_notional ?? base.netNotional),
+    realizedPnl: Number(data.realized_pnl ?? base.realizedPnl),
+    unrealizedPnl: Number(data.unrealized_pnl ?? base.unrealizedPnl),
+    equity: Number(data.equity ?? base.equity),
+  };
+}
+
 export function useAlgoStream(): AlgoStream {
   const [stream, setStream] = useState<AlgoStream>(EMPTY);
   const wsRef = useRef<WebSocket | null>(null);
-  // Client-clock epoch (seconds) at which the engine reports itself as
-  // having started. Computed once per authoritative status update as
-  // `now - uptime_sec`; the local 1Hz ticker derives display uptime
-  // from this so we never have to wait for the backend to republish.
   const startedAtRef = useRef<number | null>(null);
 
-  // Pull /api/state + /api/logs and merge into the stream. Stable
-  // identity via useCallback so consumers passing it to event handlers
-  // don't burn extra renders.
   const refresh = useCallback(async () => {
     try {
-      const state: StateDTO = await api.state();
-      const logs: LogEntry[] = await api.logs();
+      const [state, logs, settingsPayload, breakersDto] = await Promise.all([
+        api.state(),
+        api.logs(),
+        api.getSettings(),
+        api.listBreakers().catch(() => ({ active: [], history: [] })),
+      ]);
+      const settings = settingsPayload.settings;
       startedAtRef.current = Date.now() / 1000 - state.status.uptime_sec;
       setStream((prev) => ({
         ...prev,
@@ -120,6 +216,10 @@ export function useAlgoStream(): AlgoStream {
         workingParents: state.execution.working.map(toExecutionParent),
         executionHistory: state.execution.history.map(toExecutionParent),
         executionAggregate: toExecutionAggregate(state.execution.aggregate),
+        systemHealth: state.system_health ? toSystemHealth(state.system_health) : null,
+        maxRiskPct: numSetting(settings, "max_risk_pct", 0.35),
+        maxGrossNotional: numSetting(settings, "max_gross_notional", 50_000),
+        breakers: toBreakerList(breakersDto),
         error: null,
       }));
     } catch (err) {
@@ -142,13 +242,10 @@ export function useAlgoStream(): AlgoStream {
       }));
     };
 
-    // Poll status as a fallback when /ws is unavailable. This keeps the control
-    // buttons correct even if the websocket is blocked by network policy.
     const ensureStatusPoll = () => {
       if (statusPoll !== null) return;
       statusPoll = window.setInterval(async () => {
         if (cancelled) return;
-        // If the websocket is healthy, let it be the source of truth.
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
         try {
           const st = await api.status();
@@ -166,8 +263,6 @@ export function useAlgoStream(): AlgoStream {
         await refresh();
       } catch {
         if (cancelled) return;
-        // If the full hydrate fails (CORS, proxy, backend cold start), still
-        // attempt to retrieve the lightweight status so controls remain usable.
         try {
           const st = await api.status();
           if (!cancelled) publishStatus(st);
@@ -197,7 +292,7 @@ export function useAlgoStream(): AlgoStream {
       } catch {
         return;
       }
-      if (event.type === "status") {
+      if (event.type === "status" && event.data.uptime_sec !== undefined) {
         startedAtRef.current = Date.now() / 1000 - event.data.uptime_sec;
       }
       setStream((prev) => applyEvent(prev, event));
@@ -212,11 +307,8 @@ export function useAlgoStream(): AlgoStream {
         statusPoll = null;
       }
     };
-  }, []);
+  }, [refresh]);
 
-  // Local 1Hz ticker so the topbar uptime updates every second without
-  // the backend having to spam STATUS events. We only re-render when
-  // the integer second actually changes to keep React work bounded.
   useEffect(() => {
     const id = setInterval(() => {
       const startedAt = startedAtRef.current;
@@ -227,31 +319,54 @@ export function useAlgoStream(): AlgoStream {
     return () => clearInterval(id);
   }, []);
 
-  // Always re-bind the live ``refresh`` callback so consumers never see
-  // the no-op fallback baked into ``EMPTY``.
   return { ...stream, refresh };
 }
 
 function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
   switch (event.type) {
-    case "status":
-      return {
-        ...prev,
-        status: event.data.status,
-        uptimeSec: Math.floor(event.data.uptime_sec),
-      };
+    case "status": {
+      const data = event.data;
+      let next = prev;
+      if (data.status !== undefined) {
+        next = {
+          ...prev,
+          status: data.status,
+          uptimeSec: Math.floor(data.uptime_sec ?? prev.uptimeSec),
+        };
+      }
+
+      if (data.replay_summary) {
+        next = { ...next, replaySummary: formatReplaySummary(data.replay_summary) };
+      }
+
+      if (data.kind === "system_health") {
+        return {
+          ...next,
+          systemHealth: systemHealthFromStatus(prev.systemHealth, data),
+        };
+      }
+
+      if (data.kind === "latency_metrics") {
+        const latency = mergeLatencyMetrics(prev.systemHealth, data);
+        const base = prev.systemHealth ?? systemHealthFromStatus(null, {});
+        return {
+          ...next,
+          systemHealth: { ...base, latency },
+        };
+      }
+
+      return next;
+    }
 
     case "equity": {
       const point = event.data.equity;
       const next = [...prev.equity, point];
-      // Keep ~256 samples to match the engine's curve buffer.
       return { ...prev, equity: next.length > 256 ? next.slice(-256) : next };
     }
 
     case "position": {
       const incoming = event.data;
       const others = prev.positions.filter((p) => p.symbol !== incoming.symbol);
-      // The engine emits flat positions; drop them so the table stays clean.
       if ((incoming as { qty?: number }).qty === 0 || incoming.size === 0) {
         return { ...prev, positions: others };
       }
@@ -285,8 +400,6 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
 
     case "order": {
       const incoming = toWorkingOrder(event.data);
-      // Drop terminal orders from the working set; let the audit trail
-      // live in the trades panel and the parent's execution report.
       const others = prev.orders.filter((o) => o.id !== incoming.id);
       const orders = TERMINAL_STATUSES.includes(incoming.status)
         ? others
@@ -302,7 +415,6 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
 
     case "execution": {
       const incoming = toExecutionParent(event.data);
-      // Move from working -> history and recompute the rolling aggregate.
       const working = prev.workingParents.filter((p) => p.parentId !== incoming.parentId);
       const history = [incoming, ...prev.executionHistory].slice(0, 100);
       return {
@@ -328,8 +440,6 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
   }
 }
 
-// Lightweight client-side aggregate so the panel updates instantly when
-// a new execution report arrives, without waiting for the next REST poll.
 function aggregate(history: ExecutionParent[]): ExecutionAggregate {
   if (!history.length) return EMPTY_AGG;
   const n = history.length;

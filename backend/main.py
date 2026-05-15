@@ -15,8 +15,18 @@ import argparse
 import asyncio
 import logging
 import signal as os_signal
+import sys
 from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
+
+if sys.platform != "win32":
+    try:
+        import uvloop
+
+        uvloop.install()
+    except ImportError:
+        pass
 
 import uvicorn
 
@@ -27,6 +37,7 @@ from common.events import EventBus
 from common.logging import configure_logging
 from engine.core.engine import Engine
 from engine.persistence.event_recorder import EventRecorder, RecorderConfig, make_run_dir
+from engine.persistence.journal import EventJournal, find_previous_wal
 from engine.strategies.market_making import MarketMakingStrategy
 from engine.strategies.pairs_trading import PairsTradingStrategy
 from engine.strategies.sma_crossover import SmaCrossoverStrategy
@@ -108,6 +119,17 @@ async def _run() -> None:
                 )
             if sma_auto:
                 sma_universe = discover_usdt_perps(info)
+                cap = int(settings.sma_max_symbols)
+                if cap > 0 and len(sma_universe) > cap:
+                    vols = await rest.fetch_24h_volumes(sma_universe)
+                    sma_universe = sorted(
+                        sma_universe,
+                        key=lambda s: vols.get(s, 0.0),
+                        reverse=True,
+                    )[:cap]
+                    logger.info(
+                        "SMA_SYMBOLS capped to top %d by 24h volume", cap,
+                    )
                 updates["sma_symbols"] = sma_universe
                 logger.info(
                     "SMA_SYMBOLS=AUTO -> %d USDT perpetuals", len(sma_universe),
@@ -140,6 +162,12 @@ async def _run() -> None:
     _log_mode_banner(settings)
     if run_dir is not None:
         logger.info("run archive: %s", run_dir)
+
+    journal: EventJournal | None = None
+    if settings.journal_enabled and run_dir is not None:
+        journal = EventJournal(run_dir=run_dir, run_id=run_dir.name)
+        journal.open(datetime.now(tz=timezone.utc).isoformat())
+        bus.attach_journal(journal)
 
     recorder: EventRecorder | None = None
     if settings.persist_enabled and run_dir is not None:
@@ -176,21 +204,42 @@ async def _run() -> None:
         boot_default = strategies[0].name
     settings = settings.model_copy(update={"strategy": boot_default})
 
-    engine = Engine(settings=settings, bus=bus, gateway=gateway, strategies=strategies)
+    recovery_wal = None
+    if settings.recover_on_start and run_dir is not None:
+        persist_base = Path(settings.persist_dir)
+        if not persist_base.is_absolute():
+            persist_base = Path(__file__).resolve().parent / persist_base
+        recovery_wal = find_previous_wal(persist_base, exclude_dir=run_dir)
+        if recovery_wal is not None:
+            logger.info("WAL recovery source: %s", recovery_wal)
+
+    engine = Engine(
+        settings=settings,
+        bus=bus,
+        gateway=gateway,
+        strategies=strategies,
+        recovery_wal=recovery_wal,
+    )
 
     # Wire live equity + liquidity weights into strategies so they can
     # stop-loss-budget each entry and (for pairs) anchor their consensus
     # reference to where capital is actually flowing. Done after engine
     # construction because the Portfolio + volume cache live inside the
     # Engine.
+    def _position_qty(symbol: str) -> float:
+        pos = engine._positions.get(symbol)  # noqa: SLF001
+        return pos.qty if pos is not None else 0.0
+
     for strat in strategies:
         if isinstance(strat, PairsTradingStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_weight_provider(lambda: engine.volume_weights)
         if isinstance(strat, SmaCrossoverStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
+            strat.attach_position_provider(_position_qty)
         if isinstance(strat, MarketMakingStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
+            strat.attach_position_provider(_position_qty)
 
     autostart = bool(settings.engine_autostart)
     if args.engine:
@@ -266,6 +315,8 @@ async def _run() -> None:
         await engine.stop()
         if recorder is not None:
             await recorder.stop()
+        if journal is not None:
+            journal.close()
 
 
 def main() -> None:

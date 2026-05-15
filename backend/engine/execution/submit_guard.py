@@ -83,13 +83,18 @@ class SubmitGuard:
         self._max_rejects = max(1, int(max_consecutive_rejects))
         self._reject_cooldown_sec = max(0.0, reject_cooldown_sec)
         self._bucket = _TokenBucket(submit_rate_per_sec)
+        self._symbol_buckets: dict[str, _TokenBucket] = {}
+        self._symbol_rate = submit_rate_per_sec
         self._reject_streak: dict[str, int] = defaultdict(int)
 
     def apply_settings(self, settings: Settings) -> None:
         self._max_open_parents = max(0, int(settings.max_open_parents))
         self._max_rejects = max(1, int(settings.max_consecutive_rejects))
         self._reject_cooldown_sec = max(0.0, settings.reject_cooldown_sec)
+        sym_rate = float(settings.per_symbol_submit_rate or 0.0)
+        self._symbol_rate = sym_rate if sym_rate > 0 else settings.submit_rate_per_sec
         self._bucket = _TokenBucket(settings.submit_rate_per_sec)
+        self._symbol_buckets = {}
 
     @classmethod
     def from_settings(
@@ -138,6 +143,12 @@ class SubmitGuard:
             if self._breaker.is_blocked(BreakerScope.SYMBOL, symbol):
                 return False, "symbol_breaker"
         await self._bucket.acquire()
+        if float(self._symbol_rate) > 0:
+            sym_bucket = self._symbol_buckets.get(symbol)
+            if sym_bucket is None:
+                sym_bucket = _TokenBucket(self._symbol_rate)
+                self._symbol_buckets[symbol] = sym_bucket
+            await sym_bucket.acquire()
         return True, ""
 
     # --- Post-submit ---

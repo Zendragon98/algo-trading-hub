@@ -22,7 +22,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from time import time
 from typing import Any
 
@@ -36,12 +36,15 @@ class Event:
     """A single message on the bus.
 
     `payload` should always be JSON-serialisable so the WebSocket layer
-    can forward it without a translation step.
+    can forward it without a translation step. ``seq`` is assigned by the
+  bus when zero; ``source`` identifies the producing module.
     """
 
     type: EventType
     payload: dict[str, Any]
     ts: float = field(default_factory=time)
+    seq: int = 0
+    source: str = ""
 
 
 # A subscriber filter takes an Event and returns True iff it wants to receive it.
@@ -56,6 +59,12 @@ class EventBus:
         self._subscribers: list[tuple[asyncio.Queue[Event], EventFilter]] = []
         self._queue_size = queue_size
         self._lock = asyncio.Lock()
+        self._next_seq = 0
+        self._journal: Any | None = None
+
+    def attach_journal(self, journal: Any) -> None:
+        """Optional WAL sink; receives events after seq assignment."""
+        self._journal = journal
 
     async def publish(self, event: Event) -> None:
         """Push `event` to every interested subscriber.
@@ -63,6 +72,12 @@ class EventBus:
         Drops the oldest message on a full queue so producers are never
         blocked by a misbehaving consumer.
         """
+        if event.seq == 0:
+            self._next_seq += 1
+            event = replace(event, seq=self._next_seq)
+        if self._journal is not None:
+            self._journal.append(event)
+
         async with self._lock:
             subs = list(self._subscribers)
         for queue, filt in subs:

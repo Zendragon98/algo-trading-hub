@@ -18,6 +18,7 @@ from common.config import Settings
 from common.types import Signal
 
 from ..market_data.feature_store import Features
+from .position_sync import PositionProvider, side_from_qty
 
 
 class StrategyBase(ABC):
@@ -83,3 +84,22 @@ class StrategyBase(ABC):
     def refresh_settings(self, settings: Settings) -> None:
         """Apply operator updates after ``PATCH /api/settings`` (default no-op)."""
         pass
+
+    def attach_position_provider(self, provider: PositionProvider) -> None:
+        """Wire live signed position qty per symbol (default no-op)."""
+        self._position_provider = provider  # type: ignore[attr-defined]
+
+    def _position_qty(self, symbol: str) -> float:
+        """Return signed position qty for ``symbol`` (0 when unwired)."""
+        provider = getattr(self, "_position_provider", None)
+        if provider is None:
+            return 0.0
+        try:
+            return float(provider(symbol))
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _sync_open_side_from_position(self, state: object, symbol: str) -> None:
+        """Set ``state.open_side`` from the live book when the state has that field."""
+        if hasattr(state, "open_side"):
+            state.open_side = side_from_qty(self._position_qty(symbol))  # type: ignore[attr-defined]

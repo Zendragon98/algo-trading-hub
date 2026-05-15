@@ -13,14 +13,15 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from common.config import Settings, get_settings
 from common.enums import EventType
 from common.events import EventBus
 
-from .routes import control, execution, klines, logs, orders, positions, settings, status, trades
+from .routes import control, execution, health, klines, logs, orders, positions, reports, settings, status, trades
 from .schemas import LogDTO
 from .ws import router as ws_router
 
@@ -76,6 +77,15 @@ def create_app(
         lifespan=lifespan,
     )
 
+    @app.middleware("http")
+    async def api_token_guard(request: Request, call_next):
+        token = (app_settings.api_token or "").strip()
+        if token and request.url.path.startswith("/api/control"):
+            auth = request.headers.get("authorization", "")
+            if auth != f"Bearer {token}":
+                return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+        return await call_next(request)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=app_settings.cors_origins,
@@ -92,7 +102,9 @@ def create_app(
     app.state.bus = bus
     app.state.request_shutdown = request_shutdown
 
+    app.include_router(health.router)
     app.include_router(status.router)
+    app.include_router(reports.router)
     app.include_router(positions.router)
     app.include_router(trades.router)
     app.include_router(orders.router)

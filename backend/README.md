@@ -27,26 +27,33 @@ flowchart TB
 
     subgraph eng ["engine/"]
         direction TB
-        MarketData["market_data<br/>OrderBook + TradeTape"]
+        MarketData["market_data<br/>OrderBook + TradeTape + DataQuality"]
         Features["FeatureStore"]
-        Strategy["strategies/<br/>PairsTrading (active) · SmaCrossover (multi-symbol)"]
-        Risk["risk/<br/>RiskManager (pre-trade)"]
-        Router["execution/<br/>ExecutionRouter"]
-        Wheel["execution/<br/>AlgoWheel — FRONTLOAD · NORMAL · BACKLOAD"]
+        Strategy["strategies/<br/>PairsTrading · SmaCrossover · MarketMaking"]
+        PreTrade["risk/<br/>PreTradeValidator"]
+        RiskMon2["risk/<br/>RiskManager + monitors"]
+        Router["execution/<br/>ExecutionRouter + Urgency"]
+        SubmitGuard["execution/<br/>SubmitGuard"]
+        Wheel["execution/<br/>AlgoWheel"]
         Slicer["execution/<br/>Slicer + VwapExecutor"]
         OrderMgr["orders/<br/>OrderManager (OMS)"]
-        Tracker["execution/<br/>ExecutionTracker (arrival, vwap, slippage)"]
+        OrdRec["core/<br/>OrderReconciler"]
+        PosRec["core/<br/>Position Reconciler"]
+        Tracker["execution/<br/>ExecutionTracker"]
         Impact["execution/<br/>ImpactModel (paper-only)"]
         Position["position/<br/>PositionTracker"]
         Portfolio["portfolio/<br/>Portfolio + PnLTracker"]
-        RiskMon["risk/<br/>StopLoss / TakeProfit monitor"]
+        Obs["observability/<br/>LatencyTracker + AlertManager"]
 
-        MarketData --> Features --> Strategy --> Risk --> Router
-        Router --> Wheel --> Slicer --> OrderMgr
+        MarketData --> Features --> Strategy --> PreTrade --> Router
+        PreTrade --> RiskMon2
+        Router --> SubmitGuard --> Wheel --> Slicer --> OrderMgr
         Router --> Tracker
-        Impact --> Position --> Portfolio --> RiskMon
+        OrdRec -.-> OrderMgr
+        PosRec -.-> Position
+        Impact --> Position --> Portfolio
         Impact --> Tracker
-        RiskMon -->|exit ParentOrder| Router
+        Obs -.-> Router
     end
 
     BinanceGw --> MarketData
@@ -64,14 +71,16 @@ flowchart TB
     Tracker --> Bus
     MarketData --> Bus
 
+    Journal["persistence/<br/>EventJournal WAL"]
     Recorder["persistence/<br/>EventRecorder<br/>data/runs/&lt;id&gt;/*.jsonl"]
-    API["api/<br/>FastAPI REST + WebSocket"]
-    FE["React console<br/>OMS + Execution Quality panels"]
+    Bus --> Journal
     Bus --> Recorder
+    API["api/<br/>FastAPI REST + WebSocket<br/>/health · /ready"]
+    FE["React console<br/>OMS · Execution Quality · System Health"]
     Bus --> API
     API <--> FE
 
-    Analytics["analytics/<br/>data_loader · pair_analyzer · orderbook_analyzer"]
+    Analytics["analytics/<br/>calibration · stress_runner · daily_report"]
     Analytics -.->|calibrates thresholds| Strategy
     Analytics -.->|calibrates| Wheel
 ```
@@ -403,7 +412,13 @@ Unlike pairs trading, the SMA strategy does **not** manage its own SL/TP — `ma
 
 ### Risk module — `engine/risk/` + `engine/portfolio/` + `engine/position/`
 
-Pre-trade gate (`RiskManager.check`): caps signal qty at `max_risk_pct` of equity, rejects on `max_gross_notional` breach, returns either an approved (possibly downscaled) qty or a veto with a reason. Additional pre-trade vetoes flow through `MarketDataGuard` (stale tick; wide spread defaults to an EWMA-relative threshold per symbol — tune `spread_*` fields on `Settings` in `common/config.py` — or fixed `max_entry_spread_bps` when `spread_dynamic_enabled` is false) and `ExposureTracker` (per-symbol notional cap, free-margin floor).
+Pre-trade gate (`PreTradeValidator` → `RiskManager.check`): single entry for single-leg and pair-group signals. Caps signal qty at `max_risk_pct` of equity, rejects on `max_gross_notional` breach, and applies optional fat-finger limits (`MAX_ORDER_NOTIONAL_USD`, `MAX_QTY_VS_POSITION_MULTIPLE`), signal dedup (`SIGNAL_DEDUP_TTL_SEC`), and venue floors via `venue_sizing.venue_min_qty`. Additional vetoes flow through `MarketDataGuard` (stale tick; wide spread) and `ExposureTracker` (per-symbol notional cap, free-margin floor). Pair groups use the same per-leg `RiskManager.check` path; partial basket failure triggers compensating reduce-only unwinds.
+
+Order-level reconcile (`engine/core/order_reconciliation.py`) compares venue `openOrders` to OMS working children on the same cadence as position reconcile. Mismatch trips minor `order_reconcile_mismatch` (optional `RECONCILE_CANCEL_ORPHANS` to cancel venue-only orders).
+
+Execution urgency: `Signal.score` ≥ `URGENT_SCORE_THRESHOLD` or reduce-only exits use shorter VWAP schedules (`URGENT_DURATION_SEC`, `URGENT_NUM_SLICES`, `URGENT_MAX_SLIPPAGE_BPS`). Passive LIMIT slices peg to best bid/ask with `MAX_LIMIT_DEVIATION_BPS` collar. Child `clientOrderId` values are deterministic per parent slice for safe retries.
+
+Journal: when `JOURNAL_ENABLED=true`, every bus event is appended to `events.wal.jsonl` with monotonic `seq` and `meta.json` checkpoint. Set `RECOVER_ON_START=true` to replay the previous run WAL into OMS/positions before venue reconcile on boot. Latency histograms (`tick_to_submit_ms`, etc.) emit on `EventType.STATUS` every `LATENCY_METRICS_INTERVAL_SEC`. Market-data quality (`engine/market_data/data_quality.py`) tracks sequence gaps and crossed books. `AlertManager` can POST to `ALERT_WEBHOOK_URL` on MAJOR breakers and reconcile mismatches. `GET /health` and `GET /ready` expose process and engine readiness. `GET /api/reports/latest` summarizes the latest run archive.
 
 Live monitor (`RiskManager.monitor_tick`): per tick, evaluates the position's `StopBracket` (configured from `default_stop_loss_pct` / `default_take_profit_pct`) and emits an `ExitIntent` when the bid/ask crosses a threshold. A drawdown breach trips the kill switch and flattens. A separate high-water-mark drawdown (`hwm_drawdown_kill_pct`) catches the give-back-from-peak scenario the session-start drawdown can miss.
 
@@ -433,6 +448,8 @@ Every safety trip flows through one shared `CircuitBreaker` (`engine/risk/circui
 | `consecutive_losses` | major | engine | `MAX_CONSECUTIVE_LOSSES` losing trades in a row | flatten + latch |
 | `exec_quality` | major | engine | rolling avg slippage > `EXEC_QUALITY_KILL_BPS` | flatten + latch |
 | `reconcile_mismatch` | major | engine | venue vs local qty diff > `RECONCILE_QTY_TOLERANCE` | flatten + latch |
+| `order_reconcile_mismatch` | minor | engine | open-order set differs between venue and OMS | pause; auto-resume |
+| `group_unwind_failed` | major | symbol | compensating unwind after partial pair submit failed | latch symbol |
 
 Pre-submit guards (`SubmitGuard`) enforce three additional ceilings without tripping a recorded breach:
 
@@ -534,6 +551,21 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `RECONCILE_SKIP_REST_WHEN_USER_DATA_FRESH` | `true`                  | Skip account REST snapshot while fills / orders / `ACCOUNT_UPDATE` were recent |
 | `RECONCILE_USER_DATA_FRESH_SEC` | `120.0`                           | Max age (seconds) for last user-data activity to treat WS as authoritative |
 | `RECONCILE_QTY_TOLERANCE`    | `1e-6`                               | Qty mismatch above this trips MAJOR `reconcile_mismatch` |
+| `RECONCILE_CANCEL_ORPHANS`   | `false`                              | Cancel venue open orders unknown to OMS during order reconcile |
+| `ORDER_RECONCILE_ON_STARTUP` | `true`                               | Sync OMS vs venue open orders after `connect()` |
+| `MAX_ORDER_NOTIONAL_USD`     | `0`                                  | Absolute USD cap per order (0 = disabled) |
+| `SIGNAL_DEDUP_TTL_SEC`       | `2.0`                                | Suppress duplicate signals within window |
+| `MAX_LIMIT_DEVIATION_BPS`    | `50.0`                               | LIMIT peg collar vs mid |
+| `URGENT_SCORE_THRESHOLD`     | `0.85`                               | `Signal.score` at/above → aggressive execution |
+| `JOURNAL_ENABLED`            | `true`                               | Append all bus events to `events.wal.jsonl` |
+| `RECOVER_ON_START`           | `false`                              | Replay previous run WAL before venue reconcile |
+| `LATENCY_METRICS_INTERVAL_SEC` | `5.0`                              | Emit pipeline latency histograms on STATUS |
+| `ALERT_WEBHOOK_URL`          | ``                                   | Slack-compatible webhook for critical alerts |
+| `ALERT_COOLDOWN_SEC`         | `60.0`                               | Dedup window between identical alerts |
+| `POST_ONLY_ENABLED`          | `false`                              | GTX post-only on passive LIMIT slices (Binance) |
+| `PER_SYMBOL_SUBMIT_RATE`     | `0`                                  | Per-symbol submit throttle (0 = global only) |
+| `MD_STALE_RESNAPSHOT_SEC`    | `30.0`                               | Force REST book resnapshot when diffs go stale |
+| `API_TOKEN`                  | ``                                   | Bearer token for `/api/control/*` when set |
 | `FLATTEN_ON_STOP`            | `true`                               | Market-out residuals before `engine.stop()` disconnects |
 | `FLATTEN_TIMEOUT_SEC`        | `30.0`                               | Max wait for `flatten()` to clear positions |
 | `BREAKER_MINOR_COOLDOWN_SEC` | `60.0`                               | Default cooldown for minor scoped breaches |

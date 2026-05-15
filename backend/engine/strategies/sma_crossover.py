@@ -29,23 +29,20 @@ import logging
 import time
 from collections import deque
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from itertools import islice
 
 from common.config import Settings
-from common.enums import Side
 from common.logging import signal_log
 from common.types import Signal
 
 from ..market_data.feature_store import Features
+from .position_sync import plan_directional_signal, side_from_qty
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger(__name__)
 
 
-# Same shape as PairsTradingStrategy.EquityProvider — the engine wires
-# an ``engine.portfolio.snapshot().equity`` reader in via
-# ``attach_equity_provider``.
 EquityProvider = Callable[[], float]
 
 
@@ -57,8 +54,6 @@ class _SymbolState:
     last_mid_in_bar: float = 0.0
     bar_bucket: int | None = None
     prev_fast_above: bool | None = None
-    # +1 long, -1 short, 0 flat (in *strategy intent* — the actual
-    # position can lag pending OMS fills).
     open_side: int = 0
     last_action_ts: float = 0.0
 
@@ -84,21 +79,11 @@ class SmaCrossoverStrategy(StrategyBase):
         self._bar_interval_sec = float(settings.sma_bar_interval_sec or 0.0)
         if self._bar_interval_sec < 0:
             raise ValueError("SMA_BAR_INTERVAL_SEC must be >= 0")
-        # Per-symbol state lazily upgraded through ``_state_for`` so a
-        # mid-run universe expansion (settings hot-reload) doesn't lose
-        # any existing crossover memory.
         self._state: dict[str, _SymbolState] = {}
         self._equity_provider: EquityProvider | None = None
 
     @staticmethod
     def _resolve_universe(settings: Settings) -> list[str]:
-        """Pick the symbols this strategy scans.
-
-        Preference order:
-            1. ``settings.sma_symbols`` (CSV / AUTO-resolved at boot).
-            2. ``settings.sma_symbol`` (legacy single-symbol setting).
-            3. ``["BTCUSDT"]`` as the deterministic last-resort default.
-        """
         configured = [s.strip().upper() for s in (settings.sma_symbols or []) if s.strip()]
         if configured:
             return sorted(set(configured))
@@ -107,10 +92,7 @@ class SmaCrossoverStrategy(StrategyBase):
             return [legacy]
         return ["BTCUSDT"]
 
-    # --- Public hooks ---
-
     def attach_equity_provider(self, provider: EquityProvider) -> None:
-        """Wire the live equity reader so entries can be equity-budgeted."""
         self._equity_provider = provider
 
     def symbols(self) -> list[str]:
@@ -127,6 +109,11 @@ class SmaCrossoverStrategy(StrategyBase):
             raise ValueError("SMA_BAR_INTERVAL_SEC must be >= 0")
         self._symbols = self._resolve_universe(settings)
 
+    def on_fill(self, symbol: str, qty: float, side: str) -> None:
+        state = self._state.get(symbol)
+        if state is not None:
+            self._sync_open_side_from_position(state, symbol)
+
     def on_tick(self, features: dict[str, Features]) -> Iterable[Signal]:
         now = time.time()
         cooldown = float(self._settings.sma_cooldown_sec)
@@ -138,6 +125,7 @@ class SmaCrossoverStrategy(StrategyBase):
                 continue
             mid = float(feat.mid)
             state = self._state_for(symbol)
+            self._sync_open_side_from_position(state, symbol)
 
             if now - state.last_action_ts < cooldown:
                 self._push_sample(state, mid, now)
@@ -149,14 +137,10 @@ class SmaCrossoverStrategy(StrategyBase):
                 continue
 
             slow_avg = sum(state.mids) / self._slow
-            # ``islice`` over the deque avoids materialising the full list
-            # every tick; matters when SMA_SYMBOLS=AUTO covers ~545 perps.
             fast_window = islice(state.mids, len(state.mids) - self._fast, len(state.mids))
             fast_avg = sum(fast_window) / self._fast
 
             diff = fast_avg - slow_avg
-            # Floating point noise can flip fast/slow around equality and
-            # spawn spurious crossovers; treat near-equality as no change.
             if abs(diff) <= 1e-9 and state.prev_fast_above is not None:
                 fast_above = state.prev_fast_above
             else:
@@ -170,42 +154,54 @@ class SmaCrossoverStrategy(StrategyBase):
             crossed_down = state.prev_fast_above and (not fast_above)
             state.prev_fast_above = fast_above
 
-            qty = self._size_for(mid)
-            if qty <= 0:
+            entry_qty = self._size_for(mid)
+            if entry_qty <= 0:
                 continue
 
-            if crossed_up and state.open_side != +1:
-                state.open_side = +1
-                state.last_action_ts = now
-                reason = f"sma_cross_up fast={fast_avg:.6f} slow={slow_avg:.6f}"
-                signal_log(logger, f"SMA cross up -> BUY {symbol} qty={qty:.10f}")
-                signals.append(Signal(symbol=symbol, side=Side.BUY, qty=qty, reason=reason, score=1.0))
-                continue
+            pos_qty = self._position_qty(symbol)
+            sig: Signal | None = None
+            if crossed_up and side_from_qty(pos_qty) != 1:
+                sig = plan_directional_signal(
+                    symbol=symbol,
+                    target_side=+1,
+                    entry_qty=entry_qty,
+                    position_qty=pos_qty,
+                    reason_open=f"sma_cross_up fast={fast_avg:.6f} slow={slow_avg:.6f}",
+                    reason_close="sma_cross_up_close",
+                    score=1.0,
+                )
+            elif crossed_down and side_from_qty(pos_qty) != -1:
+                sig = plan_directional_signal(
+                    symbol=symbol,
+                    target_side=-1,
+                    entry_qty=entry_qty,
+                    position_qty=pos_qty,
+                    reason_open=f"sma_cross_down fast={fast_avg:.6f} slow={slow_avg:.6f}",
+                    reason_close="sma_cross_down_close",
+                    score=1.0,
+                )
 
-            if crossed_down and state.open_side != -1:
-                state.open_side = -1
-                state.last_action_ts = now
-                reason = f"sma_cross_down fast={fast_avg:.6f} slow={slow_avg:.6f}"
-                signal_log(logger, f"SMA cross down -> SELL {symbol} qty={qty:.10f}")
-                signals.append(Signal(symbol=symbol, side=Side.SELL, qty=qty, reason=reason, score=1.0))
+            if sig is None:
+                continue
+            state.last_action_ts = now
+            if not sig.reduce_only:
+                state.open_side = 1 if sig.side.value.lower() == "buy" else -1
+            signal_log(
+                logger,
+                f"SMA {'close' if sig.reduce_only else 'open'} -> {sig.side.value.upper()} "
+                f"{symbol} qty={sig.qty:.10f}",
+            )
+            signals.append(sig)
 
         return signals
 
-    # --- Internal ---
-
     def _push_sample(self, state: _SymbolState, mid: float, now: float) -> bool:
-        """Record one SMA observation when due.
-
-        Returns True when ``state.mids`` gained a new sample this call (always
-        True in heartbeat mode; in bar mode only when a bar just closed).
-        """
         if self._bar_interval_sec <= 0:
             state.append(mid)
             return True
         return self._append_bar_close_if_advanced(state, mid, now)
 
     def _append_bar_close_if_advanced(self, state: _SymbolState, mid: float, now: float) -> bool:
-        """Append at most one bar close when ``now`` crosses a bar boundary."""
         interval = self._bar_interval_sec
         bucket = int(now // interval)
         if state.bar_bucket is None:
@@ -215,7 +211,6 @@ class SmaCrossoverStrategy(StrategyBase):
         if bucket == state.bar_bucket:
             state.last_mid_in_bar = mid
             return False
-        # ``last_mid_in_bar`` still holds the last mid from the bar we are leaving.
         close_px = state.last_mid_in_bar
         state.append(close_px)
         state.bar_bucket = bucket
@@ -230,19 +225,12 @@ class SmaCrossoverStrategy(StrategyBase):
         return state
 
     def _size_for(self, mid: float) -> float:
-        """Return the qty the strategy wants to buy/sell at ``mid``.
-
-        Equity-budgeted: ``equity * risk_per_trade_pct / stop_pct / mid``
-        when the equity reader is wired, else a flat ``sma_qty`` so the
-        strategy still places (small) orders in smoke tests / before the
-        first ``fetch_balance`` lands.
-        """
         provider = self._equity_provider
         if provider is None:
             return float(self._settings.sma_qty)
         try:
             equity = float(provider())
-        except Exception:  # noqa: BLE001 — defensive; never let sizing crash the loop
+        except Exception:  # noqa: BLE001
             return float(self._settings.sma_qty)
         if equity <= 0:
             return float(self._settings.sma_qty)
@@ -250,6 +238,5 @@ class SmaCrossoverStrategy(StrategyBase):
         stop_pct = float(self._settings.default_stop_loss_pct)
         if risk_pct <= 0 or stop_pct <= 0 or mid <= 0:
             return float(self._settings.sma_qty)
-        # Stop-loss-budgeted notional, then divide by mid to get qty.
         notional = (equity * risk_pct) / stop_pct
         return max(0.0, notional / mid)

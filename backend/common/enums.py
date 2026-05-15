@@ -56,6 +56,14 @@ class OrderStatus(str, Enum):
     REJECTED = "rejected"     # rejected by venue (insufficient margin, etc.)
 
 
+class Urgency(str, Enum):
+    """How aggressively the execution layer works a parent order."""
+
+    PASSIVE = "passive"       # default VWAP schedule, tight slippage cap
+    NORMAL = "normal"         # standard schedule
+    AGGRESSIVE = "aggressive"  # fewer slices, shorter window, higher slippage cap
+
+
 class AlgoMode(str, Enum):
     """How the VWAP slicer distributes child orders across the schedule.
 

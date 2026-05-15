@@ -25,26 +25,33 @@ flowchart TB
 
     subgraph eng ["engine/"]
         direction TB
-        MarketData["market_data<br/>OrderBook + TradeTape"]
+        MarketData["market_data<br/>OrderBook + TradeTape + DataQuality"]
         Features["FeatureStore"]
-        Strategy["strategies/<br/>PairsTrading + SmaCrossover (hot-swap)"]
-        Risk["risk/<br/>RiskManager (pre-trade)"]
-        Router["execution/<br/>ExecutionRouter"]
-        Wheel["execution/<br/>AlgoWheel — FRONTLOAD · NORMAL · BACKLOAD"]
+        Strategy["strategies/<br/>PairsTrading · SmaCrossover · MarketMaking"]
+        PreTrade["risk/<br/>PreTradeValidator"]
+        RiskMon2["risk/<br/>RiskManager + monitors"]
+        Router["execution/<br/>ExecutionRouter + Urgency"]
+        SubmitGuard["execution/<br/>SubmitGuard"]
+        Wheel["execution/<br/>AlgoWheel"]
         Slicer["execution/<br/>Slicer + VwapExecutor"]
         OrderMgr["orders/<br/>OrderManager (OMS)"]
-        Tracker["execution/<br/>ExecutionTracker (arrival, vwap, slippage)"]
+        OrdRec["core/<br/>OrderReconciler"]
+        PosRec["core/<br/>Position Reconciler"]
+        Tracker["execution/<br/>ExecutionTracker"]
         Impact["execution/<br/>ImpactModel (paper-only)"]
         Position["position/<br/>PositionTracker"]
         Portfolio["portfolio/<br/>Portfolio + PnLTracker"]
-        RiskMon["risk/<br/>StopLoss / TakeProfit monitor"]
+        Obs["observability/<br/>LatencyTracker + AlertManager"]
 
-        MarketData --> Features --> Strategy --> Risk --> Router
-        Router --> Wheel --> Slicer --> OrderMgr
+        MarketData --> Features --> Strategy --> PreTrade --> Router
+        PreTrade --> RiskMon2
+        Router --> SubmitGuard --> Wheel --> Slicer --> OrderMgr
         Router --> Tracker
-        Impact --> Position --> Portfolio --> RiskMon
+        OrdRec -.-> OrderMgr
+        PosRec -.-> Position
+        Impact --> Position --> Portfolio
         Impact --> Tracker
-        RiskMon -->|exit ParentOrder| Router
+        Obs -.-> Router
     end
 
     BinanceGw --> MarketData
@@ -62,19 +69,33 @@ flowchart TB
     Tracker --> Bus
     MarketData --> Bus
 
+    Journal["persistence/<br/>EventJournal WAL"]
     Recorder["persistence/<br/>EventRecorder<br/>data/runs/&lt;id&gt;/*.jsonl"]
-    API["api/<br/>FastAPI REST + WebSocket"]
-    FE["React console<br/>OMS + Execution Quality panels"]
+    Bus --> Journal
     Bus --> Recorder
+    API["api/<br/>FastAPI REST + WebSocket<br/>/health · /ready"]
+    FE["React console<br/>OMS · Execution Quality · System Health"]
     Bus --> API
     API <--> FE
 
-    Analytics["analytics/<br/>data_loader · pair_analyzer · orderbook_analyzer"]
+    Analytics["analytics/<br/>calibration · stress_runner · daily_report"]
     Analytics -.->|calibrates thresholds| Strategy
     Analytics -.->|calibrates| Wheel
 ```
 
-Source kept editable at `backend/docs/architecture.mmd`. Full architecture deep-dive in `backend/README.md`.
+Source kept editable at [`backend/docs/architecture.mmd`](backend/docs/architecture.mmd). Full architecture deep-dive in [`backend/README.md`](backend/README.md).
+
+### System capabilities (7 layers)
+
+| Layer | Repo paths | Status |
+|-------|------------|--------|
+| 1 Platform | `common/`, `persistence/journal.py`, `/health`, `/ready` | Implemented |
+| 2 Market data | `engine/market_data/`, `data_quality.py` | Implemented |
+| 3 Execution | `gateways/`, `engine/execution/` | Binance production; IBKR skeleton |
+| 4 OMS | `engine/orders/`, `order_reconciliation.py` | Implemented |
+| 5 Risk | `engine/risk/pretrade_validator.py`, monitors | Implemented |
+| 6 Strategy | `engine/strategies/`, `analytics/` | Implemented + offline stress |
+| 7 UI & ops | `src/`, `api/`, alerts, reports | Implemented |
 
 ## Layout
 
@@ -87,7 +108,7 @@ algo-trading-hub/
     components/algo/types.ts  view-model shapes (mirrors backend/api/schemas.py)
   backend/                 Python trading engine + FastAPI surface
     main.py                runs engine + uvicorn in one event loop
-    engine/                strategy-agnostic core (orders, exec, risk, ...)
+    engine/                strategy-agnostic core (orders, exec, risk, observability, ...)
     gateways/              venue adapters (Binance Futures Testnet)
     api/                   FastAPI REST + /ws WebSocket
     analytics/             offline calibration jobs
@@ -144,10 +165,11 @@ In **LIVE** mode the backend will **refuse to start** if your venue is still poi
 
 A unified circuit-breaker covers the engine end-to-end so extreme events have a defined safety fallback:
 
-- **Pre-trade gates** — stale-tick / wide-spread veto, per-symbol exposure cap, free-margin floor, on top of the existing `MAX_RISK_PCT` / `MAX_GROSS_NOTIONAL` ceilings.
-- **In-flight execution** — per-parent slippage abort (`max_slippage_bps`), repeat-reject symbol pause, open-parent ceiling, REST submit token-bucket throttle.
-- **Portfolio guards** — high-water-mark drawdown, daily-loss kill, consecutive-loss streak, rolling-avg execution-quality blowout. All `MAJOR` and latched until operator re-arm.
-- **System-level** — auto-pause on WS / user-data silence, periodic gateway position reconciliation, auto-flatten on `engine.stop()` (reduce-only orders bypass the breaker so closing exits always reach the venue).
+- **Unified pre-trade** — `PreTradeValidator` (fat-finger, signal dedup, limit collar, group parity) before any parent reaches the router.
+- **Matching / reconcile** — order-level reconcile vs venue open orders; position reconcile; optional `RECOVER_ON_START` WAL replay.
+- **In-flight execution** — urgency profiles, passive bid/ask peg, deterministic client order IDs, per-parent slippage abort, submit throttles.
+- **Portfolio guards** — HWM drawdown, daily-loss kill, consecutive-loss streak, execution-quality blowout (`MAJOR` latched until re-arm).
+- **System-level** — MD quality (gaps, crossed book, resnapshot), WS/user-data staleness pause, webhook alerts, `/health` + `/ready`, System Health dashboard panel.
 
 `MAJOR` breaches automatically flatten + latch; the operator clears them via `POST /api/control/breakers/rearm`. `MINOR` breaches auto-resume after a cooldown. See `backend/README.md` "Failsafes — circuit-breaker matrix" for the full list and tunables.
 

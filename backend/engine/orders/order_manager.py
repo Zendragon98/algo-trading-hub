@@ -40,13 +40,17 @@ class _SubmitGuardLike(Protocol):
     def record_status(self, symbol: str, status: OrderStatus) -> None: ...
 
 
-def new_client_order_id(prefix: str = "ALPHA7") -> str:
-    """Generate a venue-friendly client order id.
+def new_client_order_id(
+    parent_id: str,
+    slice_index: int,
+    prefix: str = "ALPHA7",
+) -> str:
+    """Deterministic client order id for idempotent retries.
 
-    Binance allows up to 36 chars, alphanumerics + `_-.`. We use a short
-    UUID slice rather than the full UUID for terser dashboard rendering.
+    Binance allows up to 36 chars, alphanumerics + `_-.`.
     """
-    return f"{prefix}-{uuid.uuid4().hex[:16]}"
+    pid = parent_id.replace("P-", "")[:8]
+    return f"{prefix}-{pid}-{slice_index:02d}"
 
 
 class OrderManager:
@@ -66,6 +70,8 @@ class OrderManager:
         # update or fill). Consumed by ConnectionMonitor to detect a
         # silent user-data stream so the engine can auto-pause.
         self._last_user_data_ts: float = 0.0
+        self._seen_trade_ids: set[str] = set()
+        self._max_seen_trades: int = 10_000
 
     def attach_submit_guard(self, guard: _SubmitGuardLike) -> None:
         """Bind the submission rate-limit / breaker guard.
@@ -170,16 +176,25 @@ class OrderManager:
             self._submit_guard.record_status(merged.symbol, merged.status)
         await self._publish_order(merged)
 
-    async def on_fill(self, fill: Fill) -> None:
-        # Resolve parent if we know it; the gateway can't because the
-        # ORDER_TRADE_UPDATE payload doesn't carry the parent id.
+    async def on_fill(self, fill: Fill) -> bool:
+        """Apply fill; return False if duplicate trade_id was ignored."""
         self.touch_user_data_activity()
         async with self._lock:
+            if fill.trade_id and fill.trade_id in self._seen_trade_ids:
+                logger.info("ignoring duplicate fill trade_id=%s", fill.trade_id)
+                return False
+            if fill.trade_id:
+                self._seen_trade_ids.add(fill.trade_id)
+                if len(self._seen_trade_ids) > self._max_seen_trades:
+                    self._seen_trade_ids = set(
+                        list(self._seen_trade_ids)[-self._max_seen_trades // 2 :]
+                    )
             fill.parent_id = self._child_to_parent.get(fill.child_id)
 
         await self._bus.publish(
             Event(type=EventType.FILL, payload=_fill_to_dict(fill))
         )
+        return True
 
     # --- Cancel / flatten ---
 
@@ -218,6 +233,25 @@ class OrderManager:
     def child(self, child_id: str) -> ChildOrder | None:
         """Return the latest OMS view of `child_id` (exchange-updated)."""
         return self._children.get(child_id)
+
+    # --- WAL recovery ---
+
+    def restore_fill_seen(self, trade_id: str | None) -> None:
+        if trade_id:
+            self._seen_trade_ids.add(trade_id)
+
+    def restore_state(
+        self,
+        *,
+        parents: dict[str, ParentOrder],
+        children: dict[str, ChildOrder],
+    ) -> None:
+        """Merge WAL-restored parents/children without hitting the venue."""
+        self._parents.update(parents)
+        for cid, child in children.items():
+            self._children[cid] = child
+            if child.parent_id:
+                self._child_to_parent[cid] = child.parent_id
 
     # --- Internal ---
 
