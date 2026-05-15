@@ -341,6 +341,6 @@ def _map_status(raw: str) -> OrderStatus:
         "FILLED": OrderStatus.FILLED,
         "CANCELED": OrderStatus.CANCELLED,
         "REJECTED": OrderStatus.REJECTED,
-        "EXPIRED": OrderStatus.CANCELLED,
+        "EXPIRED": OrderStatus.EXPIRED,
     }
     return mapping.get(raw.upper(), OrderStatus.ACK)

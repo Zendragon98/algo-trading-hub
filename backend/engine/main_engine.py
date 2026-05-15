@@ -20,7 +20,7 @@ from common.logging import configure_logging
 from gateways.factory import create_gateway
 
 from .core.engine import Engine
-from .persistence.event_recorder import EventRecorder, RecorderConfig, make_run_dir
+from .persistence.run_bootstrap import bootstrap_run, shutdown_bootstrap
 from .strategies.market_making import MarketMakingStrategy
 from .strategies.pairs_trading import PairsTradingStrategy
 from .strategies.sma_crossover import SmaCrossoverStrategy
@@ -32,21 +32,12 @@ async def run() -> None:
     settings = get_settings()
     bus = EventBus()
 
-    run_dir: Path | None = None
-    if settings.persist_enabled or settings.log_file_enabled:
-        base = Path(settings.persist_dir)
-        if not base.is_absolute():
-            base = Path(__file__).resolve().parent.parent / base
-        run_dir = make_run_dir(base)
+    backend_root = Path(__file__).resolve().parent.parent
+    bootstrap = await bootstrap_run(settings, bus, backend_root)
 
-    log_file = (
-        run_dir / "app.log"
-        if (run_dir is not None and settings.log_file_enabled)
-        else None
-    )
     configure_logging(
         bus=bus,
-        log_file=log_file,
+        log_file=bootstrap.log_file,
         log_file_max_bytes=settings.log_file_max_bytes,
         log_file_backup_count=settings.log_file_backup_count,
     )
@@ -60,19 +51,8 @@ async def run() -> None:
             "TRADING_MODE=paper venue=%s (testnet/demo).",
             settings.venue,
         )
-    if run_dir is not None:
-        logger.info("run archive: %s", run_dir)
-
-    recorder: EventRecorder | None = None
-    if settings.persist_enabled and run_dir is not None:
-        recorder = EventRecorder(
-            bus=bus,
-            config=RecorderConfig(
-                run_dir=run_dir,
-                record_ticks=settings.persist_record_ticks,
-            ),
-        )
-        await recorder.start()
+    if bootstrap.run_dir is not None:
+        logger.info("run archive: %s", bootstrap.run_dir)
 
     gateway = create_gateway(settings)
     strategy_name = (settings.strategy or "pairs").strip().lower()
@@ -96,7 +76,13 @@ async def run() -> None:
         strategies = [all_strategies[0]]
         boot = strategies[0].name
     settings = settings.model_copy(update={"strategy": boot})
-    engine = Engine(settings=settings, bus=bus, gateway=gateway, strategies=strategies)
+    engine = Engine(
+        settings=settings,
+        bus=bus,
+        gateway=gateway,
+        strategies=strategies,
+        recovery_wal=bootstrap.recovery_wal,
+    )
 
     def _position_qty(symbol: str) -> float:
         pos = engine._positions.get(symbol)  # noqa: SLF001
@@ -139,8 +125,7 @@ async def run() -> None:
         pass
     finally:
         await engine.stop()
-        if recorder is not None:
-            await recorder.stop()
+        await shutdown_bootstrap(bootstrap)
 
 
 def main() -> None:

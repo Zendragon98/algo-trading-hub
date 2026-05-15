@@ -52,6 +52,21 @@ class LatencyTracker:
         if span is None:
             return
         span.venue_ack = _time.time()
+        if span.tick_received > 0 and span.signal_emitted > 0:
+            self._record(
+                "tick_to_signal_ms",
+                (span.signal_emitted - span.tick_received) * 1000.0,
+            )
+        if span.signal_emitted > 0 and span.risk_passed > 0:
+            self._record(
+                "signal_to_risk_ms",
+                (span.risk_passed - span.signal_emitted) * 1000.0,
+            )
+        if span.risk_passed > 0 and span.child_submitted > 0:
+            self._record(
+                "risk_to_submit_ms",
+                (span.child_submitted - span.risk_passed) * 1000.0,
+            )
         if span.tick_received > 0 and span.child_submitted > 0:
             self._record(
                 "tick_to_submit_ms",

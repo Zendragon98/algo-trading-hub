@@ -19,7 +19,8 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from common.config import Settings
-from common.enums import AlgoMode, OrderStatus, OrderType, Urgency
+from common.enums import AlgoMode, OrderType, Urgency
+from engine.orders.order_state_machine import TERMINAL_ORDER_STATUSES
 from common.types import ChildOrder, ParentOrder
 
 from gateways.gateway_interface import GatewayInterface, SymbolFilters
@@ -281,7 +282,7 @@ class VwapExecutor:
             child = self._om.child(child_id)
             if child is None:
                 return
-            if child.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
+            if child.status in TERMINAL_ORDER_STATUSES:
                 return
             if loop.time() >= deadline:
                 return
@@ -300,7 +301,7 @@ class VwapExecutor:
             child = self._om.child(child_id)
             if child is None:
                 return
-            if child.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
+            if child.status in TERMINAL_ORDER_STATUSES:
                 return
             if loop.time() >= deadline:
                 break

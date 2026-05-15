@@ -78,7 +78,7 @@ export type ChildOrderDTO = {
   price: number | null;
   avg_fill_price: number;
   order_type: "limit" | "market";
-  status: "new" | "ack" | "partial" | "filled" | "cancelled" | "rejected";
+  status: "new" | "ack" | "partial" | "filled" | "cancelled" | "rejected" | "expired";
   venue_order_id: string | null;
   created_at: number;
   updated_at: number;

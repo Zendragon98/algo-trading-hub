@@ -40,7 +40,7 @@ export type WorkingOrder = {
   price: number | null;
   avgFillPrice: number;
   orderType: "limit" | "market";
-  status: "new" | "ack" | "partial" | "filled" | "cancelled" | "rejected";
+  status: "new" | "ack" | "partial" | "filled" | "cancelled" | "rejected" | "expired";
   venueOrderId: string | null;
   createdAt: number;
   updatedAt: number;

@@ -54,6 +54,7 @@ class OrderStatus(str, Enum):
     FILLED = "filled"         # fully filled
     CANCELLED = "cancelled"   # cancelled, no further fills
     REJECTED = "rejected"     # rejected by venue (insufficient margin, etc.)
+    EXPIRED = "expired"       # time-in-force expired (e.g. GTX) without fill
 
 
 class Urgency(str, Enum):

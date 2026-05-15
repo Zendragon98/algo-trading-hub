@@ -38,6 +38,21 @@ async def test_writes_each_event_type_to_its_own_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_breaker_written_to_breakers_jsonl(tmp_path: Path) -> None:
+    bus = EventBus()
+    recorder = EventRecorder(bus=bus, config=RecorderConfig(run_dir=tmp_path, flush_every_sec=0.0))
+    await recorder.start()
+    await bus.publish(
+        Event(type=EventType.BREAKER, payload={"code": "reconcile_mismatch", "severity": "major"}),
+    )
+    await asyncio.sleep(0.05)
+    await recorder.stop()
+    lines = (tmp_path / "breakers.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["data"]["code"] == "reconcile_mismatch"
+
+
+@pytest.mark.asyncio
 async def test_ticks_recorded_only_when_opted_in(tmp_path: Path) -> None:
     bus = EventBus()
     recorder = EventRecorder(

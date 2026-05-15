@@ -17,7 +17,6 @@ import logging
 import signal as os_signal
 import sys
 from contextlib import suppress
-from datetime import datetime, timezone
 from pathlib import Path
 
 if sys.platform != "win32":
@@ -36,8 +35,7 @@ from common.enums import TradingMode
 from common.events import EventBus
 from common.logging import configure_logging
 from engine.core.engine import Engine
-from engine.persistence.event_recorder import EventRecorder, RecorderConfig, make_run_dir
-from engine.persistence.journal import EventJournal, find_previous_wal
+from engine.persistence.run_bootstrap import bootstrap_run, shutdown_bootstrap
 from engine.strategies.market_making import MarketMakingStrategy
 from engine.strategies.pairs_trading import PairsTradingStrategy
 from engine.strategies.sma_crossover import SmaCrossoverStrategy
@@ -137,48 +135,19 @@ async def _run() -> None:
             if updates:
                 settings = settings.model_copy(update=updates)
 
-    # Per-run archive: timestamped folder under PERSIST_DIR (relative paths
-    # are resolved against backend/ so every launcher writes to the same
-    # spot regardless of cwd). app.log + JSONL streams live here.
-    run_dir: Path | None = None
-    if settings.persist_enabled or settings.log_file_enabled:
-        base = Path(settings.persist_dir)
-        if not base.is_absolute():
-            base = Path(__file__).resolve().parent / base
-        run_dir = make_run_dir(base)
+    backend_root = Path(__file__).resolve().parent
+    bootstrap = await bootstrap_run(settings, bus, backend_root)
 
-    log_file = (
-        run_dir / "app.log"
-        if (run_dir is not None and settings.log_file_enabled)
-        else None
-    )
     configure_logging(
         bus=bus,
-        log_file=log_file,
+        log_file=bootstrap.log_file,
         log_file_max_bytes=settings.log_file_max_bytes,
         log_file_backup_count=settings.log_file_backup_count,
     )
     logger.info("config loaded from %s", settings.env_path)
     _log_mode_banner(settings)
-    if run_dir is not None:
-        logger.info("run archive: %s", run_dir)
-
-    journal: EventJournal | None = None
-    if settings.journal_enabled and run_dir is not None:
-        journal = EventJournal(run_dir=run_dir, run_id=run_dir.name)
-        journal.open(datetime.now(tz=timezone.utc).isoformat())
-        bus.attach_journal(journal)
-
-    recorder: EventRecorder | None = None
-    if settings.persist_enabled and run_dir is not None:
-        recorder = EventRecorder(
-            bus=bus,
-            config=RecorderConfig(
-                run_dir=run_dir,
-                record_ticks=settings.persist_record_ticks,
-            ),
-        )
-        await recorder.start()
+    if bootstrap.run_dir is not None:
+        logger.info("run archive: %s", bootstrap.run_dir)
 
     gateway = create_gateway(settings)
     # Build every strategy up front so the dashboard can hot-swap between
@@ -204,21 +173,12 @@ async def _run() -> None:
         boot_default = strategies[0].name
     settings = settings.model_copy(update={"strategy": boot_default})
 
-    recovery_wal = None
-    if settings.recover_on_start and run_dir is not None:
-        persist_base = Path(settings.persist_dir)
-        if not persist_base.is_absolute():
-            persist_base = Path(__file__).resolve().parent / persist_base
-        recovery_wal = find_previous_wal(persist_base, exclude_dir=run_dir)
-        if recovery_wal is not None:
-            logger.info("WAL recovery source: %s", recovery_wal)
-
     engine = Engine(
         settings=settings,
         bus=bus,
         gateway=gateway,
         strategies=strategies,
-        recovery_wal=recovery_wal,
+        recovery_wal=bootstrap.recovery_wal,
     )
 
     # Wire live equity + liquidity weights into strategies so they can
@@ -252,8 +212,7 @@ async def _run() -> None:
             await engine.start()
         except Exception:
             logger.exception("engine failed to start; exiting")
-            if recorder is not None:
-                await recorder.stop()
+            await shutdown_bootstrap(bootstrap)
             return
 
     stop_event = asyncio.Event()
@@ -313,10 +272,7 @@ async def _run() -> None:
         with suppress(asyncio.CancelledError, Exception):
             await server_task
         await engine.stop()
-        if recorder is not None:
-            await recorder.stop()
-        if journal is not None:
-            journal.close()
+        await shutdown_bootstrap(bootstrap)
 
 
 def main() -> None:

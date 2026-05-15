@@ -45,6 +45,7 @@ _FILENAMES: dict[EventType, str] = {
     EventType.EQUITY: "equity.jsonl",
     EventType.LOG: "logs.jsonl",
     EventType.STATUS: "status.jsonl",
+    EventType.BREAKER: "breakers.jsonl",
 }
 
 _DEFAULT_TYPES: tuple[EventType, ...] = (
@@ -56,6 +57,7 @@ _DEFAULT_TYPES: tuple[EventType, ...] = (
     EventType.EQUITY,
     EventType.LOG,
     EventType.STATUS,
+    EventType.BREAKER,
 )
 
 

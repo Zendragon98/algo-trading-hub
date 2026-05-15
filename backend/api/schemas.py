@@ -86,7 +86,9 @@ class ChildOrderDTO(BaseModel):
     price: float | None
     avg_fill_price: float
     order_type: Literal["limit", "market"]
-    status: Literal["new", "ack", "partial", "filled", "cancelled", "rejected"]
+    status: Literal[
+        "new", "ack", "partial", "filled", "cancelled", "rejected", "expired",
+    ]
     venue_order_id: str | None
     created_at: float
     updated_at: float

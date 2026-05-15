@@ -100,9 +100,13 @@ const TERMINAL_STATUSES: ReadonlyArray<WorkingOrder["status"]> = [
   "filled",
   "cancelled",
   "rejected",
+  "expired",
 ];
 
 const LATENCY_KEYS = new Set([
+  "tick_to_signal_ms",
+  "signal_to_risk_ms",
+  "risk_to_submit_ms",
   "tick_to_submit_ms",
   "submit_to_ack_ms",
   "tick_to_ack_ms",

@@ -29,5 +29,7 @@ async def test_emits_status_with_metrics() -> None:
             ev = await asyncio.wait_for(q.get(), timeout=1.0)
             if ev.payload.get("kind") == "latency_metrics":
                 assert "tick_to_ack_ms" in ev.payload
+                assert "signal_to_risk_ms" in ev.payload
+                assert "risk_to_submit_ms" in ev.payload
                 return
     pytest.fail("latency_metrics STATUS not received")

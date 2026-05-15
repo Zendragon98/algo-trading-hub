@@ -21,6 +21,11 @@ from typing import Iterable, Protocol
 from common.enums import EventType, OrderStatus
 from common.events import Event, EventBus
 from common.types import ChildOrder, Fill, ParentOrder
+from engine.orders.order_state_machine import (
+    TERMINAL_ORDER_STATUSES,
+    WORKING_ORDER_STATUSES,
+    merge_order_status,
+)
 from gateways.gateway_interface import GatewayInterface
 
 logger = logging.getLogger(__name__)
@@ -165,7 +170,11 @@ class OrderManager:
                 self._children[update.id] = update
                 merged = update
             else:
-                existing.status = update.status
+                existing.status = merge_order_status(
+                    existing.status,
+                    update.status,
+                    order_id=existing.id,
+                )
                 existing.filled_qty = update.filled_qty
                 existing.avg_fill_price = update.avg_fill_price
                 if update.venue_order_id and not existing.venue_order_id:
@@ -202,7 +211,7 @@ class OrderManager:
         child = self._children.get(child_id)
         if child is None:
             return
-        if child.status in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
+        if child.status in TERMINAL_ORDER_STATUSES:
             return
         await self._gateway.cancel_order(child.symbol, child_id)
 
@@ -221,7 +230,7 @@ class OrderManager:
     def working_children(self) -> Iterable[ChildOrder]:
         return [
             c for c in self._children.values()
-            if c.status in (OrderStatus.NEW, OrderStatus.ACK, OrderStatus.PARTIAL)
+            if c.status in WORKING_ORDER_STATUSES
         ]
 
     def parent(self, parent_id: str) -> ParentOrder | None:

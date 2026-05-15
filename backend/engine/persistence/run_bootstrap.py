@@ -1,0 +1,122 @@
+"""Shared run-directory, journal, recorder, and WAL recovery wiring.
+
+Used by ``main.py`` and ``engine.main_engine`` so both entrypoints get the
+same persistence behaviour when ``JOURNAL_ENABLED`` is on without requiring
+``PERSIST_ENABLED`` or ``LOG_FILE_ENABLED``.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+from common.config import Settings
+from common.events import EventBus
+from engine.persistence.event_recorder import EventRecorder, RecorderConfig, make_run_dir
+from engine.persistence.journal import EventJournal, find_previous_wal
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class RunBootstrap:
+    run_dir: Path | None
+    log_file: Path | None
+    journal: EventJournal | None
+    recorder: EventRecorder | None
+    recovery_wal: Path | None
+
+
+def resolve_run_dir(settings: Settings, backend_root: Path) -> Path | None:
+    """Create a timestamped run folder when any persistence feature needs it."""
+    if not (
+        settings.persist_enabled
+        or settings.log_file_enabled
+        or settings.journal_enabled
+    ):
+        return None
+    base = Path(settings.persist_dir)
+    if not base.is_absolute():
+        base = backend_root / base
+    return make_run_dir(base)
+
+
+def resolve_recovery_wal(
+    settings: Settings,
+    backend_root: Path,
+    *,
+    run_dir: Path | None,
+) -> Path | None:
+    if not settings.recover_on_start or run_dir is None:
+        return None
+    persist_base = Path(settings.persist_dir)
+    if not persist_base.is_absolute():
+        persist_base = backend_root / persist_base
+    wal = find_previous_wal(persist_base, exclude_dir=run_dir)
+    if wal is not None:
+        logger.info("WAL recovery source: %s", wal)
+    return wal
+
+
+def open_journal(
+    settings: Settings,
+    bus: EventBus,
+    run_dir: Path | None,
+) -> EventJournal | None:
+    if not settings.journal_enabled or run_dir is None:
+        return None
+    journal = EventJournal(run_dir=run_dir, run_id=run_dir.name)
+    journal.open(datetime.now(tz=timezone.utc).isoformat())
+    bus.attach_journal(journal)
+    return journal
+
+
+async def start_recorder(
+    settings: Settings,
+    bus: EventBus,
+    run_dir: Path | None,
+) -> EventRecorder | None:
+    if not settings.persist_enabled or run_dir is None:
+        return None
+    recorder = EventRecorder(
+        bus=bus,
+        config=RecorderConfig(
+            run_dir=run_dir,
+            record_ticks=settings.persist_record_ticks,
+        ),
+    )
+    await recorder.start()
+    return recorder
+
+
+async def bootstrap_run(
+    settings: Settings,
+    bus: EventBus,
+    backend_root: Path,
+) -> RunBootstrap:
+    """Resolve run dir, journal, recorder, and optional WAL recovery path."""
+    run_dir = resolve_run_dir(settings, backend_root)
+    log_file = (
+        run_dir / "app.log"
+        if (run_dir is not None and settings.log_file_enabled)
+        else None
+    )
+    journal = open_journal(settings, bus, run_dir)
+    recorder = await start_recorder(settings, bus, run_dir)
+    recovery_wal = resolve_recovery_wal(settings, backend_root, run_dir=run_dir)
+    return RunBootstrap(
+        run_dir=run_dir,
+        log_file=log_file,
+        journal=journal,
+        recorder=recorder,
+        recovery_wal=recovery_wal,
+    )
+
+
+async def shutdown_bootstrap(bootstrap: RunBootstrap) -> None:
+    if bootstrap.recorder is not None:
+        await bootstrap.recorder.stop()
+    if bootstrap.journal is not None:
+        bootstrap.journal.close()
