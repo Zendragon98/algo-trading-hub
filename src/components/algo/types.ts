@@ -3,7 +3,15 @@
 // No fixtures live here — every value the UI renders comes from the
 // backend over REST + WebSocket (see `useAlgoStream`).
 
-export type AlgoStatus = "running" | "paused" | "stopped";
+export type AlgoStatus = "running" | "paused" | "stopped" | "starting";
+
+export type StartupProgress = {
+  phase: string;
+  label: string;
+  done: number;
+  total: number;
+  symbol: string | null;
+};
 
 export type Position = {
   symbol: string;

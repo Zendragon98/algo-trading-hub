@@ -283,15 +283,19 @@ class Settings(BaseSettings):
     # When >0, each SMA sample is one *closed bar* of this length (seconds),
     # using the last mid seen in that bar as the close — windows are then in
     # bar count (intraday-style). When 0, one sample per engine heartbeat (~1Hz).
-    sma_bar_interval_sec: float = 0.0
-    # Per-symbol equity slice spent on each SMA entry. Default 0.5%.
+    sma_bar_interval_sec: float = 300.0
+    # Skip symbols below this mid (stops cannot resolve on sub-tick alts).
+    sma_min_mid_price: float = 0.01
+    # Portfolio risk budget per round-trip (split evenly across ``sma_symbols``).
     # Falls back to ``sma_qty`` when equity is unavailable (e.g. boot
     # before the first ``fetch_balance`` lands).
     sma_risk_per_trade_pct: float = 0.005
     sma_qty: float = 0.001
     sma_cooldown_sec: int = 15
-    # Cap SMA_SYMBOLS=AUTO to the top-N USDT perps by 24h quote volume (0 = no cap).
-    sma_max_symbols: int = 20
+    # INFO heartbeat while the SMA scanner is active (0 = off).
+    sma_scan_log_interval_sec: float = 60.0
+    # Cap SMA_SYMBOLS=AUTO to the top-N USDT perps by 24h quote volume (0 = full universe).
+    sma_max_symbols: int = 0
 
     # --- Market-making tilt strategy (skew + imbalance + tape) ---
     # MM_SYMBOLS: CSV list, or ``AUTO`` for the full engine ``SYMBOLS`` universe.

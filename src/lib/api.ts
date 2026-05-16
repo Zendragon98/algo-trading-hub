@@ -51,7 +51,20 @@ export function getAlgoWsUrl(): string {
   return `${httpToWsBase(API_BASE)}/ws`;
 }
 
-export type StatusDTO = { status: AlgoStatus; uptime_sec: number; paper_mode: boolean };
+export type StartupProgressDTO = {
+  phase: string;
+  label: string;
+  done: number;
+  total: number;
+  symbol: string | null;
+};
+
+export type StatusDTO = {
+  status: AlgoStatus;
+  uptime_sec: number;
+  paper_mode: boolean;
+  startup?: StartupProgressDTO | null;
+};
 
 export type KpiDTO = {
   equity: number;
@@ -250,7 +263,14 @@ export type StatusEventData = {
   status?: AlgoStatus;
   uptime_sec?: number;
   paper_mode?: boolean;
+  startup?: StartupProgressDTO;
   kind?: string;
+  clear?: boolean;
+  phase?: string;
+  label?: string;
+  done?: number;
+  total?: number;
+  symbol?: string | null;
   latency?: SystemHealthDTO["latency"];
   order_reconcile?: Record<string, unknown>;
   md_health?: SystemHealthDTO["md_health"];

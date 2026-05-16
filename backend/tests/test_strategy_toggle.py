@@ -198,7 +198,7 @@ def test_multi_symbol_sma_keeps_per_symbol_state() -> None:
         binance_api_key="x", binance_api_secret="y",
         sma_symbols=["BTCUSDT", "ETHUSDT"],
         sma_fast_window=2, sma_slow_window=4,
-        sma_qty=1.0, sma_cooldown_sec=0,
+        sma_qty=1.0, sma_bar_interval_sec=0.0, sma_cooldown_sec=0,
     )
     strat = SmaCrossoverStrategy(settings)
 
@@ -230,6 +230,7 @@ def test_multi_symbol_sma_uses_equity_provider_for_sizing() -> None:
         sma_qty=0.001,                # fallback should NOT be used
         sma_risk_per_trade_pct=0.01,  # 1% of equity at risk
         default_stop_loss_pct=0.01,   # 1% stop -> 1.0x notional / equity
+        sma_bar_interval_sec=0.0,
         sma_cooldown_sec=0,
     )
     strat = SmaCrossoverStrategy(settings)

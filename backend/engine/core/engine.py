@@ -19,7 +19,7 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -73,6 +73,18 @@ from .reconciliation import Reconciler
 from .state import EngineSnapshot, EngineState
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class StartupProgress:
+    """Transient startup / book-resync progress surfaced on the dashboard."""
+
+    phase: str
+    label: str
+    done: int = 0
+    total: int = 0
+    symbol: str | None = None
+
 
 # Cap REST book resnapshots per clock tick so mark-to-market stays ~1 Hz.
 _MAX_MD_RESNAPSHOTS_PER_TICK = 5
@@ -223,6 +235,7 @@ class Engine:
             crossed_book_breaker=settings.md_crossed_book_breaker,
         )
         self._md_bootstrap_done = False
+        self._start_lock = asyncio.Lock()
         self._book_snapshot_sem = asyncio.Semaphore(8)
         self._resnapshot_inflight: set[str] = set()
         self._clock_skew_ms: float = 0.0
@@ -311,6 +324,8 @@ class Engine:
         # this session (lazy — avoids N REST calls at startup for every subscribe).
         self._leverage_applied_symbols: set[str] = set()
         self._alert_task: asyncio.Task[None] | None = None
+        self._startup: StartupProgress | None = None
+        self._book_resync: StartupProgress | None = None
 
     def _reconcile_should_skip_rest(self) -> bool:
         """True when periodic reconcile should rely on user-data WS, not REST.
@@ -332,6 +347,14 @@ class Engine:
     @property
     def status(self) -> EngineStatus:
         return self._state.status
+
+    @property
+    def startup_progress(self) -> StartupProgress | None:
+        return self._startup
+
+    @property
+    def book_resync_progress(self) -> StartupProgress | None:
+        return self._book_resync
 
     @property
     def settings(self) -> Settings:
@@ -547,13 +570,29 @@ class Engine:
     # --- Lifecycle ---
 
     async def start(self) -> None:
-        if self._state.status is EngineStatus.RUNNING:
-            return
-        logger.info("engine starting")
+        async with self._start_lock:
+            if self._state.status in (EngineStatus.RUNNING, EngineStatus.STARTING):
+                return
+            logger.info("engine starting")
+            self._state.status = EngineStatus.STARTING
+            self._book_resync = None
+            await self._set_startup("connect", "Connecting to venue…")
+            try:
+                await self._start_impl()
+            except Exception:
+                self._state.status = EngineStatus.STOPPED
+                self._startup = None
+                await self._publish_status()
+                await self._abort_start()
+                raise
+
+    async def _start_impl(self) -> None:
         await self._gateway.connect()
+        await self._set_startup("clock", "Syncing exchange clock…")
         await self._refresh_clock_skew()
 
         if self._settings.recover_on_start and self._recovery_wal is not None:
+            await self._set_startup("replay", "Replaying journal…")
             summary = await replay_wal_async(
                 self._recovery_wal, self._oms, self._positions,
             )
@@ -569,6 +608,7 @@ class Engine:
         # subscribing first (18s of parallel snapshots would stale early symbols).
         await self._bootstrap_order_books()
 
+        await self._set_startup("market_ws", "Subscribing to market data…")
         # Public market WebSocket: ``bookTicker`` for mids, depth for L2,
         # ``!ticker@arr`` for rolling 24h volumes (avoids REST ``/ticker/24hr``).
         await self._gateway.subscribe_market_data(
@@ -581,9 +621,11 @@ class Engine:
         )
         self._md_bootstrap_done = True
 
+        await self._set_startup("prime", "Priming symbol prices…")
         # Prime mids from WS where possible; REST ``/depth`` only for stragglers.
         await self._prime_symbol_prices()
 
+        await self._set_startup("portfolio", "Loading balances and positions…")
         # Seed cash + positions from REST once; live updates use user-data WS.
         balances, positions = await self._gateway.fetch_balances_and_positions()
         self._portfolio.seed_balances(balances)
@@ -591,8 +633,10 @@ class Engine:
         self._oms.touch_venue_truth_from_rest()
 
         if getattr(self._settings, "order_reconcile_on_startup", True):
+            await self._set_startup("orders", "Reconciling open orders…")
             await self._order_reconciler.sync_startup()
 
+        await self._set_startup("user_ws", "Connecting user data stream…")
         subscribe_kw: dict[str, Any] = {
             "on_fill": self._on_fill,
             "on_order_update": self._on_order_update,
@@ -602,12 +646,14 @@ class Engine:
             subscribe_kw["on_ws_connected"] = self._on_user_ws_connected
         await self._gateway.subscribe_user_data(**subscribe_kw)
 
+        await self._set_startup("volumes", "Loading 24h volume weights…")
         # Initial volume snapshot so liquidity-weighted strategies can size
         # their reference at the first tick rather than after the 30 min
         # refresh window. Best-effort; an empty cache falls back to equal
         # weights in the consuming strategy.
         await self._refresh_volume_weights()
 
+        self._startup = None
         self._state.status = EngineStatus.RUNNING
         await self._publish_status()
         self._clock.start()
@@ -629,9 +675,22 @@ class Engine:
         self._alert_task = asyncio.create_task(self._alert_pump(), name="engine-alerts")
         logger.info("engine running")
 
+    async def _abort_start(self) -> None:
+        """Tear down partial wiring after ``start()`` fails mid-flight."""
+        logger.warning("engine start failed; disconnecting gateway")
+        self._md_bootstrap_done = False
+        await self._clock.stop()
+        await self._cancel_refresh_loops()
+        try:
+            await self._gateway.disconnect()
+        except Exception:  # noqa: BLE001
+            logger.exception("gateway disconnect failed during start abort")
+
     async def _bootstrap_order_books(self) -> None:
         """REST snapshot every symbol's L2 book before the depth stream is applied."""
-        await self._resync_symbol_books(self._symbols, reason="startup", invalidate=False)
+        await self._resync_symbol_books(
+            self._symbols, reason="startup", invalidate=False, publish_startup=True,
+        )
 
     async def _prime_symbol_prices(self) -> None:
         """Seed mids from ``bookTicker`` WS when possible; REST ``/depth`` for stragglers."""
@@ -1218,6 +1277,7 @@ class Engine:
         *,
         reason: str,
         invalidate: bool = True,
+        publish_startup: bool = False,
     ) -> None:
         if not symbols:
             return
@@ -1227,8 +1287,48 @@ class Engine:
             for sym in symbols:
                 self._books.get(sym).invalidate()
 
+        total = len(symbols)
+        done = 0
+        done_lock = asyncio.Lock()
+        show_progress = publish_startup or self._state.status is EngineStatus.RUNNING
+
+        if show_progress and reason != "startup":
+            self._book_resync = StartupProgress(
+                phase="books",
+                label="Resyncing L2 order books after reconnect…",
+                done=0,
+                total=total,
+            )
+            await self._publish_book_resync()
+
         async def _one(symbol: str) -> None:
+            nonlocal done
+            async with done_lock:
+                in_flight = done
+            if publish_startup:
+                await self._set_startup(
+                    "books",
+                    "Syncing L2 order books…",
+                    done=in_flight,
+                    total=total,
+                    symbol=symbol,
+                )
+            elif self._book_resync is not None:
+                await self._publish_book_resync(done=in_flight, total=total, symbol=symbol)
             await self._snapshot_book(symbol)
+            async with done_lock:
+                done += 1
+                completed = done
+            if publish_startup:
+                await self._set_startup(
+                    "books",
+                    "Syncing L2 order books…",
+                    done=completed,
+                    total=total,
+                    symbol=symbol,
+                )
+            elif self._book_resync is not None:
+                await self._publish_book_resync(done=completed, total=total, symbol=symbol)
 
         results = await asyncio.gather(*(_one(s) for s in symbols), return_exceptions=True)
         failures = sum(1 for r in results if isinstance(r, Exception))
@@ -1239,6 +1339,9 @@ class Engine:
                 failures,
                 len(symbols),
             )
+        if self._book_resync is not None and reason != "startup":
+            self._book_resync = None
+            await self._publish_book_resync(clear=True)
 
     async def _on_trade(self, trade: TapeTrade) -> None:
         self._state.last_tick_ts = time.time()
@@ -1833,13 +1936,77 @@ class Engine:
     def _top_of_book_for(self, symbol: str) -> float | None:
         return self._mid_for(symbol)
 
-    async def _publish_status(self) -> None:
+    def _startup_payload(self) -> dict[str, object] | None:
+        if self._startup is None:
+            return None
+        sp = self._startup
+        return {
+            "phase": sp.phase,
+            "label": sp.label,
+            "done": sp.done,
+            "total": sp.total,
+            "symbol": sp.symbol,
+        }
+
+    async def _set_startup(
+        self,
+        phase: str,
+        label: str,
+        *,
+        done: int = 0,
+        total: int = 0,
+        symbol: str | None = None,
+    ) -> None:
+        self._startup = StartupProgress(
+            phase=phase, label=label, done=done, total=total, symbol=symbol,
+        )
+        await self._publish_status()
+
+    async def _publish_book_resync(
+        self,
+        *,
+        done: int | None = None,
+        total: int | None = None,
+        symbol: str | None = None,
+        clear: bool = False,
+    ) -> None:
+        if clear:
+            await self._bus.publish(
+                Event(type=EventType.STATUS, payload={"kind": "book_resync", "clear": True}),
+            )
+            return
+        br = self._book_resync
+        if br is None:
+            return
+        if done is not None:
+            br.done = done
+        if total is not None:
+            br.total = total
+        if symbol is not None:
+            br.symbol = symbol
         await self._bus.publish(
             Event(
                 type=EventType.STATUS,
-                payload={"status": self._state.status.value, "uptime_sec": self.snapshot().uptime_sec},
-            )
+                payload={
+                    "kind": "book_resync",
+                    "phase": br.phase,
+                    "label": br.label,
+                    "done": br.done,
+                    "total": br.total,
+                    "symbol": br.symbol,
+                },
+            ),
         )
+
+    async def _publish_status(self) -> None:
+        payload: dict[str, object] = {
+            "status": self._state.status.value,
+            "uptime_sec": self.snapshot().uptime_sec,
+        }
+        startup = self._startup_payload()
+        if startup is not None:
+            payload["startup"] = startup
+        await self._bus.publish(Event(type=EventType.STATUS, payload=payload))
 
     def _user_data_health(self, now: float) -> dict[str, float | bool]:
         """User-data freshness for ops UI.

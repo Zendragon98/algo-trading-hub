@@ -36,10 +36,24 @@ logger = logging.getLogger(__name__)
 
 # Binance Futures combined stream hard limit (streams count, not URL chars).
 _MAX_STREAMS_PER_CONNECTION = 1024
+# Many proxies / load balancers reject very long GET URLs; stay conservative.
+_MAX_STREAM_URL_CHARS = 3800
+
+
+def _stream_parts_for_symbols(symbols: list[str]) -> list[str]:
+    return [
+        f"{sym}@{kind}"
+        for sym in symbols
+        for kind in ("bookTicker", "aggTrade", "depth@100ms")
+    ]
+
+
+def _joined_stream_url_len(parts: list[str]) -> int:
+    return len("/".join(parts))
 
 
 def _shard_symbols_for_streams(symbols: list[str]) -> list[tuple[list[str], bool]]:
-    """Split ``symbols`` into chunks that fit under the 1024-stream cap.
+    """Split ``symbols`` into chunks that fit under stream-count and URL limits.
 
     Each symbol adds three streams (bookTicker, aggTrade, depth). ``!ticker@arr``
     lives on its own socket so a 1 Hz all-market array cannot starve depth pings.
@@ -51,11 +65,22 @@ def _shard_symbols_for_streams(symbols: list[str]) -> list[tuple[list[str], bool
 
     sym_cap = _MAX_STREAMS_PER_CONNECTION // 3
     chunks: list[tuple[list[str], bool]] = [([], True)]
-    pos = 0
-    while pos < len(symbols):
-        take = min(sym_cap, len(symbols) - pos)
-        chunks.append((symbols[pos : pos + take], False))
-        pos += take
+    chunk: list[str] = []
+    chunk_parts: list[str] = []
+    for sym in symbols:
+        sym_parts = _stream_parts_for_symbols([sym])
+        next_parts = chunk_parts + sym_parts
+        over_streams = len(next_parts) > sym_cap
+        over_url = _joined_stream_url_len(next_parts) > _MAX_STREAM_URL_CHARS
+        if chunk and (over_streams or over_url):
+            chunks.append((chunk, False))
+            chunk = []
+            chunk_parts = []
+            next_parts = sym_parts
+        chunk.append(sym)
+        chunk_parts = next_parts
+    if chunk:
+        chunks.append((chunk, False))
     return chunks
 
 
@@ -84,6 +109,10 @@ class MarketConnection:
         on_quote_volume_24h: QuoteVolume24hCallback | None = None,
         on_reconnect: MarketReconnectCallback | None = None,
     ) -> None:
+        # Idempotent: a retried engine.start() must not leave orphan shard tasks
+        # (duplicate "shard N connecting" / parallel reconnect resyncs).
+        await self.stop()
+
         self._symbols = [s.lower() for s in symbols]
         self._wanted = set(self._symbols)
         self._on_tick = on_tick
@@ -134,11 +163,7 @@ class MarketConnection:
         stream_parts: list[str] = []
         if include_ticker_arr:
             stream_parts.append("!ticker@arr")
-        stream_parts.extend(
-            f"{sym}@{kind}"
-            for sym in symbols
-            for kind in ("bookTicker", "aggTrade", "depth@100ms")
-        )
+        stream_parts.extend(_stream_parts_for_symbols(symbols))
         n_streams = len(stream_parts)
         if n_streams > _MAX_STREAMS_PER_CONNECTION:
             logger.error(
@@ -174,13 +199,10 @@ class MarketConnection:
                     backoff = 1.0
                     if self._shard_had_session.get(shard_id) and self._on_reconnect is not None:
                         shard_syms = [s.upper() for s in symbols]
-                        try:
-                            await self._on_reconnect(shard_syms)
-                        except Exception:  # noqa: BLE001
-                            logger.exception(
-                                "market_ws shard %d reconnect handler raised",
-                                shard_id,
-                            )
+                        asyncio.create_task(
+                            self._run_reconnect_handler(shard_id, shard_syms),
+                            name=f"binance-market-ws-{shard_id}-resync",
+                        )
                     self._shard_had_session[shard_id] = True
                     await self._read_loop(ws)
             except (ConnectionClosed, OSError) as exc:
@@ -192,6 +214,17 @@ class MarketConnection:
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
+
+    async def _run_reconnect_handler(self, shard_id: int, symbols: list[str]) -> None:
+        if self._on_reconnect is None:
+            return
+        try:
+            await self._on_reconnect(symbols)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "market_ws shard %d reconnect handler raised",
+                shard_id,
+            )
 
     async def _read_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         async for raw in ws:

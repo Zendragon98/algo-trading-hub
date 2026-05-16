@@ -23,6 +23,7 @@ from .schemas import (
     ExecutionStatsDTO,
     KpiDTO,
     LogDTO,
+    StartupProgressDTO,
     StrategyInfoDTO,
     OrdersDTO,
     ParentOrderDTO,
@@ -32,6 +33,28 @@ from .schemas import (
     SystemHealthDTO,
     TradeDTO,
 )
+
+
+def build_status_dto(engine: Engine) -> StatusDTO:
+    snap = engine.snapshot()
+    sp = engine.startup_progress
+    startup = (
+        StartupProgressDTO(
+            phase=sp.phase,
+            label=sp.label,
+            done=sp.done,
+            total=sp.total,
+            symbol=sp.symbol,
+        )
+        if sp is not None
+        else None
+    )
+    return StatusDTO(
+        status=snap.status.value,
+        uptime_sec=snap.uptime_sec,
+        paper_mode=not engine.settings.is_live,
+        startup=startup,
+    )
 
 
 def _fmt_ts(epoch: float) -> str:
@@ -180,11 +203,7 @@ def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
             strategies[0] if strategies else None,
         )
     return StateDTO(
-        status=StatusDTO(
-            status=snapshot.status.value,
-            uptime_sec=snapshot.uptime_sec,
-            paper_mode=not engine.settings.is_live,
-        ),
+        status=build_status_dto(engine),
         strategy=active_dto,
         strategies=strategies,
         kpi=KpiDTO(

@@ -278,18 +278,27 @@ class BinanceRestClient:
 
     async def fetch_24h_volumes(self, symbols: list[str]) -> dict[str, float]:
         """Return 24h quote-asset notional volume for each requested symbol."""
+        return {
+            sym: vol for sym, (vol, _) in (await self.fetch_24h_stats(symbols)).items()
+        }
+
+    async def fetch_24h_stats(
+        self, symbols: list[str]
+    ) -> dict[str, tuple[float, float]]:
+        """Return ``(quote_volume, last_price)`` per requested symbol."""
         wanted = {s.upper() for s in symbols}
         rows = await self.ticker_24hr()
-        out: dict[str, float] = {}
+        out: dict[str, tuple[float, float]] = {}
         for row in rows:
             sym = str(row.get("symbol", "")).upper()
             if sym not in wanted:
                 continue
             qv = row.get("quoteVolume")
-            if qv is None:
+            lp = row.get("lastPrice")
+            if qv is None or lp is None:
                 continue
             try:
-                out[sym] = float(qv)
+                out[sym] = (float(qv), float(lp))
             except (TypeError, ValueError):
                 continue
         return out

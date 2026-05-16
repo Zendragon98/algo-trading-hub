@@ -35,6 +35,7 @@ def test_sma_emits_only_on_crossovers() -> None:
         sma_fast_window=3,
         sma_slow_window=5,
         sma_qty=1.0,
+        sma_bar_interval_sec=0.0,
         sma_cooldown_sec=0,
     )
     strat = SmaCrossoverStrategy(settings)
@@ -110,6 +111,95 @@ def test_sma_bar_interval_samples_once_per_bar(monkeypatch) -> None:
     assert sigs[0].side is Side.SELL
 
 
+def test_sma_scan_heartbeat_logs_periodically(monkeypatch, caplog) -> None:
+    import logging
+
+    clock = [1_000_000.0]
+
+    def fake_time() -> float:
+        return clock[0]
+
+    monkeypatch.setattr(sma_mod.time, "time", fake_time)
+
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        sma_symbol="BTCUSDT",
+        sma_fast_window=2,
+        sma_slow_window=3,
+        sma_qty=1.0,
+        sma_bar_interval_sec=0.0,
+        sma_scan_log_interval_sec=10.0,
+        sma_cooldown_sec=0,
+    )
+    strat = SmaCrossoverStrategy(settings)
+
+    with caplog.at_level(logging.INFO):
+        caplog.clear()
+        list(strat.on_tick(_features(100.0)))
+        assert len([r for r in caplog.records if "SMA scan heartbeat" in r.message]) == 1
+
+        clock[0] += 5.0
+        list(strat.on_tick(_features(100.0)))
+        assert len([r for r in caplog.records if "SMA scan heartbeat" in r.message]) == 1
+
+        clock[0] += 6.0
+        for mid in (100.0, 100.0, 99.0, 99.0, 110.0):
+            list(strat.on_tick(_features(mid)))
+        heartbeats = [r for r in caplog.records if "SMA scan heartbeat" in r.message]
+        assert len(heartbeats) == 2
+        last = heartbeats[-1]
+        assert "universe=1" in last.message
+        assert "quoted=1" in last.message
+
+
+def test_sma_sizes_risk_across_universe() -> None:
+    """Portfolio risk budget is split evenly across configured symbols."""
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        sma_symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"],
+        sma_fast_window=2,
+        sma_slow_window=4,
+        sma_qty=0.001,
+        sma_risk_per_trade_pct=0.01,
+        default_stop_loss_pct=0.01,
+    )
+    strat = SmaCrossoverStrategy(settings)
+    strat.attach_equity_provider(lambda: 10_000.0)
+    qty_btc = strat._size_for(50_000.0)
+    # 10k equity, 1% portfolio budget / 4 symbols / 1% stop @ 50k mid
+    expected = (10_000.0 * 0.01 / 4) / 0.01 / 50_000.0
+    assert abs(qty_btc - expected) < 1e-9
+
+
+def test_sma_skips_sub_min_mid_price() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        sma_symbols=["PENNYUSDT"],
+        sma_fast_window=2,
+        sma_slow_window=3,
+        sma_qty=1.0,
+        sma_min_mid_price=0.01,
+        sma_cooldown_sec=0,
+    )
+    strat = SmaCrossoverStrategy(settings)
+    feats = {
+        "PENNYUSDT": Features(
+            symbol="PENNYUSDT",
+            mid=0.0005,
+            spread_bps=1.0,
+            micro_price=0.0005,
+            imbalance_topn=0.0,
+            bid_hit_ratio=0.5,
+            ask_hit_ratio=0.5,
+        )
+    }
+    for _ in range(20):
+        assert list(strat.on_tick(feats)) == []
+
+
 def test_sma_closes_long_before_short_entry() -> None:
     """A cross-down while long must reduce-only close before opening short."""
     settings = Settings(
@@ -119,6 +209,7 @@ def test_sma_closes_long_before_short_entry() -> None:
         sma_fast_window=3,
         sma_slow_window=5,
         sma_qty=1.0,
+        sma_bar_interval_sec=0.0,
         sma_cooldown_sec=0,
     )
     strat = SmaCrossoverStrategy(settings)

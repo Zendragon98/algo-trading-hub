@@ -12,9 +12,10 @@ closed bar per ``sma_bar_interval_sec`` (set e.g. to ``300`` for 5m bars
 so windows mean “bars”, not seconds — better when spread must be
 recovered over larger moves).
 
-Sizing is equity-budgeted: each entry risks ``sma_risk_per_trade_pct``
-of equity, sized via the per-leg stop loss (``default_stop_loss_pct``)
-so a stop-out costs the same dollar amount regardless of price level.
+Sizing is equity-budgeted: the portfolio budgets ``sma_risk_per_trade_pct``
+of equity across the full symbol universe (each leg gets an equal slice),
+sized via the per-leg stop loss (``default_stop_loss_pct``) so a simultaneous
+stop-out on every leg would lose about that budget, not N× the budget.
 A static ``sma_qty`` fallback is used while equity is unavailable
 (boot, REST hiccup) so the strategy can still smoke-test the OMS.
 
@@ -81,6 +82,7 @@ class SmaCrossoverStrategy(StrategyBase):
             raise ValueError("SMA_BAR_INTERVAL_SEC must be >= 0")
         self._state: dict[str, _SymbolState] = {}
         self._equity_provider: EquityProvider | None = None
+        self._last_scan_log_ts: float = 0.0
 
     @staticmethod
     def _resolve_universe(settings: Settings) -> list[str]:
@@ -118,24 +120,31 @@ class SmaCrossoverStrategy(StrategyBase):
         now = time.time()
         cooldown = float(self._settings.sma_cooldown_sec)
         signals: list[Signal] = []
+        quoted = warming = ready = in_cooldown = bullish = bearish = 0
 
         for symbol in self._symbols:
             feat = features.get(symbol)
             if feat is None or feat.mid is None or feat.mid <= 0:
                 continue
             mid = float(feat.mid)
+            if mid < float(self._settings.sma_min_mid_price):
+                continue
+            quoted += 1
             state = self._state_for(symbol)
             self._sync_open_side_from_position(state, symbol)
 
             if now - state.last_action_ts < cooldown:
+                in_cooldown += 1
                 self._push_sample(state, mid, now)
                 continue
 
             if not self._push_sample(state, mid, now):
                 continue
             if len(state.mids) < self._slow:
+                warming += 1
                 continue
 
+            ready += 1
             slow_avg = sum(state.mids) / self._slow
             fast_window = islice(state.mids, len(state.mids) - self._fast, len(state.mids))
             fast_avg = sum(fast_window) / self._fast
@@ -145,6 +154,11 @@ class SmaCrossoverStrategy(StrategyBase):
                 fast_above = state.prev_fast_above
             else:
                 fast_above = diff > 0
+
+            if fast_above:
+                bullish += 1
+            else:
+                bearish += 1
 
             if state.prev_fast_above is None:
                 state.prev_fast_above = fast_above
@@ -193,7 +207,56 @@ class SmaCrossoverStrategy(StrategyBase):
             )
             signals.append(sig)
 
+        self._maybe_log_scan_heartbeat(
+            now=now,
+            quoted=quoted,
+            warming=warming,
+            ready=ready,
+            in_cooldown=in_cooldown,
+            bullish=bullish,
+            bearish=bearish,
+            signal_count=len(signals),
+        )
         return signals
+
+    def _maybe_log_scan_heartbeat(
+        self,
+        *,
+        now: float,
+        quoted: int,
+        warming: int,
+        ready: int,
+        in_cooldown: int,
+        bullish: int,
+        bearish: int,
+        signal_count: int,
+    ) -> None:
+        interval = float(self._settings.sma_scan_log_interval_sec)
+        if interval <= 0:
+            return
+        if self._last_scan_log_ts > 0 and now - self._last_scan_log_ts < interval:
+            return
+        self._last_scan_log_ts = now
+        sample_mode = (
+            f"bar={int(self._bar_interval_sec)}s"
+            if self._bar_interval_sec > 0
+            else "tick=1Hz"
+        )
+        logger.info(
+            "SMA scan heartbeat: universe=%d quoted=%d ready=%d warming=%d "
+            "cooldown=%d bullish=%d bearish=%d %s fast=%d slow=%d signals=%d",
+            len(self._symbols),
+            quoted,
+            ready,
+            warming,
+            in_cooldown,
+            bullish,
+            bearish,
+            sample_mode,
+            self._fast,
+            self._slow,
+            signal_count,
+        )
 
     def _push_sample(self, state: _SymbolState, mid: float, now: float) -> bool:
         if self._bar_interval_sec <= 0:
@@ -234,7 +297,8 @@ class SmaCrossoverStrategy(StrategyBase):
             return float(self._settings.sma_qty)
         if equity <= 0:
             return float(self._settings.sma_qty)
-        risk_pct = float(self._settings.sma_risk_per_trade_pct)
+        universe_n = max(1, len(self._symbols))
+        risk_pct = float(self._settings.sma_risk_per_trade_pct) / universe_n
         stop_pct = float(self._settings.default_stop_loss_pct)
         if risk_pct <= 0 or stop_pct <= 0 or mid <= 0:
             return float(self._settings.sma_qty)

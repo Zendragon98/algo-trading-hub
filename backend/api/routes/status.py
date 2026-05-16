@@ -12,19 +12,14 @@ from engine.core.engine import Engine
 
 from ..dependencies import get_engine
 from ..schemas import EquityDTO, StateDTO, StatusDTO
-from ..serializers import snapshot_to_state_dto
+from ..serializers import build_status_dto, snapshot_to_state_dto
 
 router = APIRouter(prefix="/api", tags=["status"])
 
 
 @router.get("/status", response_model=StatusDTO)
 def status(engine: Engine = Depends(get_engine)) -> StatusDTO:
-    snap = engine.snapshot()
-    return StatusDTO(
-        status=snap.status.value,
-        uptime_sec=snap.uptime_sec,
-        paper_mode=not engine.settings.is_live,
-    )
+    return build_status_dto(engine)
 
 
 @router.get("/equity", response_model=EquityDTO)

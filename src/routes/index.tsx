@@ -8,6 +8,7 @@ import {
   Download,
   Gauge,
   ListOrdered,
+  Loader2,
   Pause,
   Play,
   Power,
@@ -37,6 +38,7 @@ import { SettingsDialog } from "@/components/algo/SettingsDialog";
 import type {
   AlgoStatus,
   BreakerList,
+  StartupProgress,
   BreakerStatus,
   ExecutionAggregate,
   ExecutionParent,
@@ -100,6 +102,8 @@ type ClosedTradePerfVm = {
 function Index() {
   const live = useAlgoStream();
   const status: AlgoStatus = live.status;
+  const startupProgress = live.startupProgress;
+  const bookResyncProgress = live.bookResyncProgress;
   const paperMode: boolean = live.paperMode;
   const strategy: StrategyInfo | null = live.strategy;
   const strategies: StrategyInfo[] = live.strategies;
@@ -138,6 +142,7 @@ function Index() {
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [controlPending, setControlPending] = useState<"start" | null>(null);
 
   useEffect(() => {
     if (riskHydrated.current || maxRiskPct <= 0) return;
@@ -257,7 +262,21 @@ function Index() {
     });
   };
 
-  const onStart = () => handleControl(api.start);
+  const onStart = () => {
+    if (status === "running" || status === "starting" || controlPending === "start") return;
+    setControlPending("start");
+    handleControl(() =>
+      api.start().finally(() => {
+        setControlPending(null);
+      }),
+    );
+  };
+
+  useEffect(() => {
+    if (controlPending === "start" && (status === "starting" || status === "running")) {
+      setControlPending(null);
+    }
+  }, [controlPending, status]);
   const onPause = () => handleControl(api.pause);
   const onStop = () => handleControl(api.stop);
   const onKill = () => {
@@ -326,10 +345,29 @@ function Index() {
     }
   };
 
-  const startDisabled = backendReachable && status === "running";
+  const systemBusy =
+    status === "starting" || controlPending === "start" || bookResyncProgress != null;
+  const startDisabled =
+    !backendReachable || status === "running" || systemBusy;
 
   return (
     <div className="min-h-screen text-foreground">
+      {(startupProgress || bookResyncProgress || controlPending === "start") && (
+        <StartupProgressBanner
+          progress={
+            startupProgress ??
+            bookResyncProgress ?? {
+              phase: "connect",
+              label: "Starting engine…",
+              done: 0,
+              total: 0,
+              symbol: null,
+            }
+          }
+          variant={status === "starting" || controlPending === "start" ? "startup" : "resync"}
+        />
+      )}
+
       {!backendReachable && backendError && (
         <div
           role="alert"
@@ -349,6 +387,7 @@ function Index() {
         paperMode={paperMode}
         strategy={strategy}
         backendReachable={backendReachable}
+        controlsBusy={systemBusy}
         startDisabled={startDisabled}
         onStart={onStart}
         onPause={onPause}
@@ -548,11 +587,16 @@ function Index() {
                   disabled={startDisabled}
                   className="bg-bull text-bull-foreground hover:bg-bull/90 disabled:opacity-40"
                 >
-                  <Play className="size-4" /> START
+                  {systemBusy ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Play className="size-4" />
+                  )}{" "}
+                  {systemBusy ? "STARTING…" : "START"}
                 </Button>
                 <Button
                   onClick={onPause}
-                  disabled={status !== "running"}
+                  disabled={status !== "running" || systemBusy}
                   variant="secondary"
                   className="border border-border"
                 >
@@ -560,7 +604,7 @@ function Index() {
                 </Button>
                 <Button
                   onClick={onStop}
-                  disabled={status === "stopped"}
+                  disabled={status === "stopped" || systemBusy}
                   variant="destructive"
                 >
                   <Square className="size-4" /> STOP
@@ -697,12 +741,66 @@ function Index() {
 
 /* ────────────────── pieces ────────────────── */
 
+function StartupProgressBanner(props: {
+  progress: StartupProgress;
+  variant: "startup" | "resync";
+}) {
+  const { progress, variant } = props;
+  const pct =
+    progress.total > 0
+      ? Math.min(100, Math.round((progress.done / progress.total) * 100))
+      : null;
+  const detail =
+    progress.symbol && progress.total > 0
+      ? `${progress.symbol} · ${progress.done}/${progress.total}`
+      : progress.total > 0
+        ? `${progress.done}/${progress.total}`
+        : null;
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={cn(
+        "border-b px-4 py-2.5 lg:px-8",
+        variant === "startup"
+          ? "border-warning/40 bg-warning/10"
+          : "border-muted-foreground/30 bg-muted/30",
+      )}
+    >
+      <div className="mx-auto flex max-w-[1500px] flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-2 text-xs">
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-warning" />
+          <span className="font-medium uppercase tracking-wider text-warning">
+            {variant === "startup" ? "Starting" : "Market data"}
+          </span>
+          <span className="truncate text-foreground">{progress.label}</span>
+          {detail && (
+            <span className="shrink-0 tabular-nums text-muted-foreground">{detail}</span>
+          )}
+        </div>
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-background/60 sm:max-w-xs">
+          {pct != null ? (
+            <div
+              className="h-full rounded-full bg-warning transition-[width] duration-300"
+              style={{ width: `${pct}%` }}
+            />
+          ) : (
+            <div className="h-full w-1/3 animate-pulse rounded-full bg-warning/70" />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TopBar(props: {
   status: AlgoStatus;
   uptimeSec: number;
   paperMode: boolean;
   strategy: StrategyInfo | null;
   backendReachable: boolean;
+  controlsBusy: boolean;
   startDisabled: boolean;
   onStart: () => void;
   onPause: () => void;
@@ -716,6 +814,7 @@ function TopBar(props: {
     running: { label: "RUNNING", color: "text-bull", dot: "bg-bull glow-bull" },
     paused: { label: "PAUSED", color: "text-warning", dot: "bg-warning" },
     stopped: { label: "STOPPED", color: "text-bear", dot: "bg-bear glow-bear" },
+    starting: { label: "STARTING", color: "text-warning", dot: "bg-warning pulse-dot" },
   }[status];
 
   const h = Math.floor(uptimeSec / 3600);
@@ -767,7 +866,12 @@ function TopBar(props: {
               <Settings2 className="size-4" /> Settings
             </Button>
           )}
-          <Button size="sm" variant="ghost" onClick={props.onPause} disabled={status !== "running"}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={props.onPause}
+            disabled={status !== "running" || props.controlsBusy}
+          >
             <Pause className="size-4" />
           </Button>
           <Button
@@ -776,13 +880,18 @@ function TopBar(props: {
             disabled={props.startDisabled}
             className="bg-bull text-bull-foreground hover:bg-bull/90"
           >
-            <Play className="size-4" /> Start
+            {props.controlsBusy ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Play className="size-4" />
+            )}{" "}
+            {props.controlsBusy ? "Starting…" : "Start"}
           </Button>
           <Button
             size="sm"
             variant="outline"
             onClick={props.onHaltTrading}
-            disabled={!props.backendReachable || status === "stopped"}
+            disabled={!props.backendReachable || status === "stopped" || props.controlsBusy}
             className="border-warning/50 text-warning hover:bg-warning/10"
           >
             <AlertTriangle className="size-4" /> Halt

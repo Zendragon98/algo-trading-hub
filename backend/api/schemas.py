@@ -40,12 +40,21 @@ class LogDTO(BaseModel):
     msg: str
 
 
+class StartupProgressDTO(BaseModel):
+    phase: str
+    label: str
+    done: int = 0
+    total: int = 0
+    symbol: str | None = None
+
+
 class StatusDTO(BaseModel):
-    status: Literal["running", "paused", "stopped"]
+    status: Literal["running", "paused", "stopped", "starting"]
     uptime_sec: float
     # Mirrors `Settings.trading_mode`; the dashboard renders a PAPER badge
     # when this is true so the operator never confuses a paper run with live.
     paper_mode: bool = False
+    startup: StartupProgressDTO | None = None
 
 
 class StrategyInfoDTO(BaseModel):

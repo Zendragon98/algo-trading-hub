@@ -115,12 +115,27 @@ async def _run() -> None:
                     )
                 if sma_auto:
                     sma_universe = discover_usdt_perps(info)
+                    stats = await rest.fetch_24h_stats(sma_universe)
+                    min_px = float(settings.sma_min_mid_price)
+                    if min_px > 0:
+                        before = len(sma_universe)
+                        sma_universe = [
+                            s
+                            for s in sma_universe
+                            if stats.get(s, (0.0, 0.0))[1] >= min_px
+                        ]
+                        dropped = before - len(sma_universe)
+                        if dropped:
+                            logger.info(
+                                "SMA_SYMBOLS filtered %d symbols below min mid %.4f",
+                                dropped,
+                                min_px,
+                            )
                     cap = int(settings.sma_max_symbols)
                     if cap > 0 and len(sma_universe) > cap:
-                        vols = await rest.fetch_24h_volumes(sma_universe)
                         sma_universe = sorted(
                             sma_universe,
-                            key=lambda s: vols.get(s, 0.0),
+                            key=lambda s: stats.get(s, (0.0, 0.0))[0],
                             reverse=True,
                         )[:cap]
                         logger.info(

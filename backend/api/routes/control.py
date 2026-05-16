@@ -23,6 +23,7 @@ from ..schemas import (
     RiskUpdateDTO,
     StatusDTO,
 )
+from ..serializers import build_status_dto
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +39,7 @@ router = APIRouter(prefix="/api/control", tags=["control"])
 
 
 def _status(engine: Engine) -> StatusDTO:
-    snap = engine.snapshot()
-    return StatusDTO(
-        status=snap.status.value,
-        uptime_sec=snap.uptime_sec,
-        paper_mode=not engine.settings.is_live,
-    )
+    return build_status_dto(engine)
 
 
 def _breaker_dto(status: BreakerStatus) -> BreakerStatusDTO:
@@ -71,7 +67,9 @@ async def _run_or_500(action: str, fn: Callable[[], Awaitable[T]]) -> T:
 @router.post("/start", response_model=StatusDTO)
 async def start(engine: Engine = Depends(get_engine)) -> StatusDTO:
     async def _go() -> None:
-        if engine.status.value == "stopped":
+        if engine.status is EngineStatus.STARTING:
+            return
+        if engine.status is EngineStatus.STOPPED:
             await engine.start()
         else:
             await engine.resume()

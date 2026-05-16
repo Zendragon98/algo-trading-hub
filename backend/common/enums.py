@@ -86,6 +86,7 @@ class EngineStatus(str, Enum):
     RUNNING = "running"
     PAUSED = "paused"
     STOPPED = "stopped"
+    STARTING = "starting"
 
 
 class LogLevel(str, Enum):

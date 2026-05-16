@@ -19,12 +19,14 @@ import {
   type KpiDTO,
   type PositionDTO,
   type StateDTO,
+  type StartupProgressDTO,
   type StatusEventData,
   type WsEvent,
 } from "@/lib/api";
 import type {
   AlgoStatus,
   BreakerList,
+  StartupProgress,
   ExecutionAggregate,
   ExecutionParent,
   LogEntry,
@@ -47,6 +49,10 @@ export const PERFORMANCE_TRADE_HISTORY_CAP = 200;
 
 export type AlgoStream = {
   status: AlgoStatus;
+  /** Engine boot progress (status === "starting"). */
+  startupProgress: StartupProgress | null;
+  /** L2 book REST resync after market WS reconnect (engine may still be running). */
+  bookResyncProgress: StartupProgress | null;
   paperMode: boolean;
   uptimeSec: number;
   strategy: StrategyInfo | null;
@@ -109,8 +115,20 @@ const EMPTY_KPI: KpiDTO = {
   session_close_breakevens: 0,
 };
 
+function toStartupProgress(d: StartupProgressDTO): StartupProgress {
+  return {
+    phase: d.phase,
+    label: d.label,
+    done: d.done,
+    total: d.total,
+    symbol: d.symbol,
+  };
+}
+
 const EMPTY: AlgoStream = {
   status: "stopped",
+  startupProgress: null,
+  bookResyncProgress: null,
   paperMode: false,
   uptimeSec: 0,
   strategy: null,
@@ -214,6 +232,8 @@ function applyBackendOffline(prev: AlgoStream, message?: string): AlgoStream {
     connected: false,
     backendReachable: false,
     status: "stopped",
+    startupProgress: null,
+    bookResyncProgress: null,
     error: message ?? prev.error ?? BACKEND_OFFLINE_MSG,
   };
 }
@@ -223,6 +243,8 @@ function applyTradingState(prev: AlgoStream, state: StateDTO): AlgoStream {
     ...prev,
     backendReachable: true,
     status: state.status.status,
+    startupProgress: state.status.startup ? toStartupProgress(state.status.startup) : null,
+    bookResyncProgress: state.status.status === "starting" ? null : prev.bookResyncProgress,
     paperMode: state.status.paper_mode,
     uptimeSec: Math.floor(state.status.uptime_sec),
     strategy: state.strategy ? toStrategyInfo(state.strategy) : null,
@@ -510,7 +532,37 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
           ...prev,
           status: data.status,
           uptimeSec: Math.floor(data.uptime_sec ?? prev.uptimeSec),
+          startupProgress:
+            data.status === "starting" && data.startup
+              ? toStartupProgress(data.startup)
+              : data.status === "starting"
+                ? prev.startupProgress
+                : null,
+          bookResyncProgress: data.status === "starting" ? null : prev.bookResyncProgress,
         };
+      } else if (data.startup) {
+        next = {
+          ...next,
+          startupProgress: toStartupProgress(data.startup),
+        };
+      }
+
+      if (data.kind === "book_resync") {
+        if (data.clear) {
+          return { ...next, bookResyncProgress: null };
+        }
+        if (data.label && data.phase) {
+          return {
+            ...next,
+            bookResyncProgress: {
+              phase: data.phase,
+              label: data.label,
+              done: Number(data.done ?? 0),
+              total: Number(data.total ?? 0),
+              symbol: data.symbol ?? null,
+            },
+          };
+        }
       }
 
       if (data.replay_summary) {
