@@ -134,6 +134,16 @@ class Portfolio:
     def session_start_equity(self) -> float:
         return self._session_start_equity
 
+    def reanchor_session_start_equity_after_drawdown_rearm(self) -> None:
+        """Set session drawdown baseline to current equity (operator ``max_drawdown`` rearm).
+
+        Without this, ``PnLTracker.drawdown_pct`` re-trips on the next tick
+        while equity is still below the original session-start snapshot.
+        """
+        eq = self.snapshot().equity
+        self._session_start_equity = eq
+        logger.info("session_start_equity re-anchored after drawdown rearm: %.2f", eq)
+
     @property
     def cash(self) -> float:
         """Single-number cash view in ``base_currency`` units.

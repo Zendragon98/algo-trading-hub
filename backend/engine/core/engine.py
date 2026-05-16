@@ -40,7 +40,7 @@ from ..market_data.feature_store import FeatureStore
 from ..market_data.orderbook import OrderBookStore
 from ..market_data.trade_tape import TradeTape
 from ..orders.order_manager import OrderManager, new_client_order_id, _fill_to_dict
-from ..performance.fill_classification import classify_fill
+from ..performance.fill_classification import FillClassification, classify_fill
 from ..performance.performance_tracker import PerformanceTracker
 from ..portfolio.portfolio import Portfolio
 from ..position.position_tracker import PositionTracker
@@ -300,6 +300,10 @@ class Engine:
         # True while an auto-flatten is dispatched in response to a
         # MAJOR engine breach; prevents duplicate flattens stacking up.
         self._auto_flatten_in_progress: bool = False
+        # After a successful auto-flatten, MAJOR latched breaches persist until
+        # re-arm; without this we'd re-run ``flatten()`` every heartbeat (spam
+        # logs + venue churn). Cleared when ENGINE scope is no longer blocked.
+        self._latched_major_flatten_done: bool = False
         # Futures venues: symbols we've already POSTed configured leverage for
         # this session (lazy — avoids N REST calls at startup for every subscribe).
         self._leverage_applied_symbols: set[str] = set()
@@ -396,6 +400,29 @@ class Engine:
             normalised,
             sym_n,
         )
+
+    def apply_breaker_rearm_side_effects(self, cleared_codes: set[str]) -> None:
+        """Reset subsystem baselines when operator rearms latched breakers.
+
+        Clearing the :class:`CircuitBreaker` alone is not enough for breaching
+        conditions derived from streaks, drawdown anchors, or rolling TCA
+        windows — those would re-trip on the next heartbeat.
+
+        ``cleared_codes`` is the set of breach codes removed by this rearm
+        (``active before`` minus ``active after``).
+        """
+        if not cleared_codes:
+            return
+        if "consecutive_losses" in cleared_codes:
+            self._loss_tracker.clear_streak_after_rearm()
+        if "daily_loss" in cleared_codes:
+            self._loss_tracker.reanchor_daily_baseline_after_rearm()
+        if "max_drawdown" in cleared_codes:
+            self._portfolio.reanchor_session_start_equity_after_drawdown_rearm()
+        if "hwm_drawdown" in cleared_codes:
+            self._pnl.reanchor_hwm_after_drawdown_rearm()
+        if "exec_quality" in cleared_codes:
+            self._exec_tracker.clear_completed_history_after_rearm()
 
     def apply_settings_patch(self, patch: dict[str, Any]) -> Settings:
         """Merge ``patch`` into runtime ``Settings`` and refresh subsystems.
@@ -940,6 +967,21 @@ class Engine:
                 return
             logger.warning("flatten market failed %s: %s", symbol, exc)
 
+    def _is_emergency_flatten_fill(self, fill: Fill) -> bool:
+        """True for reduce-only unwind parents (auto-/operator-flatten path).
+
+        VWAP/market slices from those parents must not advance the
+        consecutive-loss streak — a single flatten can emit many closes
+        that would otherwise instantly re-trip ``consecutive_losses``.
+        """
+        pid = fill.parent_id or ""
+        if pid.startswith("P-flat-"):
+            return True
+        parent = self._oms.parent(pid) if pid else None
+        if parent is None:
+            return False
+        return parent.notes in ("flatten", "flatten_passive")
+
     async def flatten(self) -> None:
         """Cancel working orders + close all venue positions (market or VWAP)."""
         if self._auto_flatten_in_progress:
@@ -1003,7 +1045,6 @@ class Engine:
             )
         )
         if flatten:
-            self._auto_flatten_in_progress = True
             try:
                 try:
                     await self._gateway.cancel_all_open_orders()
@@ -1143,6 +1184,13 @@ class Engine:
             return
         pre_position = self._positions.get(fill.symbol)
         classification = classify_fill(pre_position, fill)
+        if self._is_emergency_flatten_fill(fill):
+            classification = FillClassification(
+                action=classification.action,
+                entry_price=classification.entry_price,
+                exit_price=classification.exit_price,
+                pnl=None,
+            )
         # Binance ACCOUNT_UPDATE already carries authoritative ``pa``; applying
         # the same ORDER_TRADE_UPDATE fill doubles qty when events arrive out
         # of order (ACCOUNT_UPDATE first — observed on CRVUSDC).
@@ -1354,6 +1402,7 @@ class Engine:
     async def _maybe_flatten_for_breaker(self) -> None:
         if not self._breaker.is_blocked(BreakerScope.ENGINE):
             self._auto_flatten_in_progress = False
+            self._latched_major_flatten_done = False
             return
         if self._auto_flatten_in_progress:
             return
@@ -1362,12 +1411,16 @@ class Engine:
         active = [s for s in self._breaker.active() if s.scope is BreakerScope.ENGINE]
         if not any(s.severity is BreakerSeverity.MAJOR for s in active):
             return
+        if self._latched_major_flatten_done:
+            return
         codes = ",".join(s.code for s in active)
         logger.error("auto-flatten triggered by engine breaker(s): %s", codes)
         try:
             await self.flatten()
         except Exception:  # noqa: BLE001
             logger.exception("auto-flatten failed")
+        else:
+            self._latched_major_flatten_done = True
 
     async def _evaluate_exits(self) -> None:
         positions = self._positions.all()

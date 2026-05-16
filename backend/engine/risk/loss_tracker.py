@@ -169,3 +169,30 @@ class LossTracker:
     @property
     def consecutive_losses(self) -> int:
         return self._current_streak
+
+    def clear_streak_after_rearm(self) -> None:
+        """Reset the loss streak after operator rearms ``consecutive_losses``.
+
+        Without this, ``_check_streak`` would re-trip on the very next tick
+        because ``_current_streak`` still exceeds ``max_consecutive_losses``
+        even though the latched breach was cleared.
+        """
+        if self._current_streak == 0:
+            return
+        self._current_streak = 0
+        logger.info("consecutive-loss streak cleared (breaker rearm)")
+
+    def reanchor_daily_baseline_after_rearm(self, now: float | None = None) -> None:
+        """Reset today's daily-loss reference to current equity (operator rearm).
+
+        Otherwise ``_check_daily_loss`` immediately re-trips with the same
+        equity shortfall vs the previous UTC-day anchor.
+        """
+        ts = now if now is not None else _time.time()
+        day_start = _utc_day_start(ts)
+        equity = self._portfolio.snapshot().equity
+        self._anchor = _DailyAnchor(day_start_ts=day_start, equity_at_open=equity)
+        logger.info(
+            "daily_loss baseline re-anchored after rearm: anchor_equity=%.2f",
+            equity,
+        )

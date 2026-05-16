@@ -536,7 +536,7 @@ Dashboard **Flatten all positions** calls `POST /api/control/flatten`, which run
 | Large notional + tight spread (≥ `FLATTEN_VWAP_MIN_NOTIONAL_USD`, spread ≤ `FLATTEN_PASSIVE_SPREAD_BPS`) | **Passive VWAP** — `flatten_passive` schedule (`FLATTEN_VWAP_SLICES` / `FLATTEN_VWAP_DURATION_SEC`), limit pegs, market fallback |
 | Otherwise | **Aggressive VWAP** — short urgent schedule (`URGENT_*` slices), market fallback |
 
-If VWAP submit is rejected by `SubmitGuard`, the engine falls back to market for that symbol. Binance `-2022` (reduce-only rejected, already flat) is logged as a warning, not a hard failure. Loss-tracker updates are suppressed during flatten so partial closes do not immediately re-trip `consecutive_losses` mid-flatten.
+If VWAP submit is rejected by `SubmitGuard`, the engine falls back to market for that symbol. Binance `-2022` (reduce-only rejected, already flat) is logged as a warning, not a hard failure. Loss-tracker updates are suppressed during flatten so partial closes do not immediately re-trip `consecutive_losses` mid-flatten. Fills from emergency flatten parents (`P-flat-*` market clawbacks and router parents with `flatten` / `flatten_passive` notes) are still journaled to the trades table but omit realised PnL so they do not advance the consecutive-loss streak once flatten completes.
 
 `engine.stop()` still uses the same flatten path when `FLATTEN_ON_STOP=true`.
 
@@ -621,7 +621,7 @@ Operator endpoints:
 ```
 GET  /api/control/breakers                    # active + history
 POST /api/control/breakers/trip               # body: {detail?, flatten?, pause?}; operator halt
-POST /api/control/breakers/rearm              # body: {code?, target?}; clears latched majors
+POST /api/control/breakers/rearm              # body: {code?, target?}; clears latched majors (also resets consecutive-loss *streak* when that code is cleared)
 ```
 
 The dashboard **Halt** button calls `breakers/trip` (trading halt + flatten + pause). **Kill** calls `shutdown` and exits the Python process — it is not the trading kill switch.

@@ -73,3 +73,16 @@ class PnLTracker:
     @property
     def hwm(self) -> float:
         return self._hwm or 0.0
+
+    def reanchor_hwm_after_drawdown_rearm(self) -> None:
+        """Set HWM to current equity (operator ``hwm_drawdown`` rearm).
+
+        Otherwise ``hwm_drawdown_pct`` immediately exceeds the kill threshold
+        again while equity remains below the previous peak.
+        """
+        equity = self._portfolio.snapshot().equity
+        if equity <= 0:
+            logger.info("HWM re-arm skipped: non-positive equity")
+            return
+        self._hwm = equity
+        logger.info("HWM re-anchored after rearm: %.2f", equity)

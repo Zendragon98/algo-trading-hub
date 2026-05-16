@@ -157,6 +157,17 @@ class ExecutionTracker:
         # Newest first; matches the dashboard's expectation.
         return list(reversed(self._history))
 
+    def clear_completed_history_after_rearm(self) -> None:
+        """Drop completed execution reports so ``exec_quality`` can re-arm fresh.
+
+        Called when the operator rearms ``exec_quality``; the rolling slippage
+        window would otherwise re-trip on the next evaluation.
+        """
+        n = len(self._history)
+        self._history.clear()
+        if n:
+            logger.info("cleared %d execution report(s) from history (exec_quality rearm)", n)
+
     def aggregate(self) -> dict[str, float]:
         """Aggregate stats across the completed history."""
         completed = self._history

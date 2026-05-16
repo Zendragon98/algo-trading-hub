@@ -54,6 +54,29 @@ def test_consecutive_losses_trip_major_breach() -> None:
     assert breaker.is_blocked(BreakerScope.ENGINE)
 
 
+def test_rearm_consecutive_losses_must_reset_streak_to_avoid_instant_retrip() -> None:
+    portfolio = _portfolio(1000.0)
+    perf = PerformanceTracker(portfolio)
+    breaker = CircuitBreaker()
+    lt = LossTracker(
+        portfolio=portfolio, performance=perf, breaker=breaker,
+        daily_loss_kill_pct=0.0, max_consecutive_losses=3,
+    )
+    for i in range(3):
+        _record_pnl(perf, -10.0, idx=i)
+    lt.update()
+    assert breaker.is_blocked(BreakerScope.ENGINE)
+    breaker.rearm(code="consecutive_losses")
+    assert not breaker.is_blocked(BreakerScope.ENGINE)
+    # Without streak reset, identical history would immediately re-trip:
+    lt.update()
+    assert breaker.is_blocked(BreakerScope.ENGINE)
+    breaker.rearm(code="consecutive_losses")
+    lt.clear_streak_after_rearm()
+    lt.update()
+    assert not breaker.is_blocked(BreakerScope.ENGINE)
+
+
 def test_winning_trade_resets_streak() -> None:
     portfolio = _portfolio(1000.0)
     perf = PerformanceTracker(portfolio)

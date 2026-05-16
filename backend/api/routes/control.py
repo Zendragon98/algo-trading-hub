@@ -177,9 +177,18 @@ async def rearm_breakers(
         - ``code`` filters to one breach code (e.g. ``max_drawdown``)
         - ``target`` filters to one symbol / parent id
         - both omitted -> clears every active breach
+
+    When a latched breach is cleared, the engine resets any dependent risk
+    baseline (loss streak, daily anchor, session / HWM drawdown, execution
+    history) so the same condition does not immediately re-latch on the next
+    heartbeat.
     """
     breaker = engine.risk.breaker
+    before = {s.code for s in breaker.active()}
     breaker.rearm(code=body.code, target=body.target)
+    cleared = before - {s.code for s in breaker.active()}
+    if cleared:
+        engine.apply_breaker_rearm_side_effects(cleared)
     return BreakerListDTO(
         active=[_breaker_dto(s) for s in breaker.active()],
         history=[_breaker_dto(s) for s in breaker.history()],

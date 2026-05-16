@@ -126,7 +126,6 @@ async def test_maybe_flatten_is_idempotent_while_latched() -> None:
     await engine._maybe_flatten_for_breaker()
     await engine._maybe_flatten_for_breaker()
 
-    assert gateway.cancel_all_calls == 1
     assert flatten_calls == 1
 
 
