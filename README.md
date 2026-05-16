@@ -159,17 +159,29 @@ flowchart TB
     FS --> C3
 ```
 
-**Editable source:** [`backend/docs/architecture-tick.mmd`](backend/docs/architecture-tick.mmd)
+**Per-tick diagram — source:** [`backend/docs/architecture-tick.mmd`](backend/docs/architecture-tick.mmd)
 
 ### Events, persistence, and UI stream
 
+**Events diagram — source:** [`backend/docs/architecture-events.mmd`](backend/docs/architecture-events.mmd)
+
 ```mermaid
 flowchart LR
-    ENG[Engine + OMS + Portfolio] --> BUS[EventBus]
-    BUS --> WAL[WAL journal]
-    BUS --> REC[Run recorder *.jsonl]
-    BUS --> WSS[WebSocket /ws]
-    WSS --> UI[React dashboard]
+    subgraph Produce["Publishers"]
+        ENG["Engine · OMS · portfolio · risk"]
+    end
+    BUS["EventBus"]
+    subgraph Sink["Persistence + delivery"]
+        WAL["WAL journal"]
+        REC["Per-run JSONL"]
+        WSS["WebSocket /ws"]
+    end
+    UI["React dashboard"]
+    ENG --> BUS
+    BUS --> WAL
+    BUS --> REC
+    BUS --> WSS
+    WSS --> UI
 ```
 
 | `EventType` | Archive file | UI use |
@@ -183,8 +195,6 @@ flowchart LR
 | `STATUS` | `status.jsonl` | Engine state · latency metrics |
 | `BREAKER` | `breakers.jsonl` | Breaker audit |
 | `LOG` | `logs.jsonl` | Log panel |
-
-**Editable source:** [`backend/docs/architecture-events.mmd`](backend/docs/architecture-events.mmd)
 
 ### Position sync: venue → engine → dashboard
 
@@ -262,21 +272,24 @@ Hot-swap: `POST /api/control/strategy` with `{ "name": "pairs_trading" }` (or `s
 |---|-------|-------|----------------|
 | 0 | **Venue** | Binance REST + WS | Orders, balances, market data |
 | 1 | **Gateway** | `backend/gateways/` | `GatewayInterface` · signing · reconnect · filters |
-| 2 | **Platform** | `common/`, `persistence/` | Config, `EventBus`, WAL, run archives, `/health` |
-| 3 | **Market data** | `engine/market_data/` | L2 book, tape, features, data-quality guards |
-| 4 | **Strategy** | `engine/strategies/`, `analytics/` | Live signals; offline calibration |
-| 5 | **Risk** | `engine/risk/`, `portfolio/`, `position/` | Pre-trade, monitors, circuit breakers |
-| 6 | **Execution** | `engine/execution/`, `engine/orders/` | Wheel, VWAP, OMS, TCA |
+| 2 | **Platform** | `backend/common/`, `backend/engine/persistence/` | Config, `EventBus`, WAL, run bootstrap & JSONL archives |
+| 3 | **Market data** | `backend/engine/market_data/` | L2 book, tape, features, data-quality guards |
+| 4 | **Strategy** | `backend/engine/strategies/`, `backend/analytics/` | Live signals; offline calibration |
+| 5 | **Risk** | `backend/engine/risk/`, `backend/engine/portfolio/`, `backend/engine/position/` | Pre-trade, monitors, circuit breakers |
+| 6 | **Execution** | `backend/engine/execution/`, `backend/engine/orders/` | Wheel, VWAP, OMS, TCA |
 | 7 | **API & UI** | `backend/api/`, `src/` | REST, WebSocket, React console |
 
-Dependency rule: `common/` ← `gateways/` + `engine/` ← `api/` + `analytics/`. Cross-module coupling is **only** through `EventBus`.
+Dependency rule: `backend/common/` ← `backend/gateways/` + `backend/engine/` ← `backend/api/` + `backend/analytics/`. Cross-module coupling is **only** through `EventBus`.
 
 ---
 
 ## Repository layout
 
+Paths below are from the **repo root** (`algo-trading-hub/`). Build artefacts (`dist/`, `node_modules/`, `.venv/`) are omitted.
+
 ```
 algo-trading-hub/
+├── docs/                         # Operations, security, compliance (see docs/README.md)
 ├── src/                          # React dashboard (TanStack Start)
 │   ├── routes/index.tsx          # Main trading console
 │   ├── hooks/useAlgoStream.ts    # REST hydrate + WebSocket + resync policy
@@ -284,19 +297,33 @@ algo-trading-hub/
 │   └── components/algo/
 │       ├── types.ts              # View models (mirror backend/api/schemas.py)
 │       ├── EquityChart.tsx
+│       ├── PositionChartDialog.tsx
 │       └── SettingsDialog.tsx
 ├── backend/                      # Python engine + API
 │   ├── main.py                   # Entry: engine + uvicorn
-│   ├── engine/                   # Strategy-agnostic core
-│   ├── gateways/                 # Venue adapters (Binance production, IBKR skeleton)
+│   ├── common/                   # Settings, EventBus, shared types
+│   ├── engine/                   # Strategy-agnostic core (incl. persistence/, market_data/, …)
+│   ├── gateways/                 # Venue adapters (Binance, IBKR skeleton)
 │   ├── api/                      # FastAPI routes + /ws
-│   ├── analytics/                # Offline calibration (parquet, pair stats, wheel thresholds)
+│   ├── analytics/                # Offline calibration
+│   ├── scripts/                  # Optional tooling (e.g. live strategy harnesses)
 │   ├── tests/                    # pytest (mocks only here)
 │   ├── docs/                     # Architecture *.mmd sources
-│   └── data/runs/                # Per-session JSONL archives (gitignored)
-├── package.json                  # Frontend deps
-└── vite.config.ts                # Dev proxy → :8000
+│   ├── data/                     # Run archives & cache (mostly gitignored)
+│   ├── requirements.txt
+│   ├── pyproject.toml
+│   ├── run.bat
+│   ├── AGENTS.md
+│   └── .env.example
+├── package.json
+├── vite.config.ts                # Dev proxy → backend :8000
+├── wrangler.jsonc                # Cloudflare Workers (TanStack Start production build)
+├── tsconfig.json
+├── components.json               # shadcn/ui
+└── eslint.config.js
 ```
+
+`backend/common/config.py` hosts default `Settings`; HTTP health routes live in `backend/api/routes/health.py`.
 
 ---
 

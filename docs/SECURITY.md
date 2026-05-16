@@ -12,7 +12,7 @@ flowchart LR
     B[Browser console]
   end
   subgraph API["FastAPI backend"]
-    REST[/REST /api/* /ws /health/]
+    REST["Surface: REST + WebSocket + /health"]
     ENG[Engine + keys]
   end
   subgraph Untrusted["Untrusted: internet"]

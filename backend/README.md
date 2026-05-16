@@ -119,11 +119,21 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    PROD[Engine · OMS · Portfolio · Risk] --> BUS[EventBus]
-    BUS --> WS[WebSocket /ws]
-    BUS --> REC[Run JSONL]
-    BUS --> JOUR[WAL]
-    WS --> UI[Dashboard]
+    subgraph Produce["Publishers"]
+        PROD["Engine · OMS · portfolio · risk"]
+    end
+    BUS["EventBus"]
+    subgraph Sink["Persistence + delivery"]
+        JOUR["WAL"]
+        REC["Per-run JSONL"]
+        WSS["WebSocket /ws"]
+    end
+    UI["Dashboard"]
+    PROD --> BUS
+    BUS --> JOUR
+    BUS --> REC
+    BUS --> WSS
+    WSS --> UI
 ```
 
 | `EventType` | Archive | UI |
