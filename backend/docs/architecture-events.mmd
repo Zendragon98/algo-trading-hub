@@ -13,7 +13,14 @@ flowchart TB
 
     BUS["common/EventBus<br/>asyncio fan-out · bounded queues"]
 
-    ENG & GW & OMS & POS & PF & RK & EX & LOG --> BUS
+    ENG --> BUS
+    GW --> BUS
+    OMS --> BUS
+    POS --> BUS
+    PF --> BUS
+    RK --> BUS
+    EX --> BUS
+    LOG --> BUS
 
     subgraph Consumers["Subscribers"]
         WS["api/ws.py<br/>/ws JSON stream"]
@@ -24,7 +31,12 @@ flowchart TB
         LOGBUF["log buffer pump<br/>GET /api/logs"]
     end
 
-    BUS --> WS & REC & JOUR & LAT & ALERT & LOGBUF
+    BUS --> WS
+    BUS --> REC
+    BUS --> JOUR
+    BUS --> LAT
+    BUS --> ALERT
+    BUS --> LOGBUF
 
     WS --> UI["React useAlgoStream"]
 

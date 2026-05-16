@@ -8,7 +8,8 @@ flowchart TB
         RECON["Periodic reconcile<br/>when user-data idle"]
     end
 
-    BN --> WS & REST
+    BN --> WS
+    BN --> REST
     REST --> RECON
 
     subgraph EngineState["Engine state"]
@@ -17,9 +18,11 @@ flowchart TB
         OMS["OrderManager<br/>working children"]
     end
 
-    WS -->|"apply_exchange_positions<br/>merge wallets"| PT & PF
+    WS -->|"apply_exchange_positions<br/>merge wallets"| PT
+    WS -->|"apply_exchange_positions<br/>merge wallets"| PF
     REST -->|"sync_from_venue on mismatch"| PT
-    RECON --> PT & PF
+    RECON --> PT
+    RECON --> PF
     WS --> OMS
 
     subgraph Heal["Drift handling"]
@@ -36,7 +39,12 @@ flowchart TB
         WS_OUT["/ws position · equity · order events"]
     end
 
-    PT & PF & OMS --> SNAP & WS_OUT
+    PT --> SNAP
+    PT --> WS_OUT
+    PF --> SNAP
+    PF --> WS_OUT
+    OMS --> SNAP
+    OMS --> WS_OUT
 
     subgraph UI["React dashboard"]
         HOOK["useAlgoStream"]
@@ -44,7 +52,8 @@ flowchart TB
         HOOK --> POLL
     end
 
-    SNAP & WS_OUT --> HOOK
+    SNAP --> HOOK
+    WS_OUT --> HOOK
 
     classDef truth fill:#7f1d1d,stroke:#fca5a5,color:#fef2f2
     class BN truth

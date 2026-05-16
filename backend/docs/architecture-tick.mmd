@@ -39,7 +39,9 @@ flowchart TB
         SMA["SmaCrossover<br/>fast/slow SMA per symbol"]
         MM["MarketMaking<br/>skew + imbalance + tape"]
         NET["signal_netter<br/>STRATEGY=all"]
-        C4 --> PT & SMA & MM
+        C4 --> PT
+        C4 --> SMA
+        C4 --> MM
         C4 -.-> NET
     end
 
@@ -68,7 +70,9 @@ flowchart TB
     end
 
     FS --> C4
-    PT & SMA & MM --> PRE
+    PT --> PRE
+    SMA --> PRE
+    MM --> PRE
     NET --> PRE
     PRE --> RT
     OMS --> GW

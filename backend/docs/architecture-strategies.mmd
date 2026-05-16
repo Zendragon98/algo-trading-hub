@@ -11,8 +11,12 @@ flowchart TB
         ALL["STRATEGY=all<br/>SignalNetter"]
     end
 
-    P & S & M --> ONE
-    P & S & M --> ALL
+    P --> ONE
+    S --> ONE
+    M --> ONE
+    P --> ALL
+    S --> ALL
+    M --> ALL
 
     ONE --> TICK["on_tick per 1 Hz clock"]
     ALL --> TICK2["each strategy on_tick"]

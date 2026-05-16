@@ -42,6 +42,16 @@ flowchart LR
     RISK --> A7 --> E7
     KILL --> A8 --> E8
 
-    E1 & E2 & E3 & E4 & E5 & E6 & E7 --> STATUS["EventType.STATUS<br/>+ /ws fan-out"]
+    STATUS["EventType.STATUS<br/>+ /ws fan-out"]
 
-    STATUS --> UI
+    E1 --> STATUS
+    E2 --> STATUS
+    E3 --> STATUS
+    E4 --> STATUS
+    E5 --> STATUS
+    E6 --> STATUS
+    E7 --> STATUS
+    E8 --> STATUS
+
+    DASH["Dashboard via REST + /ws"]
+    STATUS --> DASH

@@ -20,7 +20,10 @@ flowchart LR
             ORD["order_connection.py<br/>orders · listenKey keepalive"]
             ACC["account_connection.py<br/>balances · positions"]
         end
-        BG --> REST & MKT & ORD & ACC
+        BG --> REST
+        BG --> MKT
+        BG --> ORD
+        BG --> ACC
     end
 
     subgraph BinanceAPI["Binance USDT-M Futures"]
@@ -29,7 +32,11 @@ flowchart LR
         W2["user stream + listenKey"]
     end
 
-    E1 & E2 & E3 & E4 & E5 --> IF
+    E1 --> IF
+    E2 --> IF
+    E3 --> IF
+    E4 --> IF
+    E5 --> IF
     IF --> BG
     REST --> R1
     MKT --> W1

@@ -8,9 +8,19 @@ A full-stack **algorithmic trading console**: a React dashboard observes and con
 | **Backend** | Python 3.11+ · FastAPI · asyncio | Trading engine · REST · WebSocket · run archives |
 | **Venue** | Binance Futures (testnet default) | Market data · order routing · balances · positions |
 
-**Deep dive (engine, API, risk, strategies, config):** [`backend/README.md`](backend/README.md)  
-**Contributor style:** [`backend/AGENTS.md`](backend/AGENTS.md)  
-**Diagram sources (editable):** [`backend/docs/`](backend/docs/)
+**Documentation index:** [`docs/README.md`](docs/README.md)
+
+| Audience | Document |
+|----------|----------|
+| Engineering (engine, API, config, strategies) | [`backend/README.md`](backend/README.md) |
+| Architecture signpost (diagrams + component map) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Operations / SRE (health, incidents, deployment) | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) |
+| Security (threat model, secrets, hardening) | [`docs/SECURITY.md`](docs/SECURITY.md) |
+| Risk / compliance (records, governance, disclaimer) | [`docs/COMPLIANCE_AND_GOVERNANCE.md`](docs/COMPLIANCE_AND_GOVERNANCE.md) |
+| Architecture diagrams (editable `.mmd`) | [`backend/docs/`](backend/docs/) |
+| Python contribution conventions | [`backend/AGENTS.md`](backend/AGENTS.md) |
+
+**Disclaimer:** This repository is software for engineering and research. It is **not** certified for any specific regulatory regime; institutional use requires your own legal, risk, and security sign-off ([`docs/COMPLIANCE_AND_GOVERNANCE.md`](docs/COMPLIANCE_AND_GOVERNANCE.md)).
 
 ---
 
@@ -158,8 +168,8 @@ flowchart LR
     ENG[Engine + OMS + Portfolio] --> BUS[EventBus]
     BUS --> WAL[WAL journal]
     BUS --> REC[Run recorder *.jsonl]
-    BUS --> WS[/ws]
-    WS --> UI[React dashboard]
+    BUS --> WSS[WebSocket /ws]
+    WSS --> UI[React dashboard]
 ```
 
 | `EventType` | Archive file | UI use |
@@ -356,7 +366,9 @@ flowchart TB
     subgraph Live
         W["WebSocket /ws"]
     end
-    H[useAlgoStream] --> S & W & L
+    H[useAlgoStream] --> S
+    H --> W
+    H --> L
     H --> P[Dashboard panels]
 ```
 
@@ -453,5 +465,10 @@ Flip venue to mainnet (`BINANCE_TESTNET=false`, mainnet REST/WS URLs) **and** se
 | Position & dashboard sync | [`backend/README.md#position--dashboard-sync`](backend/README.md#position--dashboard-sync) |
 | Pairs / SMA / MM strategy math | [`backend/README.md#module-deep-dives`](backend/README.md#module-deep-dives) |
 | Run archives & post-mortem | [`backend/README.md#run-archive`](backend/README.md#run-archive) |
+| Architecture signpost & component map | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | pytest suite map | [`backend/README.md#testing`](backend/README.md#testing) |
-| Code style | [`backend/AGENTS.md`](backend/AGENTS.md) |
+| Operations runbook (health, incidents, prod checklist) | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) |
+| Security model & hardening | [`docs/SECURITY.md`](docs/SECURITY.md) |
+| Compliance, records, governance | [`docs/COMPLIANCE_AND_GOVERNANCE.md`](docs/COMPLIANCE_AND_GOVERNANCE.md) |
+| Full documentation register | [`docs/README.md`](docs/README.md) |
+| Code style & layers | [`backend/AGENTS.md`](backend/AGENTS.md) |

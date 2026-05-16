@@ -11,13 +11,17 @@ Python backend for the React console at the repo root. Connects to **Binance USD
 | **Persistence** | Per-run JSONL under `data/runs/` + optional WAL replay |
 | **API** | REST control + `/ws` stream; schemas mirror `src/components/algo/types.ts` |
 
-Repo overview & frontend architecture: [`../README.md`](../README.md).  
-Architecture diagram sources: [`docs/`](docs/) (12 `.mmd` files).
+Repo overview & audience-specific docs: [`../README.md`](../README.md).  
+
+**Institutional / production docs (repo root `docs/`):** [register](../docs/README.md) · [operations runbook](../docs/OPERATIONS.md) · [security](../docs/SECURITY.md) · [compliance & governance](../docs/COMPLIANCE_AND_GOVERNANCE.md) · [contributor guide](AGENTS.md).
+
+Architecture diagram sources (editable `.mmd`): [`docs/`](docs/) (12 files).
 
 ---
 
 ## Contents
 
+- [Production documentation (ops, security, compliance)](../docs/README.md)
 - [Architecture](#architecture)
 - [Module map](#module-map)
 - [Quick start](#quick-start)
@@ -116,7 +120,9 @@ flowchart TB
 ```mermaid
 flowchart TB
     PROD[Engine · OMS · Portfolio · Risk] --> BUS[EventBus]
-    BUS --> WS[/ws] & REC[*.jsonl] & JOUR[WAL]
+    BUS --> WS[WebSocket /ws]
+    BUS --> REC[Run JSONL]
+    BUS --> JOUR[WAL]
     WS --> UI[Dashboard]
 ```
 
@@ -137,8 +143,12 @@ Bounded subscriber queues — slow `/ws` clients drop oldest events; state lives
 ```mermaid
 flowchart LR
     ENG --> IF[GatewayInterface] --> BG[BinanceGateway]
-    BG --> REST & MKT & ORD[connections]
-    REST & MKT & ORD --> BN[Binance /fapi]
+    BG --> REST[REST]
+    BG --> MKT[Market WS]
+    BG --> ORD[Order or user WS]
+    REST --> BN[Binance /fapi]
+    MKT --> BN
+    ORD --> BN
 ```
 
 See [Adding a new gateway](#adding-a-new-gateway). IBKR skeleton: `gateways/ibkr/`.
@@ -228,7 +238,7 @@ backend/
   requirements.txt
   pyproject.toml             pytest + ruff config
   README.md                  this file
-  AGENTS.md                  commenting / style guide
+  AGENTS.md                  engineering conventions (layers, tests, ruff)
   .env.example               minimal env template (defaults live in common/config.py)
 
   common/                    config (`Settings`), EventBus, enums, shared dataclasses

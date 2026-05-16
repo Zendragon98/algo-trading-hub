@@ -28,7 +28,9 @@ flowchart TB
     end
 
     PROXY --> CLIENT
-    CLIENT --> H1 & H2 & H3
+    CLIENT --> H1
+    CLIENT --> H2
+    CLIENT --> H3
     CLIENT --> Live
 
     HOOK -->|"merge incremental events"| ROUTE
