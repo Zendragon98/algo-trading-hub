@@ -708,7 +708,7 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `MAX_ENTRY_SPREAD_BPS`       | `25.0`                               | Wide-spread veto when dynamic spread is off (`spread_dynamic_enabled=false`) |
 | `SPREAD_DYNAMIC_ENABLED` / `SPREAD_BASELINE_ALPHA` / `SPREAD_WIDE_MULTIPLIER` / `SPREAD_WIDE_FLOOR_BPS` / `SPREAD_WIDE_CEILING_BPS` | see `Settings` | EWMA spread gate — **edit defaults in `common/config.py`** |
 | `MAX_SYMBOL_NOTIONAL_PCT`    | `0.20`                               | Per-symbol exposure cap (fraction of equity) |
-| `MIN_FREE_MARGIN_PCT`        | `0.10`                               | Equity headroom required to enter a new position |
+| `MIN_FREE_MARGIN_PCT`        | `0.0` (off)                          | Spot-style gross/equity headroom for new exposure; **on futures, `>0` often blocks constantly** because notionals exceed equity — keep `0` unless you tune it deliberately |
 | `MAX_OPEN_PARENTS`           | `16`                                 | Cap on simultaneous in-flight parents |
 | `SUBMIT_RATE_PER_SEC`        | `5.0`                                | Global REST submit throttle (token bucket) |
 | `MAX_CONSECUTIVE_REJECTS`    | `3`                                  | K rejects -> minor symbol pause |
@@ -861,4 +861,4 @@ Highlights:
 - **Flatten clicked but positions remain** — check `app.log` for `flatten timeout` and `flatten complete`. Ensure the backend build includes venue-sync flatten (not stale local qty). Orphans from a prior session can block entries until cleared — with `RECONCILE_CANCEL_ORPHANS=true` they are cancelled on startup/reconcile. After flatten the engine stays **paused**; click **Resume** only when you intend to trade again.
 - **`reduce_only rejected` (-2022) during flatten** — usually the venue is already flat while the local book still showed size; flatten now syncs from `positionRisk` first. Benign `-2022` lines are warnings only.
 - **`order_reconcile_mismatch` / kill switch after restart** — stale open orders on the testnet account; default `RECONCILE_CANCEL_ORPHANS=true` cancels them on the next reconcile cycle.
-- **Many `max_open_parents` / `free_margin_floor` vetoes** — too many concurrent pair/MM legs for equity; lower universe size, raise `MAX_OPEN_PARENTS`, or reduce concurrent signals (`MM_MAX_ENTRIES_PER_TICK`).
+- **Many `max_open_parents` / `free_margin_floor` vetoes** — default `MIN_FREE_MARGIN_PCT` is now `0` (off) because the check uses gross-notional vs equity and misfires on leveraged futures. If you explicitly set `MIN_FREE_MARGIN_PCT>0` and see vetoes, you are hitting that headroom floor; otherwise treat remaining vetoes as concurrency (`MAX_OPEN_PARENTS`) or real margin caps — lower universe size, raise `MAX_OPEN_PARENTS`, or reduce concurrent signals (`MM_MAX_ENTRIES_PER_TICK`).

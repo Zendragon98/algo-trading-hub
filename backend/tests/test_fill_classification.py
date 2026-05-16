@@ -37,8 +37,19 @@ def test_close_long() -> None:
     assert c.pnl == 5.0
 
 
-def test_close_short() -> None:
-    pos = Position(symbol="BTCUSDT", qty=-2.0, avg_entry_price=100.0)
-    c = classify_fill(pos, _fill(Side.BUY, 1.0, 95.0))
-    assert c.action == "close"
+def test_close_long_prefers_computed_when_venue_rp_is_dust() -> None:
+    """Tiny non-zero Binance ``rp`` must not override clear entry/exit economics."""
+    pos = Position(symbol="BTCUSDT", qty=1.0, avg_entry_price=100.0)
+    f = Fill(
+        child_id="c1",
+        parent_id=None,
+        symbol="BTCUSDT",
+        side=Side.SELL,
+        qty=1.0,
+        price=105.0,
+        fee=0.0,
+        fee_asset="USDT",
+        realized_pnl=0.002,
+    )
+    c = classify_fill(pos, f)
     assert c.pnl == 5.0

@@ -32,13 +32,19 @@ class TradeRecord:
 
 
 class PerformanceTracker:
-    """Maintains a rolling history of fills + computes win rate."""
+    """Maintains a rolling fill tape plus a win-rate window over realized PnL rows.
+
+    ``_fills`` is every venue fill (open + close) for RECENT TRADES. KPIs use
+    ``_realized`` only — closes with a PnL figure (venue ``rp`` or computed),
+    capped separately so opens cannot evict realized history.
+    """
 
     def __init__(self, portfolio: Portfolio, history_size: int = 200) -> None:
         # Keep `PERFORMANCE_TRADE_HISTORY_CAP` in `src/hooks/useAlgoStream.ts` aligned
         # with this default so dashboard rollups match the engine after WS replay.
         self._portfolio = portfolio
         self._fills: list[TradeRecord] = []
+        self._realized: list[TradeRecord] = []
         self._history_size = history_size
 
     def record_fill(self, fill: Fill, classification: FillClassification) -> TradeRecord:
@@ -57,25 +63,34 @@ class PerformanceTracker:
         self._fills.append(record)
         if len(self._fills) > self._history_size:
             self._fills = self._fills[-self._history_size :]
+
+        if classification.action == "close" and classification.pnl is not None:
+            self._realized.append(record)
+            if len(self._realized) > self._history_size:
+                self._realized = self._realized[-self._history_size :]
+
         return record
 
     def trades(self) -> list[TradeRecord]:
         # Newest first — matches the dashboard's expectation.
         return list(reversed(self._fills))
 
+    def realized_transactions(self) -> list[TradeRecord]:
+        """Newest first — last N closes with realized PnL (transaction-style rows)."""
+
+        return list(reversed(self._realized))
+
     def win_rate(self) -> float:
-        closed = [f for f in self._fills if f.pnl is not None]
-        if not closed:
+        if not self._realized:
             return 0.0
-        wins = sum(1 for f in closed if (f.pnl or 0) > 0)
-        return wins / len(closed) * 100.0
+        wins = sum(1 for f in self._realized if (f.pnl or 0) > 0)
+        return wins / len(self._realized) * 100.0
 
     def gross_pnls(self) -> tuple[float, float]:
         """Sum of realized PnL on winning vs losing closes (losses as a positive magnitude)."""
 
-        closed = [f for f in self._fills if f.pnl is not None]
-        gross_win = sum(f.pnl for f in closed if (f.pnl or 0.0) > 0.0)
-        gross_loss = sum(-f.pnl for f in closed if (f.pnl or 0.0) < 0.0)
+        gross_win = sum(f.pnl for f in self._realized if (f.pnl or 0.0) > 0.0)
+        gross_loss = sum(-f.pnl for f in self._realized if (f.pnl or 0.0) < 0.0)
         return gross_win, gross_loss
 
     def profit_factor(self) -> float | None:

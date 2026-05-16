@@ -71,3 +71,23 @@ def test_profit_factor_none_when_no_losing_closes_but_wins_exist() -> None:
     gw, gl = perf.gross_pnls()
     assert gw == pytest.approx(3.5)
     assert gl == pytest.approx(0.0)
+
+
+def test_realized_window_not_evicted_by_opens() -> None:
+    """Opens share the fill tape but must not push realized PnL rows out."""
+    portfolio = MagicMock()
+    perf = PerformanceTracker(portfolio, history_size=5)
+
+    # One close, then many opens — close must remain in KPI aggregates.
+    perf.record_fill(_fill(Side.SELL, 1.0, 52.0, idx=0), _cls(2.0, action="close"))
+    for i in range(1, 20):
+        perf.record_fill(
+            _fill(Side.BUY, 0.1, 50.0, idx=i),
+            _cls(None, action="open"),
+        )
+
+    assert perf.win_rate() == pytest.approx(100.0)
+    gw, gl = perf.gross_pnls()
+    assert gw == pytest.approx(2.0)
+    assert gl == pytest.approx(0.0)
+    assert len(perf.realized_transactions()) == 1

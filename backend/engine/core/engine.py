@@ -517,6 +517,7 @@ class Engine:
             position_tracker=self._positions,
             portfolio=self._portfolio,
             trades=self._performance.trades(),
+            realized_trades=self._performance.realized_transactions(),
             win_rate=self._performance.win_rate(),
             gross_win_pnl=gross_win,
             gross_loss_pnl=gross_loss,
@@ -1334,6 +1335,7 @@ class Engine:
         stablecoin combine rule.
         """
         self._oms.touch_ws_user_data_activity()
+        wallet_by_asset = update.get("wallet_by_asset") or {}
         for asset, balance in wallet_by_asset.items():
             try:
                 self._portfolio.update_asset_balance(str(asset), float(balance))
@@ -1370,7 +1372,11 @@ class Engine:
         if self._clock_skew_sync_tick % 15 == 0:
             await self._refresh_clock_skew()
 
-        await self._portfolio.mark_to_market(use_mark_pnl=not self._user_data_fresh())
+        # Drive the equity *curve and WS payloads* off live tick marks so the console
+        # updates every second. When user-data is fresh we still omit mark-based unrealized in
+        # ``Portfolio.snapshot()`` (default ``use_mark_pnl=False``); loss / HWM monitors use that
+        # path and stay aligned with venue-reported unrealized between ACCOUNT_UPDATEs.
+        await self._portfolio.mark_to_market(use_mark_pnl=True)
         # Refresh portfolio guards before the breaker advances so a
         # newly tripped MAJOR is honoured this same tick.
         self._pnl.update()

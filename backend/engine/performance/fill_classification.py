@@ -33,10 +33,7 @@ def classify_fill(position: Position | None, fill: Fill) -> FillClassification:
     closing_qty = min(abs(prev_qty), fill.qty)
     pnl_per_unit = (fill.price - prev_entry) * (1 if prev_qty > 0 else -1)
     computed_pnl = pnl_per_unit * closing_qty
-    if fill.realized_pnl is not None and fill.realized_pnl != 0:
-        pnl = fill.realized_pnl
-    else:
-        pnl = computed_pnl
+    pnl = _pick_close_pnl(venue_rp=fill.realized_pnl, computed_pnl=computed_pnl)
 
     return FillClassification(
         action="close",
@@ -48,3 +45,23 @@ def classify_fill(position: Position | None, fill: Fill) -> FillClassification:
 
 def _same_sign(a: float, b: float) -> bool:
     return (a > 0 and b > 0) or (a < 0 and b < 0)
+
+
+def _pick_close_pnl(*, venue_rp: float | None, computed_pnl: float) -> float:
+    """Prefer Binance ``rp`` when it looks authoritative; otherwise use local economics.
+
+    The venue sometimes sends ``rp`` that is exactly zero (use computed — prior
+    behaviour), or a *tiny* non-zero figure vs a much larger mark-to-close
+    estimate for the same slice — in that case trust ``computed_pnl``.
+    """
+
+    if venue_rp is None:
+        return computed_pnl
+    av = abs(float(venue_rp))
+    ac = abs(float(computed_pnl))
+    if av < 1e-12:
+        return computed_pnl
+    # e.g. rp=0.002 (rounds to $0.00 in UI) while entry/exit economics are ~$2
+    if av < 0.01 and ac >= 0.05 and ac > 10.0 * av:
+        return computed_pnl
+    return float(venue_rp)

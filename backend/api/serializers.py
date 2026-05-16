@@ -201,6 +201,7 @@ def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
         equity=EquityDTO(equity=snapshot.equity_curve, last_ts=snapshot.last_tick_ts),
         positions=[position_to_dto(p) for p in snapshot.positions],
         trades=[trade_to_dto(t) for t in snapshot.trades],
+        realized_trades=[trade_to_dto(t) for t in snapshot.realized_trades],
         orders=orders_dto(engine),
         execution=execution_stats_dto(engine),
         system_health=SystemHealthDTO(**engine.system_health()),

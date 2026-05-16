@@ -68,9 +68,7 @@ class LossTracker:
         self._max_streak = max(0, int(max_consecutive_losses))
         self._streak_loss_min_abs_usd = max(0.0, float(streak_loss_min_abs_usd))
         self._anchor: _DailyAnchor | None = None
-        # Index into PerformanceTracker.trades() of the *oldest* trade we
-        # haven't evaluated for the streak yet. The tracker stores newest
-        # first, so we track by trade id to survive ring-buffer rotation.
+        # Realized closes only; ids de-dup streak evaluation as the ring rotates.
         self._seen_trade_ids: set[str] = set()
         self._current_streak: int = 0
 
@@ -145,10 +143,9 @@ class LossTracker:
     def _check_streak(self) -> None:
         if self._max_streak <= 0:
             return
-        # PerformanceTracker.trades() returns newest first. We process in
-        # chronological order so the streak counter reflects the order
-        # fills landed.
-        trades = list(reversed(self._performance.trades()))
+        # Realized rows only, oldest→newest so the streak matches venue PnL
+        # history (opens in the fill tape are ignored).
+        trades = list(reversed(self._performance.realized_transactions()))
         for trade in trades:
             if trade.id in self._seen_trade_ids:
                 continue

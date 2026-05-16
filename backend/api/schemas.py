@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PositionDTO(BaseModel):
@@ -212,6 +212,7 @@ class StateDTO(BaseModel):
     equity: EquityDTO
     positions: list[PositionDTO]
     trades: list[TradeDTO]
+    realized_trades: list[TradeDTO] = Field(default_factory=list)
     orders: OrdersDTO
     execution: ExecutionStatsDTO
     system_health: SystemHealthDTO | None = None

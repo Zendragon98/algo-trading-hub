@@ -121,7 +121,11 @@ class Settings(BaseSettings):
     # Per-symbol notional cap (% equity). RiskManager sizes trades to
     # min(max_risk_pct, remaining headroom here) so this need not equal max_risk_pct.
     max_symbol_notional_pct: float = 0.20   # per-symbol exposure cap
-    min_free_margin_pct: float = 0.10       # equity headroom required to enter
+    # Coarse pre-trade headroom: requires (1 - (gross+add)/equity) >= this.
+    # On leveraged futures, gross_notional often exceeds equity, so any value
+    # > 0 vetoes most entries; use 0 (default) and rely on max_risk_pct /
+    # max_gross_notional, or set MIN_FREE_MARGIN_PCT in .env if you want a buffer.
+    min_free_margin_pct: float = 0.0
     # In-flight execution
     max_open_parents: int = 16              # max simultaneous in-flight parents
     submit_rate_per_sec: float = 5.0        # global REST submit throttle

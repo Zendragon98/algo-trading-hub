@@ -64,6 +64,13 @@ function formatUsdPayoffCell(n: number): string {
   return "0.00";
 }
 
+/** Realized PnL on each close row — extra decimals when |$| is tiny (avoids ``toFixed(2)`` → ``+0.00``). */
+function formatSignedRealizedPnl(n: number | null | undefined): string {
+  if (n == null || Number.isNaN(n)) return "—";
+  const sign = n >= 0 ? "+" : "−";
+  return `${sign}$${formatUsdPayoffCell(Math.abs(n))}`;
+}
+
 export const Route = createFileRoute("/")({
   component: Index,
   head: () => ({
@@ -86,6 +93,7 @@ function Index() {
   const equity: number[] = live.equity;
   const positions: Position[] = live.positions;
   const trades: Trade[] = live.trades;
+  const realizedTrades: Trade[] = live.realizedTrades;
   const logs: LogEntry[] = live.logs;
   const uptimeSec: number = live.uptimeSec;
   const workingOrders: WorkingOrder[] = live.orders;
@@ -125,9 +133,12 @@ function Index() {
     [positions],
   );
 
-  /** Win % + payoff vs the same RECENT TRADES list so WS fills stay coherent. */
+  /** Win % + payoff over the last N *realized PnL* closes (≤200), not raw opens. */
   const closedTradePerf = useMemo(() => {
-    const closed = trades.filter((t) => t.action === "close" && t.pnl != null);
+    const closed =
+      realizedTrades.length > 0
+        ? realizedTrades
+        : trades.filter((t) => t.action === "close" && t.pnl != null);
     if (!closed.length) {
       return {
         winRatePct: 0,
@@ -172,7 +183,7 @@ function Index() {
       lossCount,
       breakevenCount,
     };
-  }, [trades]);
+  }, [realizedTrades, trades]);
 
   // Fire-and-forget control commands. The engine drives the next status
   // update over the WebSocket so we don't optimistically mutate React state.
@@ -723,7 +734,7 @@ function WinRateKpiCard({ perf }: { perf: ClosedTradePerfVm }) {
 
       {!closed ? (
         <div className="mt-10 pb-8 text-center text-xs text-muted-foreground">
-          No closed fills in the rolling buffer yet.
+          No realized PnL closes in the rolling window yet (last 200).
         </div>
       ) : (
         <>
@@ -749,9 +760,9 @@ function WinRateKpiCard({ perf }: { perf: ClosedTradePerfVm }) {
 
           <div
             className="mt-2 flex h-2 w-full overflow-hidden rounded-full bg-muted/45"
-            title="Share of fills: wins vs flat vs losses"
+            title="Share of realized closes: wins vs flat vs losses"
             role="img"
-            aria-label={`Win fills ${winSeg.toFixed(0)} percent, losses ${lossSeg.toFixed(0)} percent, breakevens ${flatSeg.toFixed(0)} percent`}
+            aria-label={`Winning realized closes ${winSeg.toFixed(0)} percent, losses ${lossSeg.toFixed(0)} percent, breakevens ${flatSeg.toFixed(0)} percent`}
           >
             <div className="h-full bg-bull transition-[width] duration-500" style={{ width: `${winSeg}%` }} />
             <div
@@ -761,7 +772,7 @@ function WinRateKpiCard({ perf }: { perf: ClosedTradePerfVm }) {
             <div className="h-full bg-bear transition-[width] duration-500" style={{ width: `${lossSeg}%` }} />
           </div>
           <p className="mt-1 font-mono text-[10px] text-muted-foreground">
-            {closed} closed fills · {winSeg.toFixed(0)} / {flatSeg.toFixed(0)} / {lossSeg.toFixed(0)}% W / BE / L
+            {closed} realized closes · {winSeg.toFixed(0)} / {flatSeg.toFixed(0)} / {lossSeg.toFixed(0)}% W / BE / L
           </p>
 
           <div className="mt-4 space-y-2">
@@ -823,7 +834,7 @@ function WinRateKpiCard({ perf }: { perf: ClosedTradePerfVm }) {
           </div>
 
           <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2 font-mono text-xs">
-            <span className="text-muted-foreground">Net · closed fills</span>
+            <span className="text-muted-foreground">Net · realized closes</span>
             <span className={cn("tabular-nums font-semibold", netTone)}>{netFormatted}</span>
           </div>
 
@@ -833,13 +844,16 @@ function WinRateKpiCard({ perf }: { perf: ClosedTradePerfVm }) {
               <span className="normal-case tracking-normal opacity-70">PnL sources & factor definition</span>
             </summary>
             <div className="border-t border-border/40 px-2 py-2 text-[10px]">
-              Rows use realized P&amp;L on each <strong className="text-foreground">reducing</strong> fill. Binance Futures
-              uses field <code className="rounded bg-muted/60 px-0.5">rp</code> when it is non-zero; otherwise the
-              console uses{' '}
-              <span className="whitespace-nowrap">(exit − entry) × closed qty</span>. Profit factor =
-              Σ&nbsp;positive closes ÷ Σ&nbsp;|negative closes|. Excludes transfers, funding, and fees unless the venue folds
-              them into <code className="rounded bg-muted/60 px-0.5">rp</code>. Dollar labels use extra precision when totals
-              are small so they reconcile with the factor.
+              The KPI uses the last 200 <strong className="text-foreground">realized PnL</strong> closes (reducing fills with a
+              PnL figure)—opens do not consume this window. Binance Futures uses field{' '}
+              <code className="rounded bg-muted/60 px-0.5">rp</code> when it is non-zero; otherwise the console uses{' '}
+              <span className="whitespace-nowrap">(exit − entry) × closed qty</span>. If{' '}
+              <code className="rounded bg-muted/60 px-0.5">rp</code> looks like dust vs that economics (e.g. sub-cent vs several
+              dollars), the engine keeps the computed slice PnL. Profit factor = Σ&nbsp;positive closes ÷ Σ&nbsp;|negative
+              closes|. Excludes transfers, funding, and fees unless the venue folds them into{' '}
+              <code className="rounded bg-muted/60 px-0.5">rp</code>. Dollar labels use extra precision when totals are small
+              so they reconcile with the factor; RECENT TRADES uses the same idea so tiny realized amounts are not shown as
+              <span className="whitespace-nowrap">+0.00</span>.
             </div>
           </details>
         </>
@@ -1330,7 +1344,7 @@ function TradesTable({ trades }: { trades: Trade[] }) {
                       : "text-bear",
                 )}
               >
-                {t.action === "open" ? "—" : `${(t.pnl ?? 0) >= 0 ? "+" : ""}${(t.pnl ?? 0).toFixed(2)}`}
+                {t.action === "open" ? "—" : formatSignedRealizedPnl(t.pnl)}
               </td>
             </tr>
           ))}

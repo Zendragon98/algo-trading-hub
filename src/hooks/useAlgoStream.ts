@@ -51,6 +51,8 @@ export type AlgoStream = {
   equity: number[];
   positions: Position[];
   trades: Trade[];
+  /** Closes with realized PnL — rolling window for win rate (engine-backed). */
+  realizedTrades: Trade[];
   logs: LogEntry[];
   orders: WorkingOrder[];
   workingParents: ExecutionParent[];
@@ -86,6 +88,7 @@ const EMPTY: AlgoStream = {
   equity: [],
   positions: [],
   trades: [],
+  realizedTrades: [],
   logs: [],
   orders: [],
   workingParents: [],
@@ -165,6 +168,7 @@ function applyTradingState(prev: AlgoStream, state: StateDTO): AlgoStream {
     equity: state.equity.equity,
     positions: state.positions,
     trades: state.trades.map(toTrade),
+    realizedTrades: (state.realized_trades ?? []).map(toTrade),
     orders: state.orders.working.map(toWorkingOrder),
     workingParents: state.execution.working.map(toExecutionParent),
     executionHistory: state.execution.history.map(toExecutionParent),
@@ -532,9 +536,13 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
         exit_price: d.exit_price,
         pnl: d.pnl,
       });
+      const isRealizedClose = trade.action === "close" && trade.pnl != null;
       return {
         ...prev,
         trades: [trade, ...prev.trades].slice(0, PERFORMANCE_TRADE_HISTORY_CAP),
+        realizedTrades: isRealizedClose
+          ? [trade, ...prev.realizedTrades].slice(0, PERFORMANCE_TRADE_HISTORY_CAP)
+          : prev.realizedTrades,
       };
     }
 

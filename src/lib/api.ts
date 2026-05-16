@@ -191,7 +191,10 @@ export type StateDTO = {
   kpi: KpiDTO;
   equity: EquityDTO;
   positions: Position[];
+  /** Full fill tape (opens + closes) for the RECENT TRADES widget. */
   trades: TradeDTO[];
+  /** Last N closes with realized PnL only — powers win-rate KPI (aligned with engine). */
+  realized_trades: TradeDTO[];
   orders: OrdersDTO;
   execution: ExecutionStatsDTO;
   system_health?: SystemHealthDTO | null;
