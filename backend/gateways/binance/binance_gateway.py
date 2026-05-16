@@ -187,6 +187,12 @@ class BinanceGateway(GatewayInterface):
         rows = await self._rest.open_orders(symbol)
         return [_parse_open_order(row) for row in rows]
 
+    async def fetch_order_by_client_id(self, symbol: str, client_order_id: str) -> ChildOrder | None:
+        row = await self._rest.query_order(symbol, client_order_id)
+        if row is None:
+            return None
+        return _parse_open_order(row)
+
     async def cancel_all_open_orders(self) -> None:
         await super().cancel_all_open_orders()
 

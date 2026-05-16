@@ -275,7 +275,7 @@ backend/
     portfolio/               Portfolio (cash + equity curve)
     risk/                    Limits + PnLTracker + StopLossMonitor + RiskManager
     strategies/              StrategyBase + pairs · sma · market_making
-    performance/             PerformanceTracker (win rate + trade history)
+    performance/             PerformanceTracker (win rate, profit factor, trade history)
     persistence/             EventRecorder (per-run JSONL archive of the EventBus)
     main_engine.py           CLI to run the engine without the API
 
@@ -306,6 +306,8 @@ backend/
 | `live`            | hard-to-miss WARN banner     |
 
 PnL and TCA use **exchange-reported** fill prices (including partial fills). Post-trade quality uses arrival mid vs VWAP of venue fills (`slippage_bps`).
+
+**Dashboard win rate / profit factor** roll up *closed-leg* P&amp;L on each reducing fill: for Binance USD-M this is `ORDER_TRADE_UPDATE.rp` when non‑zero (see `fill_classification.classify_fill`); otherwise **(exit − entry) × closed qty** from the engine’s avg entry. That is **not** the same as wallet/equity change (commissions, funding, transfers, and non-close activity are excluded). **Profit factor** is “sum of dollar wins on closes ÷ sum of dollar losses on closes,” not a ratio to net account P&amp;L.
 
 When you flip to LIVE you also need to point the gateway at its live endpoints:
 
@@ -536,7 +538,7 @@ Dashboard **Flatten all positions** calls `POST /api/control/flatten`, which run
 | Large notional + tight spread (≥ `FLATTEN_VWAP_MIN_NOTIONAL_USD`, spread ≤ `FLATTEN_PASSIVE_SPREAD_BPS`) | **Passive VWAP** — `flatten_passive` schedule (`FLATTEN_VWAP_SLICES` / `FLATTEN_VWAP_DURATION_SEC`), limit pegs, market fallback |
 | Otherwise | **Aggressive VWAP** — short urgent schedule (`URGENT_*` slices), market fallback |
 
-If VWAP submit is rejected by `SubmitGuard`, the engine falls back to market for that symbol. Binance `-2022` (reduce-only rejected, already flat) is logged as a warning, not a hard failure. Loss-tracker updates are suppressed during flatten so partial closes do not immediately re-trip `consecutive_losses` mid-flatten. Fills from emergency flatten parents (`P-flat-*` market clawbacks and router parents with `flatten` / `flatten_passive` notes) are still journaled to the trades table but omit realised PnL so they do not advance the consecutive-loss streak once flatten completes.
+If VWAP submit is rejected by `SubmitGuard`, the engine falls back to market for that symbol. Binance `-2022` on a **flatten VWAP** parent (`flatten` / `flatten_passive` notes): the executor polls `fetch_positions()`, treats an already-flat symbol as finished (no further slices), or issues **one market reduce-only** for the refreshed residual and ends the slice loop early — avoiding repeated `-2022` spam while other legs catch up. Other reduce-only VWAP legs still abort on `-2022` as before until the flatten loop retries. Loss-tracker updates are suppressed during flatten so partial closes do not immediately re-trip `consecutive_losses` mid-flatten. Fills from emergency flatten parents (`P-flat-*` market clawbacks and router parents with `flatten` / `flatten_passive` notes) are still journaled to the trades table but omit realised PnL so they do not advance the consecutive-loss streak once flatten completes.
 
 `engine.stop()` still uses the same flatten path when `FLATTEN_ON_STOP=true`.
 
@@ -544,7 +546,7 @@ If VWAP submit is rejected by `SubmitGuard`, the engine falls back to market for
 
 Pre-trade gate (`PreTradeValidator` → `RiskManager.check`): single entry for single-leg and pair-group signals. Caps signal qty at `max_risk_pct` of equity, rejects on `max_gross_notional` breach, and applies optional fat-finger limits (`MAX_ORDER_NOTIONAL_USD`, `MAX_QTY_VS_POSITION_MULTIPLE`), signal dedup (`SIGNAL_DEDUP_TTL_SEC`), and venue limits via `venue_sizing` (`venue_min_qty` floor, `venue_cap_qty` ceiling from Binance `LOT_SIZE` / `MARKET_LOT_SIZE` `maxQty`). Additional vetoes flow through `MarketDataGuard` (stale tick; wide spread) and `ExposureTracker` (per-symbol notional cap, free-margin floor). Pair groups use the same per-leg `RiskManager.check` path; partial basket failure triggers compensating reduce-only unwinds.
 
-Order-level reconcile (`engine/core/order_reconciliation.py`) compares venue `openOrders` to OMS working children on the same cadence as position reconcile. When `RECONCILE_CANCEL_ORPHANS=true` (default), venue-only orphans are cancelled and the `order_reconcile_mismatch` breaker is cleared once the books match. Mismatch still trips minor `order_reconcile_mismatch` if orders remain out of sync after the cancel pass.
+Order-level reconcile (`engine/core/order_reconciliation.py`) compares venue `openOrders` to OMS working children on the same cadence as position reconcile. When `RECONCILE_CANCEL_ORPHANS=true` (default), venue-only orphans are cancelled and the `order_reconcile_mismatch` breaker is cleared once the books match. Children that look “local-only” because user-data lag left them **working** while they no longer appear on `openOrders` are refreshed via Binance `GET /fapi/v1/order` (`fetch_order_by_client_id`) so fills/cancels merge before any mismatch is counted; remaining drift still trips minor `order_reconcile_mismatch`.
 
 Execution urgency: `Signal.score` ≥ `URGENT_SCORE_THRESHOLD` or reduce-only exits use shorter VWAP schedules (`URGENT_DURATION_SEC`, `URGENT_NUM_SLICES`, `URGENT_MAX_SLIPPAGE_BPS`). Passive LIMIT slices peg to best bid/ask with `MAX_LIMIT_DEVIATION_BPS` collar. Child `clientOrderId` values are deterministic per parent slice for safe retries.
 
@@ -584,7 +586,7 @@ flowchart LR
 
 **Editable source:** [`docs/architecture-data-sync.mmd`](docs/architecture-data-sync.mmd)
 
-**Operator signals** (System Health panel): keep **User-data age** under ~60 s; **Order reconcile** should read OK; any **`reconcile_mismatch` breaker** means drift was detected (and healed if `RECONCILE_HEAL_ON_MISMATCH=true`) — investigate before resuming. Set `RECONCILE_SKIP_REST_WHEN_USER_DATA_FRESH=false` if you want REST position checks every reconcile interval even while user-data WS is active.
+**Operator signals** (System Health panel): keep **venue sync age** (`user_data_age_sec`: last user-data WS event *or* successful periodic REST account snapshot) sane; **`user_ws_event_age_sec`** can grow while you hold exposure without fills — rely on reconcile + **`user_data_reconcile_stale`** only when truth is old. **Order reconcile** should read OK; any **`reconcile_mismatch` breaker** means drift was detected (and healed if `RECONCILE_HEAL_ON_MISMATCH=true`) — investigate before resuming. Set `RECONCILE_SKIP_REST_WHEN_USER_DATA_FRESH=false` if you want REST position checks every reconcile interval even while user-data WS is active.
 
 ### Failsafes — circuit-breaker matrix
 
@@ -601,7 +603,7 @@ Every safety trip flows through one shared `CircuitBreaker` (`engine/risk/circui
 | `max_drawdown` | major | engine | session-start drawdown >= `MAX_DRAWDOWN_PCT` | flatten + latch |
 | `hwm_drawdown` | major | engine | drawdown from peak equity >= `HWM_DRAWDOWN_KILL_PCT` | flatten + latch |
 | `daily_loss` | major | engine | equity drop since UTC midnight >= `DAILY_LOSS_KILL_PCT` | flatten + latch |
-| `consecutive_losses` | major | engine | `MAX_CONSECUTIVE_LOSSES` losing trades in a row | flatten + latch |
+| `consecutive_losses` | major | engine | `MAX_CONSECUTIVE_LOSSES` qualifying realised losses in a row (`CONSECUTIVE_LOSS_MIN_ABS_USD`) | flatten + latch |
 | `exec_quality` | major | engine | rolling avg slippage > `EXEC_QUALITY_KILL_BPS` | flatten + latch |
 | `reconcile_mismatch` | major | engine | venue vs local qty diff > `RECONCILE_QTY_TOLERANCE` on REST reconcile (local healed from venue when `RECONCILE_HEAL_ON_MISMATCH=true`) | flatten + latch |
 | `order_reconcile_mismatch` | minor | engine | open-order set differs between venue and OMS | pause; auto-resume |
@@ -621,7 +623,7 @@ Operator endpoints:
 ```
 GET  /api/control/breakers                    # active + history
 POST /api/control/breakers/trip               # body: {detail?, flatten?, pause?}; operator halt
-POST /api/control/breakers/rearm              # body: {code?, target?}; clears latched majors (also resets consecutive-loss *streak* when that code is cleared)
+POST /api/control/breakers/rearm              # clears latched majors + resets baselines (streak, daily anchor, session/HWM equity, exec TCA history) for removed codes
 ```
 
 The dashboard **Halt** button calls `breakers/trip` (trading halt + flatten + pause). **Kill** calls `shutdown` and exits the Python process — it is not the trading kill switch.
@@ -712,7 +714,8 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `MAX_CONSECUTIVE_REJECTS`    | `3`                                  | K rejects -> minor symbol pause |
 | `REJECT_COOLDOWN_SEC`        | `30.0`                               | Symbol-pause cooldown after repeat rejects |
 | `DAILY_LOSS_KILL_PCT`        | `0.05`                               | Equity drop since UTC midnight (MAJOR latch) |
-| `MAX_CONSECUTIVE_LOSSES`     | `5`                                  | Losing-trade streak (MAJOR latch) |
+| `MAX_CONSECUTIVE_LOSSES`     | `10`                                 | Losing-trade streak (MAJOR latch); set `MAX_CONSECUTIVE_LOSSES=0` to disable counting |
+| `CONSECUTIVE_LOSS_MIN_ABS_USD` | `0` (off)                         | Optional: ignore realised losses smaller than this absolute PnL (quote) toward the streak |
 | `HWM_DRAWDOWN_KILL_PCT`      | `0.15`                               | Drawdown from running peak equity (MAJOR latch) |
 | `EXEC_QUALITY_KILL_BPS`      | `50.0`                               | Rolling avg slippage blowout (MAJOR latch) |
 | `EXEC_QUALITY_WINDOW`        | `10`                                 | Number of completed parents in the avg |

@@ -317,6 +317,22 @@ class BinanceRestClient:
             return data
         return []
 
+    async def query_order(self, symbol: str, orig_client_order_id: str) -> dict[str, Any] | None:
+        """Return a single order row by ``origClientOrderId``, or ``None`` if unknown (-2013)."""
+        try:
+            return await self._get(
+                f"{_FAPI}/order",
+                params={
+                    "symbol": symbol.upper(),
+                    "origClientOrderId": orig_client_order_id,
+                },
+                signed=True,
+            )
+        except BinanceRestError as exc:
+            if exc.code == -2013:
+                return None
+            raise
+
     async def leverage_brackets(self, symbol: str | None = None) -> list[dict[str, Any]]:
         """Return cross-margin leverage brackets for one or all symbols.
 

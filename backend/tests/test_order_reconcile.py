@@ -49,6 +49,21 @@ class _Gw(GatewayInterface):
         return []
 
 
+class _GwWithLookup(_Gw):
+    """Gateway mock that resolves stale locals via ``fetch_order_by_client_id``."""
+
+    def __init__(
+        self,
+        open_orders: list[ChildOrder],
+        lookups: dict[str, ChildOrder],
+    ) -> None:
+        super().__init__(open_orders)
+        self._lookups = lookups
+
+    async def fetch_order_by_client_id(self, symbol: str, client_order_id: str) -> ChildOrder | None:
+        return self._lookups.get(client_order_id)
+
+
 @pytest.mark.asyncio
 async def test_local_orphan_marked_rejected() -> None:
     bus = EventBus()
@@ -74,6 +89,50 @@ async def test_local_orphan_marked_rejected() -> None:
     updated = oms.child(child.id)
     assert updated is not None
     assert updated.status is OrderStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_local_orphan_rest_refresh_merges_venue_row() -> None:
+    """OMS working + empty openOrders should merge REST query before REJECT/breaker."""
+    bus = EventBus()
+    breaker = CircuitBreaker(bus=bus)
+    cid = "ALPHA7-abc-00"
+    child = ChildOrder(
+        id=cid,
+        parent_id="P-1",
+        symbol="BTCUSDT",
+        side=Side.BUY,
+        qty=0.01,
+        price=100.0,
+        order_type=OrderType.LIMIT,
+        status=OrderStatus.ACK,
+    )
+    venue_row = ChildOrder(
+        id=cid,
+        parent_id="",
+        symbol="BTCUSDT",
+        side=Side.BUY,
+        qty=0.01,
+        price=100.0,
+        order_type=OrderType.LIMIT,
+        status=OrderStatus.FILLED,
+        filled_qty=0.01,
+        avg_fill_price=100.0,
+        venue_order_id="999",
+    )
+    gw = _GwWithLookup(open_orders=[], lookups={cid: venue_row})
+    oms = OrderManager(gateway=gw, bus=bus)
+    oms._children[child.id] = child  # noqa: SLF001
+    oms._child_to_parent[child.id] = child.parent_id  # noqa: SLF001
+
+    rec = OrderReconciler(gw, oms, breaker, cancel_orphans=False)
+    await rec.reconcile_once(trip_on_mismatch=False)
+
+    updated = oms.child(cid)
+    assert updated is not None
+    assert updated.status is OrderStatus.FILLED
+    assert updated.venue_order_id == "999"
+    assert rec.last_result["ok"] is True
 
 
 @pytest.mark.asyncio

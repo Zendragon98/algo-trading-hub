@@ -71,10 +71,12 @@ class OrderManager:
         self._child_to_parent: dict[str, str] = {}
         self._lock = asyncio.Lock()
         self._submit_guard: _SubmitGuardLike | None = None
-        # Wall-clock timestamp of the most recent user-data signal (order
-        # update or fill). Consumed by ConnectionMonitor to detect a
-        # silent user-data stream so the engine can auto-pause.
-        self._last_user_data_ts: float = 0.0
+        # Latest user-data WebSocket ORDER_TRADE_UPDATE / ACCOUNT_UPDATE
+        # (silent stream while holding exposure is normal on Binance).
+        self._last_ws_user_activity_ts: float = 0.0
+        # Latest time local state was aligned with the venue: WS events
+        # above, or a successful periodic REST account snapshot.
+        self._last_venue_truth_ts: float = 0.0
         self._seen_trade_ids: set[str] = set()
         self._max_seen_trades: int = 10_000
 
@@ -87,12 +89,22 @@ class OrderManager:
         self._submit_guard = guard
 
     @property
-    def last_user_data_ts(self) -> float:
-        return self._last_user_data_ts
+    def last_ws_user_activity_ts(self) -> float:
+        return self._last_ws_user_activity_ts
 
-    def touch_user_data_activity(self) -> None:
-        """Mark the user-data stream as recently active (fills, orders, or account)."""
-        self._last_user_data_ts = _time.time()
+    @property
+    def last_venue_truth_ts(self) -> float:
+        return self._last_venue_truth_ts
+
+    def touch_ws_user_data_activity(self) -> None:
+        """Mark the user-data WebSocket as recently active (fills, orders, account)."""
+        t = _time.time()
+        self._last_ws_user_activity_ts = t
+        self._last_venue_truth_ts = t
+
+    def touch_venue_truth_from_rest(self) -> None:
+        """Mark successful REST account/position sync (reconcile or startup seed)."""
+        self._last_venue_truth_ts = _time.time()
 
     # --- Submission ---
 
@@ -171,7 +183,7 @@ class OrderManager:
 
     async def on_order_update(self, update: ChildOrder) -> None:
         """Merge a venue-side order update into our state."""
-        self.touch_user_data_activity()
+        self.touch_ws_user_data_activity()
         async with self._lock:
             existing = self._children.get(update.id)
             if existing is None:
@@ -197,7 +209,7 @@ class OrderManager:
 
     async def on_fill(self, fill: Fill) -> bool:
         """Apply fill; return False if duplicate trade_id was ignored."""
-        self.touch_user_data_activity()
+        self.touch_ws_user_data_activity()
         async with self._lock:
             if fill.trade_id and fill.trade_id in self._seen_trade_ids:
                 logger.info("ignoring duplicate fill trade_id=%s", fill.trade_id)

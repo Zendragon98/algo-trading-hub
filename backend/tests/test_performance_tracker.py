@@ -1,0 +1,73 @@
+"""Unit tests for ``PerformanceTracker`` KPI aggregation."""
+
+from __future__ import annotations
+
+from typing import Literal
+from unittest.mock import MagicMock
+
+import pytest
+
+from common.enums import Side
+from common.types import Fill
+from engine.performance.fill_classification import FillClassification
+from engine.performance.performance_tracker import PerformanceTracker
+
+
+def _fill(side: Side, qty: float, px: float, *, idx: int = 0) -> Fill:
+    return Fill(
+        child_id=f"C-{idx}",
+        parent_id=None,
+        symbol="BTCUSDT",
+        side=side,
+        qty=qty,
+        price=px,
+        fee=0.0,
+        fee_asset="USDT",
+    )
+
+
+def _cls(
+    pnl: float | None,
+    *,
+    action: Literal["open", "close"] = "close",
+    entry_price: float | None = 100.0,
+    exit_price: float | None = 101.0,
+) -> FillClassification:
+    return FillClassification(
+        action=action,
+        entry_price=entry_price,
+        exit_price=exit_price,
+        pnl=pnl,
+    )
+
+
+def test_gross_pnls_and_profit_factor_ignore_opens() -> None:
+    portfolio = MagicMock()
+    perf = PerformanceTracker(portfolio)
+
+    perf.record_fill(
+        _fill(Side.BUY, 1.0, 50.0, idx=0),
+        _cls(None, action="open", entry_price=50.0, exit_price=None),
+    )
+    perf.record_fill(_fill(Side.SELL, 1.0, 51.0, idx=1), _cls(10.0))
+    perf.record_fill(_fill(Side.SELL, 1.0, 52.0, idx=2), _cls(-4.0))
+    perf.record_fill(_fill(Side.BUY, 1.0, 53.0, idx=3), _cls(0.0))
+
+    gross_win, gross_loss = perf.gross_pnls()
+    assert gross_win == pytest.approx(10.0)
+    assert gross_loss == pytest.approx(4.0)
+    assert perf.profit_factor() == pytest.approx(2.5)
+
+    # Breakevens (pnl==0) count toward win-rate denominator only.
+    assert perf.win_rate() == pytest.approx(100.0 / 3.0)
+
+
+def test_profit_factor_none_when_no_losing_closes_but_wins_exist() -> None:
+    portfolio = MagicMock()
+    perf = PerformanceTracker(portfolio)
+
+    perf.record_fill(_fill(Side.SELL, 1.0, 52.0), _cls(3.5))
+    assert perf.profit_factor() is None
+    gw, gl = perf.gross_pnls()
+    assert gw == pytest.approx(3.5)
+    assert gl == pytest.approx(0.0)

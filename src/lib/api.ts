@@ -57,6 +57,9 @@ export type KpiDTO = {
   equity: number;
   open_pnl: number;
   win_rate: number;
+  gross_win_pnl: number;
+  gross_loss_pnl: number;
+  profit_factor: number | null;
   realized_pnl: number;
   unrealized_pnl: number;
   gross_notional: number;

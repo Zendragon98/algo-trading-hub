@@ -10,7 +10,8 @@ Two MAJOR breakers complement the drawdown guard already in
                                  every day, regardless of when the
                                  engine restarted).
     - ``consecutive_losses``   : ``max_consecutive_losses`` realised
-                                 PnL records in a row are negative.
+                                 PnL records in a row are negative above
+                                 an optional magnitude floor.
 
 Both flow through the same `CircuitBreaker` instance the rest of the
 engine consumes, latched until operator re-arm.
@@ -58,12 +59,14 @@ class LossTracker:
         breaker: CircuitBreaker,
         daily_loss_kill_pct: float,
         max_consecutive_losses: int,
+        streak_loss_min_abs_usd: float = 0.0,
     ) -> None:
         self._portfolio = portfolio
         self._performance = performance
         self._breaker = breaker
         self._daily_kill = max(0.0, daily_loss_kill_pct)
         self._max_streak = max(0, int(max_consecutive_losses))
+        self._streak_loss_min_abs_usd = max(0.0, float(streak_loss_min_abs_usd))
         self._anchor: _DailyAnchor | None = None
         # Index into PerformanceTracker.trades() of the *oldest* trade we
         # haven't evaluated for the streak yet. The tracker stores newest
@@ -74,6 +77,9 @@ class LossTracker:
     def apply_settings(self, settings: Settings) -> None:
         self._daily_kill = max(0.0, settings.daily_loss_kill_pct)
         self._max_streak = max(0, int(settings.max_consecutive_losses))
+        self._streak_loss_min_abs_usd = max(
+            0.0, float(settings.consecutive_loss_min_abs_usd),
+        )
 
     @classmethod
     def from_settings(
@@ -89,6 +95,7 @@ class LossTracker:
             breaker=breaker,
             daily_loss_kill_pct=settings.daily_loss_kill_pct,
             max_consecutive_losses=settings.max_consecutive_losses,
+            streak_loss_min_abs_usd=settings.consecutive_loss_min_abs_usd,
         )
 
     # --- Heartbeat ---
@@ -150,7 +157,11 @@ class LossTracker:
             if pnl is None:
                 continue
             if pnl < 0:
-                self._current_streak += 1
+                if (
+                    self._streak_loss_min_abs_usd <= 0
+                    or abs(pnl) + 1e-12 >= self._streak_loss_min_abs_usd
+                ):
+                    self._current_streak += 1
             elif pnl > 0:
                 self._current_streak = 0
             # pnl == 0 leaves the streak unchanged.

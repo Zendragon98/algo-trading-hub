@@ -436,7 +436,7 @@ flowchart TB
 
 | Signal | Meaning |
 |--------|---------|
-| **User-data age** | Should stay &lt; ~60 s; high = account stream stale |
+| **Venue sync age** (`user_data_age_sec`) | Low when user-data WS or periodic REST reconcile has refreshed truth; **`user_ws_event_age_sec`** can stay high quietly while holding exposure |
 | **Order reconcile** | Should be OK; mismatch = venue vs OMS drift |
 | **`reconcile_mismatch` breaker** | Qty drift detected (healed if `RECONCILE_HEAL_ON_MISMATCH=true`) |
 

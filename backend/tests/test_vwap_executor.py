@@ -15,7 +15,7 @@ os.environ.setdefault("BINANCE_API_KEY", "test")
 os.environ.setdefault("BINANCE_API_SECRET", "test")
 
 from common.config import Settings  # noqa: E402
-from common.enums import AlgoMode, OrderStatus, Side  # noqa: E402
+from common.enums import AlgoMode, OrderStatus, OrderType, Side  # noqa: E402
 from common.events import EventBus  # noqa: E402
 from common.types import ChildOrder, Kline, ParentOrder, Position  # noqa: E402
 from engine.execution.vwap_executor import ExecutorConfig, VwapExecutor  # noqa: E402
@@ -61,6 +61,124 @@ class _MockGateway(GatewayInterface):
 
     async def klines(self, symbol: str, interval: str, limit: int = 200) -> list[Kline]:
         return []
+
+
+class _Flatten2022OnceGateway(_MockGateway):
+    """First reduce-only REST attempt returns Binance-like -2022."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reject_next_reduce_only = True
+
+    async def place_order(self, order: ChildOrder) -> ChildOrder:
+        if self.reject_next_reduce_only and order.reduce_only:
+            self.reject_next_reduce_only = False
+            err = RuntimeError("ReduceOnly Order is rejected.")
+            setattr(err, "code", -2022)
+            raise err
+        return await super().place_order(order)
+
+
+@pytest.mark.asyncio
+async def test_flatten_minus_2022_recover_breaks_remaining_slices_when_venue_flat() -> None:
+    bus = EventBus()
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        urgent_duration_sec=1,
+        urgent_num_slices=2,
+        flatten_vwap_duration_sec=1,
+        flatten_vwap_slices=4,
+        symbols=["BTCUSDT"],
+        reconcile_qty_tolerance=1e-9,
+    )
+    gateway = _Flatten2022OnceGateway()
+    om = OrderManager(gateway, bus)
+    books = OrderBookStore(["BTCUSDT"])
+    books.get("BTCUSDT").apply_snapshot(
+        bids=[(100.0, 1.0)], asks=[(100.5, 1.0)], last_update_id=1,
+    )
+    features = FeatureStore(books, TradeTape(window_sec=10), settings)
+
+    executor = VwapExecutor(
+        order_manager=om,
+        gateway=gateway,
+        features=features,
+        price_provider=lambda _sym: 100.0,
+        settings=settings,
+        config=ExecutorConfig(duration_sec=0.3, n_slices=6, slice_timeout_sec=0.1),
+    )
+
+    parent = ParentOrder(
+        id="P-flat-test",
+        symbol="BTCUSDT",
+        side=Side.SELL,
+        qty=3.0,
+        algo_mode=AlgoMode.NORMAL,
+        reduce_only=True,
+        notes="flatten",
+    )
+    await executor.execute(parent)
+    await asyncio.sleep(1.0)
+
+    assert gateway.reject_next_reduce_only is False
+    assert gateway.placed == []
+
+
+@pytest.mark.asyncio
+async def test_flatten_minus_2022_recover_markets_residual_position() -> None:
+    """After -2022, recovery sees open size and claws it back once."""
+    bus = EventBus()
+
+    class _ResidualGateway(_Flatten2022OnceGateway):
+        async def fetch_positions(self) -> list[Position]:
+            return [
+                Position(symbol="BTCUSDT", qty=1.234, avg_entry_price=100.0, mark_price=100.5),
+            ]
+
+    gateway = _ResidualGateway()
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        urgent_duration_sec=1,
+        urgent_num_slices=2,
+        symbols=["BTCUSDT"],
+        reconcile_qty_tolerance=1e-12,
+    )
+    om = OrderManager(gateway, bus)
+    books = OrderBookStore(["BTCUSDT"])
+    books.get("BTCUSDT").apply_snapshot(
+        bids=[(100.0, 1.0)], asks=[(100.5, 1.0)], last_update_id=1,
+    )
+    features = FeatureStore(books, TradeTape(window_sec=10), settings)
+
+    executor = VwapExecutor(
+        order_manager=om,
+        gateway=gateway,
+        features=features,
+        price_provider=lambda _sym: 100.0,
+        settings=settings,
+        config=ExecutorConfig(duration_sec=0.3, n_slices=4, slice_timeout_sec=0.1),
+    )
+
+    parent = ParentOrder(
+        id="P-flat-claw",
+        symbol="BTCUSDT",
+        side=Side.SELL,
+        qty=5.0,
+        algo_mode=AlgoMode.FRONTLOAD,
+        reduce_only=True,
+        notes="flatten_passive",
+    )
+    await executor.execute(parent)
+    await asyncio.sleep(1.2)
+
+    assert len(gateway.placed) == 1
+    m = gateway.placed[0]
+    assert m.order_type is OrderType.MARKET
+    assert m.reduce_only is True
+    assert pytest.approx(m.qty) == pytest.approx(1.234)
+    assert m.side is Side.SELL
 
 
 @pytest.mark.asyncio

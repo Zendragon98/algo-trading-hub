@@ -49,6 +49,21 @@ import type {
 import { useAlgoStream } from "@/hooks/useAlgoStream";
 import { api } from "@/lib/api";
 
+function formatUsdRough(n: number): string {
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** Extra decimals when dollars are tiny so payoff ÷ totals stay consistent with the factor. */
+function formatUsdPayoffCell(n: number): string {
+  const a = Math.abs(n);
+  if (a >= 100)
+    return a.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (a >= 1) return n.toFixed(2);
+  if (a >= 0.01) return n.toFixed(4);
+  if (a > 0) return n.toFixed(6);
+  return "0.00";
+}
+
 export const Route = createFileRoute("/")({
   component: Index,
   head: () => ({
@@ -110,11 +125,53 @@ function Index() {
     [positions],
   );
 
-  const winRate = useMemo(() => {
-    const closed = trades.filter((t) => t.action === "close");
-    if (!closed.length) return 0;
-    const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
-    return (wins / closed.length) * 100;
+  /** Win % + payoff vs the same RECENT TRADES list so WS fills stay coherent. */
+  const closedTradePerf = useMemo(() => {
+    const closed = trades.filter((t) => t.action === "close" && t.pnl != null);
+    if (!closed.length) {
+      return {
+        winRatePct: 0,
+        profitFactor: null as number | null,
+        grossWin: 0,
+        grossLoss: 0,
+        netFromCloses: 0,
+        closed: 0,
+        winCount: 0,
+        lossCount: 0,
+        breakevenCount: 0,
+      };
+    }
+    let grossWin = 0;
+    let grossLoss = 0;
+    let winCount = 0;
+    let lossCount = 0;
+    let breakevenCount = 0;
+    for (const t of closed) {
+      const p = t.pnl ?? 0;
+      if (p > 0) {
+        grossWin += p;
+        winCount += 1;
+      } else if (p < 0) {
+        grossLoss -= p;
+        lossCount += 1;
+      } else {
+        breakevenCount += 1;
+      }
+    }
+    const profitFactor = grossLoss > 0 ? grossWin / grossLoss : null;
+    const netFromCloses = grossWin - grossLoss;
+    const winRatePct = (winCount / closed.length) * 100;
+    return {
+      winRatePct,
+      profitFactor,
+      grossWin,
+      grossLoss,
+      netFromCloses,
+      closed: closed.length,
+      winCount,
+      lossCount,
+      breakevenCount,
+    };
   }, [trades]);
 
   // Fire-and-forget control commands. The engine drives the next status
@@ -208,13 +265,7 @@ function Index() {
             sub={`${positions.length} open positions`}
             tone={openPnl >= 0 ? "bull" : "bear"}
           />
-          <KpiCard
-            icon={<Gauge className="size-4" />}
-            label="WIN RATE"
-            value={`${winRate.toFixed(1)}%`}
-            sub={`${trades.filter((t) => t.action === "close").length} closed trades`}
-            tone="neutral"
-          />
+          <WinRateKpiCard perf={closedTradePerf} />
           <KpiCard
             icon={<Zap className="size-4" />}
             label="STRATEGY"
@@ -623,6 +674,180 @@ function TopBar(props: {
   );
 }
 
+type ClosedTradePerfVm = {
+  winRatePct: number;
+  profitFactor: number | null;
+  grossWin: number;
+  grossLoss: number;
+  netFromCloses: number;
+  closed: number;
+  winCount: number;
+  lossCount: number;
+  breakevenCount: number;
+};
+
+function WinRateKpiCard({ perf }: { perf: ClosedTradePerfVm }) {
+  const {
+    closed,
+    winRatePct,
+    profitFactor,
+    grossWin,
+    grossLoss,
+    netFromCloses,
+    winCount,
+    lossCount,
+    breakevenCount,
+  } = perf;
+
+  const winSeg = closed > 0 ? (winCount / closed) * 100 : 0;
+  const lossSeg = closed > 0 ? (lossCount / closed) * 100 : 0;
+  const flatSeg = closed > 0 ? (breakevenCount / closed) * 100 : 0;
+
+  const dollarDen = grossWin + grossLoss;
+  const bullDollarPct = dollarDen > 1e-12 ? Math.min(100, (grossWin / dollarDen) * 100) : 50;
+
+  const netTone =
+    netFromCloses > 0 ? "text-bull" : netFromCloses < 0 ? "text-bear" : "text-muted-foreground";
+  const netFormatted =
+    netFromCloses >= 0 ? `+$${formatUsdPayoffCell(netFromCloses)}` : `−$${formatUsdPayoffCell(Math.abs(netFromCloses))}`;
+
+  return (
+    <div className="relative overflow-hidden rounded-sm border border-border bg-card/60 p-4">
+      <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+        <span className="flex items-center gap-1.5 font-mono">
+          <Gauge className="size-4" strokeWidth={2} />
+          Win rate · payoff
+        </span>
+        <CircleDot className="size-3 opacity-40" />
+      </div>
+
+      {!closed ? (
+        <div className="mt-10 pb-8 text-center text-xs text-muted-foreground">
+          No closed fills in the rolling buffer yet.
+        </div>
+      ) : (
+        <>
+          <div className="mt-3 flex items-end justify-between gap-3">
+            <div className="text-4xl font-mono font-semibold tabular-nums leading-none tracking-tight text-foreground">
+              {winRatePct.toFixed(1)}
+              <span className="align-top text-xl font-semibold text-muted-foreground">%</span>
+            </div>
+            <div className="flex flex-shrink-0 flex-wrap justify-end gap-1">
+              <Badge variant="outline" className="h-6 border-bull/35 bg-bull/10 px-1.5 font-mono text-[10px] text-bull">
+                {winCount}W
+              </Badge>
+              <Badge variant="outline" className="h-6 border-bear/35 bg-bear/10 px-1.5 font-mono text-[10px] text-bear">
+                {lossCount}L
+              </Badge>
+              {breakevenCount ? (
+                <Badge variant="outline" className="h-6 border-muted-foreground/35 px-1.5 font-mono text-[10px] text-muted-foreground">
+                  {breakevenCount}BE
+                </Badge>
+              ) : null}
+            </div>
+          </div>
+
+          <div
+            className="mt-2 flex h-2 w-full overflow-hidden rounded-full bg-muted/45"
+            title="Share of fills: wins vs flat vs losses"
+            role="img"
+            aria-label={`Win fills ${winSeg.toFixed(0)} percent, losses ${lossSeg.toFixed(0)} percent, breakevens ${flatSeg.toFixed(0)} percent`}
+          >
+            <div className="h-full bg-bull transition-[width] duration-500" style={{ width: `${winSeg}%` }} />
+            <div
+              className="h-full bg-muted-foreground/25 transition-[width] duration-500"
+              style={{ width: `${flatSeg}%` }}
+            />
+            <div className="h-full bg-bear transition-[width] duration-500" style={{ width: `${lossSeg}%` }} />
+          </div>
+          <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+            {closed} closed fills · {winSeg.toFixed(0)} / {flatSeg.toFixed(0)} / {lossSeg.toFixed(0)}% W / BE / L
+          </p>
+
+          <div className="mt-4 space-y-2">
+            <div className="flex items-center justify-between gap-2 text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
+              <span className="flex items-center gap-1">
+                <TrendingUp className="size-3 text-bull" />
+                Gross wins
+              </span>
+              <span className="flex items-center gap-1">
+                Gross losses
+                <TrendingDown className="size-3 text-bear" />
+              </span>
+            </div>
+
+            <div
+              className="flex h-2.5 w-full overflow-hidden rounded-md bg-muted/45"
+              title="Relative dollar magnitude: winning closes vs losing closes"
+              role="img"
+              aria-label={`Winning closes about ${bullDollarPct.toFixed(0)} percent of payoff dollars`}
+            >
+              <div
+                className="h-full shrink-0 rounded-l-md bg-bull shadow-[inset_0_1px_0_rgba(255,255,255,0.12)] transition-[width] duration-500"
+                style={{ width: `${bullDollarPct}%` }}
+              />
+              <div className="h-full min-w-0 flex-1 rounded-r-md bg-bear shadow-[inset_0_-1px_0_rgba(0,0,0,0.35)]" />
+            </div>
+
+            <div className="flex items-baseline justify-between gap-3 font-mono text-sm tabular-nums">
+              <span className="text-bull">{`+$${formatUsdPayoffCell(grossWin)}`}</span>
+              <span className="text-bear">{`−$${formatUsdPayoffCell(grossLoss)}`}</span>
+            </div>
+          </div>
+
+          <div
+            className={cn(
+              "mt-4 flex items-center justify-between rounded-md border px-3 py-2 font-mono",
+              profitFactor != null && profitFactor >= 1
+                ? "border-bull/30 bg-bull/10"
+                : profitFactor != null
+                  ? "border-bear/30 bg-bear/10"
+                  : "border-border bg-muted/20",
+            )}
+          >
+            <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Profit factor</span>
+            <span className="text-xl tabular-nums tracking-tight">
+              {profitFactor != null ? (
+                <>
+                  {profitFactor.toFixed(2)}
+                  <span className="text-sm text-muted-foreground">×</span>
+                </>
+              ) : grossWin > 0 && grossLoss <= 1e-12 ? (
+                <>
+                  ∞<span className="text-sm text-muted-foreground">×</span>
+                </>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
+            </span>
+          </div>
+
+          <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2 font-mono text-xs">
+            <span className="text-muted-foreground">Net · closed fills</span>
+            <span className={cn("tabular-nums font-semibold", netTone)}>{netFormatted}</span>
+          </div>
+
+          <details className="group mt-2 border border-border/50 bg-muted/15 font-mono text-[10px] leading-relaxed text-muted-foreground [&_summary::-webkit-details-marker]:hidden">
+            <summary className="cursor-pointer select-none px-2 py-1.5 text-[10px] uppercase tracking-wide hover:bg-muted/30">
+              <span className="text-muted-foreground">ⓘ Methodology · </span>
+              <span className="normal-case tracking-normal opacity-70">PnL sources & factor definition</span>
+            </summary>
+            <div className="border-t border-border/40 px-2 py-2 text-[10px]">
+              Rows use realized P&amp;L on each <strong className="text-foreground">reducing</strong> fill. Binance Futures
+              uses field <code className="rounded bg-muted/60 px-0.5">rp</code> when it is non-zero; otherwise the
+              console uses{' '}
+              <span className="whitespace-nowrap">(exit − entry) × closed qty</span>. Profit factor =
+              Σ&nbsp;positive closes ÷ Σ&nbsp;|negative closes|. Excludes transfers, funding, and fees unless the venue folds
+              them into <code className="rounded bg-muted/60 px-0.5">rp</code>. Dollar labels use extra precision when totals
+              are small so they reconcile with the factor.
+            </div>
+          </details>
+        </>
+      )}
+    </div>
+  );
+}
+
 function KpiCard({
   icon,
   label,
@@ -633,7 +858,7 @@ function KpiCard({
   icon: React.ReactNode;
   label: string;
   value: string;
-  sub: string;
+  sub: React.ReactNode;
   tone: "bull" | "bear" | "neutral";
 }) {
   const subColor =

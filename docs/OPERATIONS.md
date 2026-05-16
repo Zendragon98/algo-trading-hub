@@ -44,7 +44,7 @@ Operators must ensure the browser can reach **`wss:`** when the page is served o
 - `ready`: `true` only if **all** of:
   - `engine.status == running`
   - Last **public** market tick age **&lt; 60 s** (`tick_fresh`)
-  - Last **user-data** activity age **&lt; 120 s** (`user_data_fresh`, from `engine.oms.last_user_data_ts`)
+  - Last **authoritative venue alignment** age **&lt; 120 s** (`user_data_fresh`: user-data WebSocket *or* periodic REST account snapshot; fields `engine.oms.last_venue_truth_ts` / `user_data_age_sec` in `system_health`)
 - Diagnostic fields: `engine`, `tick_fresh`, `user_data_fresh`
 
 **Operational note:** During intentional **pause**, the engine is not `running`; `/ready` will be `false`. Use `/health` for “is the API up?” and align orchestration so **readiness** matches your definition of “accepting trading UI sessions.”
@@ -57,7 +57,7 @@ Operators must ensure the browser can reach **`wss:`** when the page is served o
 
 | Signal | Interpretation |
 |--------|----------------|
-| `user_data_age_sec`, `user_data_stale` | Stale account stream — **do not trust** open-order/position mirrors until fresh |
+| `user_data_age_sec`, `user_ws_event_age_sec`, `user_data_stale` | **`user_data_age_sec`** — time since last venue-truth sync (WS *or* successful REST reconcile). **`user_ws_event_age_sec`** — silence on user-data WebSocket (can sit high when holding quietly). **`user_data_stale`** trips only with **working** orders and stale WS |
 | `tick_age_sec` | Stale public market data — strategies may be vetoed or paused |
 | `clock_skew_ms`, `clock_skew_synced` | REST signing vs venue time; `-1021` class failures if unsynced |
 | `order_reconcile` | Venue `openOrders` vs OMS drift |

@@ -13,9 +13,12 @@ trips a HWM-drawdown breaker before cumulative loss exceeds limits.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from ..portfolio.portfolio import Portfolio
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from common.config import Settings
-from common.enums import AlgoMode, OrderType, Urgency
+from common.enums import AlgoMode, OrderType, Side, Urgency
 from engine.orders.order_state_machine import TERMINAL_ORDER_STATUSES
 from common.types import ChildOrder, ParentOrder
 
@@ -31,6 +31,10 @@ from ..risk.venue_sizing import venue_cap_qty, venue_qty_in_bounds
 from .slicer import Slice, build_schedule
 
 logger = logging.getLogger(__name__)
+
+
+class _FlattenRecoverComplete(Exception):
+    """Internal: flatten parent finished early after a -2022 recovery path."""
 
 
 def _is_reduce_only_reject(exc: BaseException) -> bool:
@@ -226,6 +230,12 @@ class VwapExecutor:
 
                 try:
                     await self._submit_slice(parent, slc)
+                except _FlattenRecoverComplete:
+                    logger.info(
+                        "VWAP %s flatten parent finished early (-2022 recover path)",
+                        parent.id,
+                    )
+                    break
                 except Exception as exc:  # noqa: BLE001
                     if _is_reduce_only_reject(exc):
                         logger.warning(
@@ -256,6 +266,101 @@ class VwapExecutor:
                     await self._on_parent_done(parent.id)
                 except Exception:  # noqa: BLE001
                     logger.exception("on_parent_done failed for %s", parent.id)
+
+    async def _try_flatten_recovery_after_reduce_only_reject(
+        self,
+        parent: ParentOrder,
+        *,
+        slice_index: int,
+        ref_price: float | None,
+    ) -> bool:
+        """Handle Binance -2022 on flatten VWAP slices.
+
+        ``positionRisk`` can briefly disagree with the live book during
+        coordinated pair unwinds; refresh once and either accept flat or
+        send a single market reduce for the residual.
+        """
+        if (
+            parent.notes not in ("flatten", "flatten_passive")
+            or not parent.reduce_only
+        ):
+            return False
+        try:
+            rows = await self._gateway.fetch_positions()
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "flatten reduceOnly recovery skipped: fetch_positions failed parent=%s",
+                parent.id,
+                exc_info=True,
+            )
+            return False
+
+        tol = float(getattr(self._settings, "reconcile_qty_tolerance", 1e-6))
+        sym_u = parent.symbol.upper()
+        venue_qty = 0.0
+        for p in rows:
+            if str(p.symbol).upper() == sym_u:
+                venue_qty = float(p.qty)
+                break
+
+        if abs(venue_qty) <= tol:
+            logger.info(
+                "flatten reduceOnly recovered: venue already flat symbol=%s parent=%s",
+                parent.symbol,
+                parent.id,
+            )
+            return True
+
+        filters = self._gateway.get_symbol_filters(parent.symbol)
+        mq = venue_cap_qty(abs(venue_qty), filters)
+        mref = ref_price if ref_price is not None and ref_price > 0 else (
+            self._price(parent.symbol)
+        )
+        if mq <= tol or not venue_qty_in_bounds(
+            mq, filters, mref, reduce_only=True,
+        ):
+            logger.warning(
+                "flatten reduceOnly recovery: residual not sendable "
+                "(symbol=%s venue_qty=%.8f mq=%s parent=%s)",
+                parent.symbol,
+                venue_qty,
+                mq,
+                parent.id,
+            )
+            return False
+
+        close_side = Side.SELL if venue_qty > 0 else Side.BUY
+        recover_ix = max(80, min(98, 80 + slice_index))
+        claw = ChildOrder(
+            id=new_client_order_id(parent.id, recover_ix),
+            parent_id=parent.id,
+            symbol=parent.symbol,
+            side=close_side,
+            qty=mq,
+            price=None,
+            order_type=OrderType.MARKET,
+            reduce_only=True,
+        )
+        try:
+            placed = await self._om.submit_child(claw)
+        except Exception as exc2:  # noqa: BLE001
+            if _is_reduce_only_reject(exc2):
+                logger.info(
+                    "flatten reduceOnly recovered: venue flat after race "
+                    "(symbol=%s parent=%s)",
+                    parent.symbol,
+                    parent.id,
+                )
+                return True
+            raise
+        await self._await_terminal(placed.id)
+        logger.info(
+            "flatten reduceOnly recovered via market clawback %s qty=%.8f parent=%s",
+            parent.symbol,
+            mq,
+            parent.id,
+        )
+        return True
 
     async def _submit_slice(self, parent: ParentOrder, slc: Slice) -> None:
         price = self._passive_price(parent)
@@ -297,6 +402,15 @@ class VwapExecutor:
         try:
             placed = await self._om.submit_child(child)
         except Exception as exc:
+            if (
+                _is_reduce_only_reject(exc)
+                and await self._try_flatten_recovery_after_reduce_only_reject(
+                    parent,
+                    slice_index=slc.index,
+                    ref_price=ref_price,
+                )
+            ):
+                raise _FlattenRecoverComplete
             if parent.reduce_only or _is_reduce_only_reject(exc):
                 logger.warning(
                     "slice aborted (reduce_only) parent=%s slice=%d: %s",

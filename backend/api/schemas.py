@@ -71,6 +71,9 @@ class KpiDTO(BaseModel):
     equity: float
     open_pnl: float
     win_rate: float
+    gross_win_pnl: float
+    gross_loss_pnl: float
+    profit_factor: float | None = None
     realized_pnl: float
     unrealized_pnl: float
     gross_notional: float
@@ -176,6 +179,7 @@ class SystemHealthDTO(BaseModel):
     clock_skew_ms: float = 0.0
     tick_age_sec: float = -1.0
     user_data_age_sec: float = -1.0
+    user_ws_event_age_sec: float = -1.0
     user_data_monitored: bool = False
     user_data_stale: bool = False
     user_data_reconcile_stale: bool = False

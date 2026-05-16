@@ -120,6 +120,15 @@ class GatewayInterface(ABC):
         """Return working orders on the venue. Default: none (mocks / skeletons)."""
         return []
 
+    async def fetch_order_by_client_id(self, symbol: str, client_order_id: str) -> ChildOrder | None:
+        """Best-effort REST lookup when user-data lag leaves working orders stale.
+
+        Implementations return ``None`` when the order is unknown or unsupported.
+        Used by order reconcile to align OMS with venue truth without tripping
+        breakers on missed WebSocket updates.
+        """
+        return None
+
     async def cancel_all_open_orders(self) -> None:
         """Cancel every open order on the venue."""
         orders = await self.fetch_open_orders()

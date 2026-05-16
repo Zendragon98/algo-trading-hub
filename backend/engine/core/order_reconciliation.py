@@ -10,6 +10,7 @@ from typing import Any
 from common.config import Settings
 from common.enums import EventType, OrderStatus
 from common.events import Event, EventBus
+from common.types import ChildOrder
 
 from gateways.gateway_interface import GatewayInterface
 
@@ -95,6 +96,37 @@ class OrderReconciler:
         """Align OMS with venue open orders after connect."""
         await self.reconcile_once(trip_on_mismatch=False)
 
+    async def _refresh_local_orphans_from_venue(
+        self,
+        orphan_ids: set[str],
+        local_working: dict[str, ChildOrder],
+    ) -> None:
+        """Merge venue REST truth for children absent from ``openOrders`` (WS lag)."""
+        for cid in sorted(orphan_ids):
+            child = local_working.get(cid)
+            if child is None:
+                continue
+            try:
+                refreshed = await self._gateway.fetch_order_by_client_id(
+                    child.symbol,
+                    cid,
+                )
+            except Exception:
+                logger.exception(
+                    "order reconcile: fetch_order_by_client_id failed (%s %s)",
+                    child.symbol,
+                    cid,
+                )
+                continue
+            if refreshed is None:
+                continue
+            logger.info(
+                "order reconcile: refreshed stale local order %s status=%s (REST)",
+                cid,
+                refreshed.status.value,
+            )
+            await self._oms.on_order_update(refreshed)
+
     async def reconcile_once(self, *, trip_on_mismatch: bool = True) -> None:
         try:
             venue_orders = await self._gateway.fetch_open_orders()
@@ -142,7 +174,17 @@ class OrderReconciler:
 
         if orphans_local:
             logger.warning(
-                "order reconcile: %d local working orders missing on venue",
+                "order reconcile: %d local working orders missing from openOrders",
+                len(orphans_local),
+            )
+            await self._refresh_local_orphans_from_venue(orphans_local, local_working)
+            local_working = {c.id: c for c in self._oms.working_children()}
+            local_ids = set(local_working)
+            orphans_local = local_ids - venue_ids
+
+        if orphans_local:
+            logger.warning(
+                "order reconcile: %d local working orders still unmatched after REST refresh",
                 len(orphans_local),
             )
             for cid in orphans_local:

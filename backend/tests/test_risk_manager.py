@@ -90,6 +90,54 @@ def test_monitor_tick_trips_max_drawdown() -> None:
     assert "max_drawdown" in codes
 
 
+def test_rearm_max_drawdown_reanchors_session_start() -> None:
+    """Re-arm alone re-trips; portfolio re-anchor matches operator side effect."""
+    settings = _settings()
+    rm, portfolio = _build(settings)
+    portfolio.seed_cash(1000.0)
+    portfolio.update_cash(940.0)
+    rm._pnl.update()
+    tick = Tick(symbol="BTCUSDT", bid=99.5, ask=100.5)
+    rm.monitor_tick(tick, positions=[])
+    assert rm.kill_switch is True
+    rm.breaker.rearm(code="max_drawdown")
+    assert not rm.kill_switch
+    rm.monitor_tick(tick, positions=[])
+    assert rm.kill_switch is True
+    rm.breaker.rearm(code="max_drawdown")
+    portfolio.reanchor_session_start_equity_after_drawdown_rearm()
+    rm.monitor_tick(tick, positions=[])
+    assert rm.kill_switch is False
+
+
+def test_rearm_hwm_drawdown_reanchors_peak() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        max_risk_pct=0.10,
+        max_gross_notional=1000.0,
+        max_drawdown_pct=0.99,
+        hwm_drawdown_kill_pct=0.10,
+        symbols=["BTCUSDT"],
+    )
+    rm, portfolio = _build(settings)
+    portfolio.seed_cash(1000.0)
+    rm._pnl.update()
+    portfolio.update_cash(1200.0)
+    rm._pnl.update()
+    portfolio.update_cash(1000.0)
+    tick = Tick(symbol="BTCUSDT", bid=99.0, ask=101.0)
+    rm.monitor_tick(tick, positions=[])
+    assert "hwm_drawdown" in {s.code for s in rm.breaker.active()}
+    rm.breaker.rearm(code="hwm_drawdown")
+    rm.monitor_tick(tick, positions=[])
+    assert rm.kill_switch is True
+    rm.breaker.rearm(code="hwm_drawdown")
+    rm._pnl.reanchor_hwm_after_drawdown_rearm()
+    rm.monitor_tick(tick, positions=[])
+    assert rm.kill_switch is False
+
+
 def test_rejects_when_kill_switch() -> None:
     """Engine-scope MAJOR breach blocks every entry path.
 

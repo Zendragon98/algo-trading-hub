@@ -55,6 +55,7 @@ class Reconciler:
         interval_sec: float,
         qty_tolerance: float,
         skip_rest_poll: Callable[[], bool] | None = None,
+        on_authoritative_snap: Callable[[], None] | None = None,
     ) -> None:
         self._gateway = gateway
         self._positions = positions
@@ -63,6 +64,7 @@ class Reconciler:
         self._interval = max(5.0, interval_sec)
         self._qty_tolerance = max(0.0, qty_tolerance)
         self._skip_rest_poll = skip_rest_poll
+        self._on_authoritative_snap = on_authoritative_snap
         self._heal_on_mismatch = True
         self._task: asyncio.Task[None] | None = None
 
@@ -80,6 +82,7 @@ class Reconciler:
         portfolio: Portfolio,
         breaker: CircuitBreaker,
         skip_rest_poll: Callable[[], bool] | None = None,
+        on_authoritative_snap: Callable[[], None] | None = None,
     ) -> "Reconciler":
         inst = cls(
             gateway=gateway,
@@ -89,6 +92,7 @@ class Reconciler:
             interval_sec=settings.reconcile_interval_sec,
             qty_tolerance=settings.reconcile_qty_tolerance,
             skip_rest_poll=skip_rest_poll,
+            on_authoritative_snap=on_authoritative_snap,
         )
         inst._heal_on_mismatch = bool(settings.reconcile_heal_on_mismatch)
         return inst
@@ -187,3 +191,6 @@ class Reconciler:
                     detail=f"{symbol} venue={venue_qty:.6f} local={local_qty:.6f}",
                 )
             )
+
+        if self._on_authoritative_snap is not None:
+            self._on_authoritative_snap()

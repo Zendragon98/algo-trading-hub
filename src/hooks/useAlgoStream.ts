@@ -39,6 +39,9 @@ const fmtTime = (epoch?: number) => {
 
 const EMPTY_BREAKERS: BreakerList = { active: [], history: [] };
 
+/** Must match ``PerformanceTracker`` default ``history_size`` (engine). */
+export const PERFORMANCE_TRADE_HISTORY_CAP = 200;
+
 export type AlgoStream = {
   status: AlgoStatus;
   paperMode: boolean;
@@ -529,7 +532,10 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
         exit_price: d.exit_price,
         pnl: d.pnl,
       });
-      return { ...prev, trades: [trade, ...prev.trades].slice(0, 60) };
+      return {
+        ...prev,
+        trades: [trade, ...prev.trades].slice(0, PERFORMANCE_TRADE_HISTORY_CAP),
+      };
     }
 
     case "order": {

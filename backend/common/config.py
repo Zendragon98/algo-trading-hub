@@ -129,7 +129,15 @@ class Settings(BaseSettings):
     max_consecutive_rejects: int = 3
     # Portfolio guards
     daily_loss_kill_pct: float = 0.05       # MAJOR: daily-loss kill
-    max_consecutive_losses: int = 5         # MAJOR: streak kill
+    max_consecutive_losses: int = 10        # MAJOR: losing-trade streak before latch
+    consecutive_loss_min_abs_usd: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "If > 0, realised losses smaller than this |PnL| in quote terms do "
+            "not advance the consecutive-loss streak (fees/noise)."
+        ),
+    )
     hwm_drawdown_kill_pct: float = 0.15     # MAJOR: high-water-mark drawdown
     exec_quality_kill_bps: float = 50.0     # MAJOR: rolling slippage kill
     exec_quality_window: int = 10           # number of completed parents to avg

@@ -111,6 +111,51 @@ def test_daily_loss_trips_when_equity_drops_past_threshold() -> None:
     assert breaker.is_blocked(BreakerScope.ENGINE)
 
 
+def test_daily_loss_rearm_must_reanchor_baseline() -> None:
+    portfolio = _portfolio(1000.0)
+    perf = PerformanceTracker(portfolio)
+    breaker = CircuitBreaker()
+    lt = LossTracker(
+        portfolio=portfolio, performance=perf, breaker=breaker,
+        daily_loss_kill_pct=0.05, max_consecutive_losses=0,
+    )
+    lt.update(now=time.time())
+    portfolio.update_cash(900.0)
+    lt.update(now=time.time())
+    assert breaker.is_blocked(BreakerScope.ENGINE)
+    breaker.rearm(code="daily_loss")
+    assert not breaker.is_blocked(BreakerScope.ENGINE)
+    lt.update(now=time.time())
+    assert breaker.is_blocked(BreakerScope.ENGINE)
+    breaker.rearm(code="daily_loss")
+    lt.reanchor_daily_baseline_after_rearm(now=time.time())
+    lt.update(now=time.time())
+    assert not breaker.is_blocked(BreakerScope.ENGINE)
+
+
+def test_small_loss_below_min_abs_skips_consecutive_counter() -> None:
+    portfolio = _portfolio(1000.0)
+    perf = PerformanceTracker(portfolio)
+    breaker = CircuitBreaker()
+    lt = LossTracker(
+        portfolio=portfolio,
+        performance=perf,
+        breaker=breaker,
+        daily_loss_kill_pct=0.0,
+        max_consecutive_losses=3,
+        streak_loss_min_abs_usd=25.0,
+    )
+    for i in range(5):
+        _record_pnl(perf, -10.0, idx=i)
+    lt.update()
+    assert not breaker.is_blocked(BreakerScope.ENGINE)
+    _record_pnl(perf, -40.0, idx=99)
+    _record_pnl(perf, -35.0, idx=100)
+    _record_pnl(perf, -26.0, idx=101)
+    lt.update()
+    assert breaker.is_blocked(BreakerScope.ENGINE)
+
+
 def test_pnl_tracker_hwm_drawdown() -> None:
     portfolio = _portfolio(1000.0)
     pnl = PnLTracker(portfolio)

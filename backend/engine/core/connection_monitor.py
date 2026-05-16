@@ -7,7 +7,8 @@ never receives back the fills it expects.
 
 `ConnectionMonitor.tick(now)` is called from the engine heartbeat with
 the latest `last_tick_ts` (any market-data WS event) and
-`last_user_data_ts` (any order/fill update). If either timestamp
+`last_user_data_ts` (user-data WS only: fills, order updates,
+``ACCOUNT_UPDATE`` — not bumped by periodic REST reconcile). If either timestamp
 exceeds `ws_stale_pause_sec` of staleness, a minor ENGINE-scope breach
 is tripped which auto-clears (cooldown-resumes) once data flows again.
 

@@ -36,6 +36,9 @@ class EngineSnapshot:
         portfolio: Portfolio,
         trades: list[TradeRecord],
         win_rate: float,
+        gross_win_pnl: float,
+        gross_loss_pnl: float,
+        profit_factor: float | None,
     ) -> None:
         self.status = state.status
         self.started_at = state.started_at
@@ -54,3 +57,6 @@ class EngineSnapshot:
         self.positions = position_tracker.all()
         self.trades = trades
         self.win_rate = win_rate
+        self.gross_win_pnl = gross_win_pnl
+        self.gross_loss_pnl = gross_loss_pnl
+        self.profit_factor = profit_factor

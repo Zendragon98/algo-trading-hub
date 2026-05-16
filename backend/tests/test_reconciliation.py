@@ -55,6 +55,52 @@ class _SpyGateway(_MockGateway):
 
 
 @pytest.mark.asyncio
+async def test_authoritative_snap_callback_on_success() -> None:
+    pos = Position(symbol="BTCUSDT", qty=0.5, avg_entry_price=100.0, mark_price=100.0)
+    bus = EventBus()
+    pt = PositionTracker(bus)
+    pt.seed([pos])
+    portfolio = Portfolio(bus, pt)
+    portfolio.seed_cash(1000.0)
+    breaker = CircuitBreaker()
+    n = 0
+
+    def bump() -> None:
+        nonlocal n
+        n += 1
+
+    rec = Reconciler(
+        gateway=_MockGateway([pos]),
+        positions=pt, portfolio=portfolio, breaker=breaker,
+        interval_sec=60.0, qty_tolerance=1e-6,
+        on_authoritative_snap=bump,
+    )
+    await rec.reconcile_once()
+    assert n == 1
+
+
+@pytest.mark.asyncio
+async def test_authoritative_snap_not_called_when_rest_skipped() -> None:
+    pos = Position(symbol="BTCUSDT", qty=0.5, avg_entry_price=100.0, mark_price=100.0)
+    bus = EventBus()
+    pt = PositionTracker(bus)
+    pt.seed([pos])
+    portfolio = Portfolio(bus, pt)
+    portfolio.seed_cash(1000.0)
+    bumped: list[int] = []
+
+    rec = Reconciler(
+        gateway=_MockGateway([pos]),
+        positions=pt, portfolio=portfolio, breaker=CircuitBreaker(),
+        interval_sec=60.0, qty_tolerance=1e-6,
+        skip_rest_poll=lambda: True,
+        on_authoritative_snap=lambda: bumped.append(1),
+    )
+    await rec.reconcile_once()
+    assert bumped == []
+
+
+@pytest.mark.asyncio
 async def test_reconcile_skips_rest_when_skip_poll_true() -> None:
     pos = Position(symbol="BTCUSDT", qty=0.5, avg_entry_price=100.0, mark_price=100.0)
     bus = EventBus()

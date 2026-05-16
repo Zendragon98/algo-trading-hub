@@ -35,6 +35,8 @@ class PerformanceTracker:
     """Maintains a rolling history of fills + computes win rate."""
 
     def __init__(self, portfolio: Portfolio, history_size: int = 200) -> None:
+        # Keep `PERFORMANCE_TRADE_HISTORY_CAP` in `src/hooks/useAlgoStream.ts` aligned
+        # with this default so dashboard rollups match the engine after WS replay.
         self._portfolio = portfolio
         self._fills: list[TradeRecord] = []
         self._history_size = history_size
@@ -67,3 +69,19 @@ class PerformanceTracker:
             return 0.0
         wins = sum(1 for f in closed if (f.pnl or 0) > 0)
         return wins / len(closed) * 100.0
+
+    def gross_pnls(self) -> tuple[float, float]:
+        """Sum of realized PnL on winning vs losing closes (losses as a positive magnitude)."""
+
+        closed = [f for f in self._fills if f.pnl is not None]
+        gross_win = sum(f.pnl for f in closed if (f.pnl or 0.0) > 0.0)
+        gross_loss = sum(-f.pnl for f in closed if (f.pnl or 0.0) < 0.0)
+        return gross_win, gross_loss
+
+    def profit_factor(self) -> float | None:
+        """Gross wins / gross losses; None when there are no losing closes (avoid divide-by-zero)."""
+
+        gross_win, gross_loss = self.gross_pnls()
+        if gross_loss <= 0.0:
+            return None
+        return gross_win / gross_loss

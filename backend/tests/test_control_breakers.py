@@ -15,7 +15,7 @@ from httpx import ASGITransport, AsyncClient  # noqa: E402
 from api.server import create_app  # noqa: E402
 from common.config import Settings  # noqa: E402
 from common.events import EventBus  # noqa: E402
-from common.types import ChildOrder, Kline, Position  # noqa: E402
+from common.types import ChildOrder, Kline, Position, Tick  # noqa: E402
 from engine.core.engine import Engine, EngineStatus  # noqa: E402
 from engine.risk.circuit_breaker import (  # noqa: E402
     Breach,
@@ -127,6 +127,28 @@ async def test_maybe_flatten_is_idempotent_while_latched() -> None:
     await engine._maybe_flatten_for_breaker()
 
     assert flatten_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_breaker_rearm_side_effects_reanchors_max_drawdown() -> None:
+    engine, _ = _engine()
+    engine._portfolio.seed_cash(1000.0)
+    engine._portfolio.update_cash(800.0)
+    engine._pnl.update()
+    engine._breaker.trip(
+        Breach(
+            code="max_drawdown",
+            scope=BreakerScope.ENGINE,
+            severity=BreakerSeverity.MAJOR,
+        )
+    )
+    before = {s.code for s in engine._breaker.active()}
+    engine._breaker.rearm(code="max_drawdown")
+    cleared = before - {s.code for s in engine._breaker.active()}
+    engine.apply_breaker_rearm_side_effects(cleared)
+    tick = Tick(symbol="BTCUSDT", bid=99.0, ask=101.0)
+    engine._risk.monitor_tick(tick, positions=[])
+    assert not engine.risk.kill_switch
 
 
 @pytest.mark.asyncio

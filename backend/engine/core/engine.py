@@ -285,6 +285,7 @@ class Engine:
             portfolio=self._portfolio,
             breaker=self._breaker,
             skip_rest_poll=self._reconcile_should_skip_rest,
+            on_authoritative_snap=self._oms.touch_venue_truth_from_rest,
         )
         self._clock = Clock(interval_sec=1.0, tick=self._on_clock_tick)
 
@@ -310,10 +311,16 @@ class Engine:
         self._alert_task: asyncio.Task[None] | None = None
 
     def _reconcile_should_skip_rest(self) -> bool:
-        """True when periodic reconcile should rely on user-data WS, not REST."""
+        """True when periodic reconcile should rely on user-data WS, not REST.
+
+        Uses **WebSocket activity only**. Binance may send no ``ACCOUNT_UPDATE``
+        for long stretches while holding exposure; successful REST reconciles
+        refresh :attr:`OrderManager.last_venue_truth_ts` for health/ready
+        without suppressing this poll.
+        """
         if not self._settings.reconcile_skip_rest_when_user_data_fresh:
             return False
-        ts = self._oms.last_user_data_ts
+        ts = self._oms.last_ws_user_activity_ts
         if ts <= 0:
             return False
         return (time.time() - ts) < float(self._settings.reconcile_user_data_fresh_sec)
@@ -503,12 +510,17 @@ class Engine:
         return dict(self._volume_weights)
 
     def snapshot(self) -> EngineSnapshot:
+        gross_win, gross_loss = self._performance.gross_pnls()
+        profit_factor = (gross_win / gross_loss) if gross_loss > 0 else None
         return EngineSnapshot(
             state=self._state,
             position_tracker=self._positions,
             portfolio=self._portfolio,
             trades=self._performance.trades(),
             win_rate=self._performance.win_rate(),
+            gross_win_pnl=gross_win,
+            gross_loss_pnl=gross_loss,
+            profit_factor=profit_factor,
         )
 
     # --- Lifecycle ---
@@ -555,6 +567,7 @@ class Engine:
         balances, positions = await self._gateway.fetch_balances_and_positions()
         self._portfolio.seed_balances(balances)
         self._positions.seed(positions)
+        self._oms.touch_venue_truth_from_rest()
 
         if getattr(self._settings, "order_reconcile_on_startup", True):
             await self._order_reconciler.sync_startup()
@@ -1307,7 +1320,7 @@ class Engine:
         await self._positions.sync_from_venue(open_pos)
         # Treat a successful post-reconnect REST snapshot like fresh user-data so
         # age / reconcile-skip reflect recovered venue connectivity, not silence.
-        self._oms.touch_user_data_activity()
+        self._oms.touch_ws_user_data_activity()
         logger.info("user_ws reconnect: synced %d open position(s) from venue", len(open_pos))
 
     async def _on_account_update(self, update: dict) -> None:
@@ -1320,8 +1333,7 @@ class Engine:
         portfolio's ``cash`` view continues to apply the USDT+USDC
         stablecoin combine rule.
         """
-        self._oms.touch_user_data_activity()
-        wallet_by_asset = update.get("wallet_by_asset") or {}
+        self._oms.touch_ws_user_data_activity()
         for asset, balance in wallet_by_asset.items():
             try:
                 self._portfolio.update_asset_balance(str(asset), float(balance))
@@ -1334,7 +1346,7 @@ class Engine:
     # --- Heartbeat ---
 
     def _user_data_fresh(self) -> bool:
-        ts = self._oms.last_user_data_ts
+        ts = self._oms.last_ws_user_activity_ts
         if ts <= 0:
             return False
         return (time.time() - ts) < float(self._settings.reconcile_user_data_fresh_sec)
@@ -1355,7 +1367,7 @@ class Engine:
 
     async def _on_clock_tick(self) -> None:
         self._clock_skew_sync_tick += 1
-        if self._clock_skew_sync_tick % 60 == 0:
+        if self._clock_skew_sync_tick % 15 == 0:
             await self._refresh_clock_skew()
 
         await self._portfolio.mark_to_market(use_mark_pnl=not self._user_data_fresh())
@@ -1369,7 +1381,7 @@ class Engine:
         self._connection_monitor.evaluate(
             now=time.time(),
             last_tick_ts=self._state.last_tick_ts,
-            last_user_data_ts=self._oms.last_user_data_ts,
+            last_user_data_ts=self._oms.last_ws_user_activity_ts,
             engine_running=self._state.status is EngineStatus.RUNNING,
             check_user_data_stale=has_working_orders,
         )
@@ -1749,27 +1761,36 @@ class Engine:
         )
 
     def _user_data_health(self, now: float) -> dict[str, float | bool]:
-        """User-data freshness for ops UI (matches ConnectionMonitor rules)."""
-        last_ts = self._oms.last_user_data_ts
-        age = (now - last_ts) if last_ts > 0 else -1.0
+        """User-data freshness for ops UI.
+
+        ``user_data_age_sec`` is time since the last *authoritative* venue
+        alignment (user-data WebSocket event or successful REST account
+        reconcile). ``user_ws_event_age_sec`` is WS-only silence — can be
+        high while holding exposure with no fills; see ConnectionMonitor.
+        """
+        ws_ts = self._oms.last_ws_user_activity_ts
+        truth_ts = self._oms.last_venue_truth_ts
+        ws_age = (now - ws_ts) if ws_ts > 0 else -1.0
+        truth_age = (now - truth_ts) if truth_ts > 0 else -1.0
         monitored = (
             self._state.status is EngineStatus.RUNNING
             and any(True for _ in self._oms.working_children())
         )
         stale = (
             monitored
-            and last_ts > 0
-            and age > float(self._settings.ws_stale_pause_sec)
+            and ws_ts > 0
+            and ws_age > float(self._settings.ws_stale_pause_sec)
         )
         has_exposure = self.snapshot().gross_notional > 1e-6
         reconcile_stale = (
             self._state.status is EngineStatus.RUNNING
             and has_exposure
-            and last_ts > 0
-            and age > float(self._settings.reconcile_user_data_fresh_sec)
+            and truth_ts > 0
+            and truth_age > float(self._settings.reconcile_user_data_fresh_sec)
         )
         return {
-            "user_data_age_sec": age,
+            "user_data_age_sec": truth_age,
+            "user_ws_event_age_sec": ws_age,
             "user_data_monitored": monitored,
             "user_data_stale": stale,
             "user_data_reconcile_stale": reconcile_stale,
