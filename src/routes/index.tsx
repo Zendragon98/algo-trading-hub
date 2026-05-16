@@ -29,6 +29,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { EquityChart } from "@/components/algo/EquityChart";
 import { PositionChartDialog } from "@/components/algo/PositionChartDialog";
@@ -84,6 +85,18 @@ export const Route = createFileRoute("/")({
   }),
 });
 
+type ClosedTradePerfVm = {
+  winRatePct: number;
+  profitFactor: number | null;
+  grossWin: number;
+  grossLoss: number;
+  netFromCloses: number;
+  closed: number;
+  winCount: number;
+  lossCount: number;
+  breakevenCount: number;
+};
+
 function Index() {
   const live = useAlgoStream();
   const status: AlgoStatus = live.status;
@@ -105,6 +118,17 @@ function Index() {
   const maxGrossNotional = live.maxGrossNotional;
   const breakers = live.breakers;
   const replaySummary = live.replaySummary;
+  const kpi = live.kpi;
+  const eventArchiveRunDir = live.eventArchiveRunDir;
+
+  const KPI_SCOPE_STORAGE = "algo-kpi-window";
+  const [kpiScope, setKpiScope] = useState<"rolling" | "session">(() => {
+    if (typeof window === "undefined") return "rolling";
+    return window.localStorage.getItem(KPI_SCOPE_STORAGE) === "session" ? "session" : "rolling";
+  });
+  useEffect(() => {
+    window.localStorage.setItem(KPI_SCOPE_STORAGE, kpiScope);
+  }, [kpiScope]);
 
   const [risk, setRisk] = useState<number[]>([35]);
   const riskHydrated = useRef(false);
@@ -124,33 +148,56 @@ function Index() {
   const pnlAbs = totalEquity - startEquity;
   const pnlPct = startEquity > 0 ? (pnlAbs / startEquity) * 100 : 0;
 
-  const openPnl = useMemo(
-    () =>
-      positions.reduce((acc, p) => {
-        const dir = p.side === "long" ? 1 : -1;
-        return acc + (p.mark - p.entry) * p.size * dir;
-      }, 0),
-    [positions],
-  );
+  const openPnl = useMemo(() => {
+    if (systemHealth != null) {
+      return systemHealth.unrealizedPnl;
+    }
+    return positions.reduce((acc, p) => acc + p.unrealizedPnl, 0);
+  }, [systemHealth, positions]);
 
-  /** Win % + payoff over the last N *realized PnL* closes (≤200), not raw opens. */
+  const emptyPerf = (): ClosedTradePerfVm => ({
+    winRatePct: 0,
+    profitFactor: null as number | null,
+    grossWin: 0,
+    grossLoss: 0,
+    netFromCloses: 0,
+    closed: 0,
+    winCount: 0,
+    lossCount: 0,
+    breakevenCount: 0,
+  });
+
+  /** Rolling = last ≤200 realized closes; session = all realized closes since backend start. */
   const closedTradePerf = useMemo(() => {
+    if (kpiScope === "session") {
+      const wins = kpi.session_close_wins;
+      const losses = kpi.session_close_losses;
+      const be = kpi.session_close_breakevens;
+      const closed = wins + losses + be;
+      if (!closed) {
+        return emptyPerf();
+      }
+      const gw = kpi.gross_win_pnl_session;
+      const gl = kpi.gross_loss_pnl_session;
+      return {
+        winRatePct: kpi.win_rate_session,
+        profitFactor: kpi.profit_factor_session,
+        grossWin: gw,
+        grossLoss: gl,
+        netFromCloses: gw - gl,
+        closed,
+        winCount: wins,
+        lossCount: losses,
+        breakevenCount: be,
+      };
+    }
+
     const closed =
       realizedTrades.length > 0
         ? realizedTrades
         : trades.filter((t) => t.action === "close" && t.pnl != null);
     if (!closed.length) {
-      return {
-        winRatePct: 0,
-        profitFactor: null as number | null,
-        grossWin: 0,
-        grossLoss: 0,
-        netFromCloses: 0,
-        closed: 0,
-        winCount: 0,
-        lossCount: 0,
-        breakevenCount: 0,
-      };
+      return emptyPerf();
     }
     let grossWin = 0;
     let grossLoss = 0;
@@ -183,7 +230,7 @@ function Index() {
       lossCount,
       breakevenCount,
     };
-  }, [realizedTrades, trades]);
+  }, [kpiScope, kpi, realizedTrades, trades]);
 
   // Fire-and-forget control commands. The engine drives the next status
   // update over the WebSocket so we don't optimistically mutate React state.
@@ -276,7 +323,12 @@ function Index() {
             sub={`${positions.length} open positions`}
             tone={openPnl >= 0 ? "bull" : "bear"}
           />
-          <WinRateKpiCard perf={closedTradePerf} />
+          <WinRateKpiCard
+            perf={closedTradePerf}
+            scope={kpiScope}
+            onScopeChange={setKpiScope}
+            eventArchiveRunDir={eventArchiveRunDir}
+          />
           <KpiCard
             icon={<Zap className="size-4" />}
             label="STRATEGY"
@@ -685,19 +737,17 @@ function TopBar(props: {
   );
 }
 
-type ClosedTradePerfVm = {
-  winRatePct: number;
-  profitFactor: number | null;
-  grossWin: number;
-  grossLoss: number;
-  netFromCloses: number;
-  closed: number;
-  winCount: number;
-  lossCount: number;
-  breakevenCount: number;
-};
-
-function WinRateKpiCard({ perf }: { perf: ClosedTradePerfVm }) {
+function WinRateKpiCard({
+  perf,
+  scope,
+  onScopeChange,
+  eventArchiveRunDir,
+}: {
+  perf: ClosedTradePerfVm;
+  scope: "rolling" | "session";
+  onScopeChange: (s: "rolling" | "session") => void;
+  eventArchiveRunDir: string | null;
+}) {
   const {
     closed,
     winRatePct,
@@ -724,17 +774,49 @@ function WinRateKpiCard({ perf }: { perf: ClosedTradePerfVm }) {
 
   return (
     <div className="relative overflow-hidden rounded-sm border border-border bg-card/60 p-4">
-      <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-        <span className="flex items-center gap-1.5 font-mono">
-          <Gauge className="size-4" strokeWidth={2} />
-          Win rate · payoff
-        </span>
-        <CircleDot className="size-3 opacity-40" />
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-[0.18em] text-muted-foreground sm:justify-start">
+          <span className="flex items-center gap-1.5 font-mono">
+            <Gauge className="size-4" strokeWidth={2} />
+            Win rate · payoff
+          </span>
+          <CircleDot className="size-3 shrink-0 opacity-40 sm:hidden" />
+        </div>
+        <div className="flex flex-col items-stretch gap-1 sm:items-end">
+          <ToggleGroup
+            type="single"
+            value={scope}
+            onValueChange={(v) => {
+              if (v === "rolling" || v === "session") onScopeChange(v);
+            }}
+            variant="outline"
+            size="sm"
+            className="self-end"
+          >
+            <ToggleGroupItem value="rolling" className="px-2 text-[9px] font-mono">
+              Last 200
+            </ToggleGroupItem>
+            <ToggleGroupItem value="session" className="px-2 text-[9px] font-mono">
+              Session
+            </ToggleGroupItem>
+          </ToggleGroup>
+          {eventArchiveRunDir ? (
+            <p
+              className="text-right font-mono text-[9px] font-normal normal-case tracking-normal text-muted-foreground/90"
+              title={`Replay + fills: ${eventArchiveRunDir}\\events.wal.jsonl (and sibling JSONL)`}
+            >
+              Run dir:{" "}
+              <span className="break-all opacity-90">{eventArchiveRunDir}</span>
+            </p>
+          ) : null}
+        </div>
       </div>
 
       {!closed ? (
         <div className="mt-10 pb-8 text-center text-xs text-muted-foreground">
-          No realized PnL closes in the rolling window yet (last 200).
+          {scope === "session"
+            ? "No realized PnL closes recorded this session yet (since backend start)."
+            : "No realized PnL closes in the rolling window yet (last 200)."}
         </div>
       ) : (
         <>
@@ -772,6 +854,7 @@ function WinRateKpiCard({ perf }: { perf: ClosedTradePerfVm }) {
             <div className="h-full bg-bear transition-[width] duration-500" style={{ width: `${lossSeg}%` }} />
           </div>
           <p className="mt-1 font-mono text-[10px] text-muted-foreground">
+            {scope === "session" ? "Session · " : "Rolling (≤200) · "}
             {closed} realized closes · {winSeg.toFixed(0)} / {flatSeg.toFixed(0)} / {lossSeg.toFixed(0)}% W / BE / L
           </p>
 
@@ -844,8 +927,11 @@ function WinRateKpiCard({ perf }: { perf: ClosedTradePerfVm }) {
               <span className="normal-case tracking-normal opacity-70">PnL sources & factor definition</span>
             </summary>
             <div className="border-t border-border/40 px-2 py-2 text-[10px]">
-              The KPI uses the last 200 <strong className="text-foreground">realized PnL</strong> closes (reducing fills with a
-              PnL figure)—opens do not consume this window. Binance Futures uses field{' '}
+              <strong className="text-foreground">Rolling</strong> is the last ≤200 realized-PnL closes;{" "}
+              <strong className="text-foreground">Session</strong> is all such closes since the backend process started (a
+              restart resets it). Session KPI values refresh with{" "}
+              <code className="rounded bg-muted/60 px-0.5">GET /api/state</code> (about every 5s). The rolling view matches live
+              WebSocket fills. Binance Futures uses field{" "}
               <code className="rounded bg-muted/60 px-0.5">rp</code> when it is non-zero; otherwise the console uses{' '}
               <span className="whitespace-nowrap">(exit − entry) × closed qty</span>. If{' '}
               <code className="rounded bg-muted/60 px-0.5">rp</code> looks like dust vs that economics (e.g. sub-cent vs several
@@ -1233,9 +1319,9 @@ function PositionsTable({
         </thead>
         <tbody className="font-mono">
           {positions.map((p) => {
-            const dir = p.side === "long" ? 1 : -1;
-            const pnl = (p.mark - p.entry) * p.size * dir;
-            const pct = ((p.mark - p.entry) / p.entry) * 100 * dir;
+            const pnl = p.unrealizedPnl;
+            const basis = p.entry * p.size;
+            const pct = basis > 1e-12 ? (pnl / basis) * 100 : 0;
             const positive = pnl >= 0;
             return (
               <tr

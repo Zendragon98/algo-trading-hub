@@ -11,6 +11,8 @@ export type Position = {
   size: number;
   entry: number;
   mark: number;
+  /** Venue / engine unrealized PnL in quote currency (matches row-level exchange uPnL when provided). */
+  unrealizedPnl: number;
 };
 
 export type Trade = {

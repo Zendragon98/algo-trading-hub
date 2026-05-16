@@ -117,11 +117,13 @@ class Engine:
         strategies: list[StrategyBase],
         *,
         recovery_wal: Path | None = None,
+        event_archive_dir: Path | None = None,
     ) -> None:
         self._settings = settings
         self._bus = bus
         self._gateway = gateway
         self._recovery_wal = recovery_wal
+        self._event_archive_dir = event_archive_dir
         self._strategies = strategies
         self._strategies_by_name: dict[str, StrategyBase] = {s.name: s for s in strategies}
         # Active strategy name used by ``_evaluate_strategies`` /``_on_fill``.
@@ -494,6 +496,12 @@ class Engine:
         return self._gateway
 
     @property
+    def event_archive_dir(self) -> Path | None:
+        """Timestamped run folder under ``persist_dir`` when journaling/recording is on."""
+
+        return self._event_archive_dir
+
+    @property
     def portfolio(self):
         """Live portfolio. Strategies pull equity from here for sizing."""
         return self._portfolio
@@ -512,6 +520,8 @@ class Engine:
     def snapshot(self) -> EngineSnapshot:
         gross_win, gross_loss = self._performance.gross_pnls()
         profit_factor = (gross_win / gross_loss) if gross_loss > 0 else None
+        gw_s, gl_s = self._performance.gross_pnls_session()
+        profit_factor_s = (gw_s / gl_s) if gl_s > 0 else None
         return EngineSnapshot(
             state=self._state,
             position_tracker=self._positions,
@@ -522,6 +532,13 @@ class Engine:
             gross_win_pnl=gross_win,
             gross_loss_pnl=gross_loss,
             profit_factor=profit_factor,
+            win_rate_session=self._performance.win_rate_session(),
+            gross_win_pnl_session=gw_s,
+            gross_loss_pnl_session=gl_s,
+            profit_factor_session=profit_factor_s,
+            session_close_wins=self._performance.session_wins,
+            session_close_losses=self._performance.session_losses,
+            session_close_breakevens=self._performance.session_breakevens,
         )
 
     # --- Lifecycle ---
@@ -1803,7 +1820,10 @@ class Engine:
         }
 
     def _portfolio_health(self) -> dict[str, float]:
-        snap = self.snapshot()
+        # Align ops/REST ``system_health`` with the ~1Hz ``mark_to_market`` pulse
+        # (``use_mark_pnl=True``) so open PnL and equity move with BBO marks instead
+        # of freezing on the last ACCOUNT_UPDATE uPnL between venue pushes.
+        snap = self._portfolio.snapshot(use_mark_pnl=True)
         return {
             "gross_notional": snap.gross_notional,
             "net_notional": snap.net_notional,

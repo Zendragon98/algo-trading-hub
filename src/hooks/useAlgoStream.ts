@@ -11,10 +11,13 @@ import {
   toBreakerStatus,
   toExecutionAggregate,
   toExecutionParent,
+  toPosition,
   toStrategyInfo,
   toSystemHealth,
   toTrade,
   toWorkingOrder,
+  type KpiDTO,
+  type PositionDTO,
   type StateDTO,
   type StatusEventData,
   type WsEvent,
@@ -66,6 +69,9 @@ export type AlgoStream = {
   breakers: BreakerList;
   replaySummary: string | null;
   refresh: () => Promise<void>;
+  kpi: KpiDTO;
+  /** Backend run directory for `events.wal.jsonl` + JSONL exports. */
+  eventArchiveRunDir: string | null;
 };
 
 const EMPTY_AGG: ExecutionAggregate = {
@@ -78,6 +84,26 @@ const EMPTY_AGG: ExecutionAggregate = {
 };
 
 const NOOP_REFRESH = async () => {};
+
+const EMPTY_KPI: KpiDTO = {
+  equity: 0,
+  open_pnl: 0,
+  win_rate: 0,
+  gross_win_pnl: 0,
+  gross_loss_pnl: 0,
+  profit_factor: null,
+  realized_pnl: 0,
+  unrealized_pnl: 0,
+  gross_notional: 0,
+  net_notional: 0,
+  win_rate_session: 0,
+  gross_win_pnl_session: 0,
+  gross_loss_pnl_session: 0,
+  profit_factor_session: null,
+  session_close_wins: 0,
+  session_close_losses: 0,
+  session_close_breakevens: 0,
+};
 
 const EMPTY: AlgoStream = {
   status: "stopped",
@@ -102,6 +128,8 @@ const EMPTY: AlgoStream = {
   breakers: EMPTY_BREAKERS,
   replaySummary: null,
   refresh: NOOP_REFRESH,
+  kpi: EMPTY_KPI,
+  eventArchiveRunDir: null,
 };
 
 const TERMINAL_STATUSES: ReadonlyArray<WorkingOrder["status"]> = [
@@ -157,6 +185,20 @@ function mergeLatencyMetrics(
   return latency;
 }
 
+function mapPositionsFromState(raw: unknown): Position[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Position[] = [];
+  for (const item of raw) {
+    try {
+      const p = toPosition(item as PositionDTO);
+      if (p.symbol) out.push(p);
+    } catch {
+      /* one bad row must not blank the whole positions panel */
+    }
+  }
+  return out;
+}
+
 function applyTradingState(prev: AlgoStream, state: StateDTO): AlgoStream {
   return {
     ...prev,
@@ -166,7 +208,7 @@ function applyTradingState(prev: AlgoStream, state: StateDTO): AlgoStream {
     strategy: state.strategy ? toStrategyInfo(state.strategy) : null,
     strategies: state.strategies.map(toStrategyInfo),
     equity: state.equity.equity,
-    positions: state.positions,
+    positions: mapPositionsFromState(state.positions),
     trades: state.trades.map(toTrade),
     realizedTrades: (state.realized_trades ?? []).map(toTrade),
     orders: state.orders.working.map(toWorkingOrder),
@@ -174,6 +216,8 @@ function applyTradingState(prev: AlgoStream, state: StateDTO): AlgoStream {
     executionHistory: state.execution.history.map(toExecutionParent),
     executionAggregate: toExecutionAggregate(state.execution.aggregate),
     systemHealth: state.system_health ? toSystemHealth(state.system_health) : null,
+    kpi: state.kpi,
+    eventArchiveRunDir: state.event_archive_run_dir ?? null,
     error: null,
   };
 }
@@ -502,23 +546,49 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
     }
 
     case "position": {
-      const incoming = event.data;
-      const others = prev.positions.filter((p) => p.symbol !== incoming.symbol);
-      if ((incoming as { qty?: number }).qty === 0 || incoming.size === 0) {
+      const incoming = event.data as Record<string, unknown>;
+      const symbol = String(incoming.symbol ?? "");
+      if (!symbol) {
+        return prev;
+      }
+      const others = prev.positions.filter((p) => p.symbol !== symbol);
+      const qtyRaw = incoming.qty;
+      const sizeRaw = incoming.size;
+      // Match backend semantics: only treat as flat when qty/size are *explicitly*
+      // zero-ish. Do not coerce missing ``size`` to 0 (that used to drop open rows).
+      const qtyNum = qtyRaw === undefined || qtyRaw === null ? NaN : Number(qtyRaw);
+      const isFlat =
+        qtyRaw === 0 ||
+        (typeof qtyRaw === "number" && Math.abs(qtyRaw) < 1e-12) ||
+        sizeRaw === 0 ||
+        (typeof sizeRaw === "number" && Math.abs(sizeRaw) < 1e-12);
+      if (isFlat) {
         return { ...prev, positions: others };
       }
+      const size =
+        sizeRaw !== undefined && sizeRaw !== null && String(sizeRaw) !== ""
+          ? Number(sizeRaw)
+          : Number.isFinite(qtyNum)
+            ? Math.abs(qtyNum)
+            : 0;
+      if (!Number.isFinite(size) || size < 1e-12) {
+        return { ...prev, positions: others };
+      }
+      const sideRaw = String(incoming.side ?? "long");
+      const side = (sideRaw === "short" ? "short" : "long") as Position["side"];
+      const entry = Number(
+        (incoming as { avg_entry_price?: number }).avg_entry_price ?? incoming.entry ?? 0,
+      );
+      const mark = Number((incoming as { mark_price?: number }).mark_price ?? incoming.mark ?? 0);
+      const dir = side === "short" ? -1 : 1;
+      const rawUp = (incoming as { unrealized_pnl?: number }).unrealized_pnl;
+      const unrealizedPnl =
+        rawUp !== undefined && Number.isFinite(Number(rawUp))
+          ? Number(rawUp)
+          : (mark - entry) * size * dir;
       return {
         ...prev,
-        positions: [
-          ...others,
-          {
-            symbol: incoming.symbol,
-            side: (incoming.side === "long" ? "long" : "short") as Position["side"],
-            size: incoming.size,
-            entry: (incoming as { avg_entry_price?: number }).avg_entry_price ?? incoming.entry,
-            mark: (incoming as { mark_price?: number }).mark_price ?? incoming.mark,
-          },
-        ],
+        positions: [...others, { symbol, side, size, entry, mark, unrealizedPnl }],
       };
     }
 

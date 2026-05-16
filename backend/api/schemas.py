@@ -18,6 +18,7 @@ class PositionDTO(BaseModel):
     size: float
     entry: float
     mark: float
+    unrealized_pnl: float
 
 
 class TradeDTO(BaseModel):
@@ -78,6 +79,14 @@ class KpiDTO(BaseModel):
     unrealized_pnl: float
     gross_notional: float
     net_notional: float
+    # Since engine process start (not reset by the rolling-200 window).
+    win_rate_session: float = 0.0
+    gross_win_pnl_session: float = 0.0
+    gross_loss_pnl_session: float = 0.0
+    profit_factor_session: float | None = None
+    session_close_wins: int = 0
+    session_close_losses: int = 0
+    session_close_breakevens: int = 0
 
 
 class ChildOrderDTO(BaseModel):
@@ -216,6 +225,7 @@ class StateDTO(BaseModel):
     orders: OrdersDTO
     execution: ExecutionStatsDTO
     system_health: SystemHealthDTO | None = None
+    event_archive_run_dir: str | None = None
 
 
 class RiskUpdateDTO(BaseModel):

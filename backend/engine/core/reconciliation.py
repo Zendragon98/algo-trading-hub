@@ -172,6 +172,21 @@ class Reconciler:
 
         if mismatches and self._heal_on_mismatch:
             open_positions = [p for p in venue_positions if abs(p.qty) > 1e-12]
+            if not open_positions:
+                local_open = [p for p in self._positions.all() if abs(p.qty) > 1e-12]
+                if local_open:
+                    # ``GET /fapi/v2/account`` occasionally returns an empty or partial
+                    # ``positions`` slice while the book is still open. Wiping the tracker
+                    # blanks the operator console; a second ``positionRisk`` round-trip is
+                    # cheap insurance before we trust "flat on venue".
+                    try:
+                        alt = await self._gateway.fetch_positions()
+                        open_positions = [p for p in alt if abs(p.qty) > 1e-12]
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "reconcile: fallback fetch_positions failed "
+                            "(account snapshot had no open legs but local book is not flat)",
+                        )
             await self._positions.sync_from_venue(open_positions)
             logger.warning(
                 "reconcile healed %d symbol(s) from venue REST snapshot",

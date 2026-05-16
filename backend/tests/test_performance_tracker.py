@@ -91,3 +91,21 @@ def test_realized_window_not_evicted_by_opens() -> None:
     assert gw == pytest.approx(2.0)
     assert gl == pytest.approx(0.0)
     assert len(perf.realized_transactions()) == 1
+
+
+def test_session_rollups_survive_rolling_trim() -> None:
+    """Session counters keep every realized close even when rolling ring evicts."""
+
+    portfolio = MagicMock()
+    perf = PerformanceTracker(portfolio, history_size=2)
+    perf.record_fill(_fill(Side.SELL, 1.0, 52.0, idx=0), _cls(1.0))
+    perf.record_fill(_fill(Side.SELL, 1.0, 53.0, idx=1), _cls(2.0))
+    perf.record_fill(_fill(Side.SELL, 1.0, 54.0, idx=2), _cls(-1.0))
+    assert perf.session_wins == 2
+    assert perf.session_losses == 1
+    assert perf.session_breakevens == 0
+    assert perf.win_rate_session() == pytest.approx(200.0 / 3.0)
+    gw, gl = perf.gross_pnls_session()
+    assert gw == pytest.approx(3.0)
+    assert gl == pytest.approx(1.0)
+    assert len(perf.realized_transactions()) == 2

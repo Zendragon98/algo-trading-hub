@@ -45,6 +45,7 @@ def position_to_dto(position: Position) -> PositionDTO:
         size=position.size,
         entry=position.avg_entry_price,
         mark=position.mark_price,
+        unrealized_pnl=position.unrealized_pnl,
     )
 
 
@@ -197,6 +198,13 @@ def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
             unrealized_pnl=snapshot.unrealized_pnl,
             gross_notional=snapshot.gross_notional,
             net_notional=snapshot.net_notional,
+            win_rate_session=snapshot.win_rate_session,
+            gross_win_pnl_session=snapshot.gross_win_pnl_session,
+            gross_loss_pnl_session=snapshot.gross_loss_pnl_session,
+            profit_factor_session=snapshot.profit_factor_session,
+            session_close_wins=snapshot.session_close_wins,
+            session_close_losses=snapshot.session_close_losses,
+            session_close_breakevens=snapshot.session_close_breakevens,
         ),
         equity=EquityDTO(equity=snapshot.equity_curve, last_ts=snapshot.last_tick_ts),
         positions=[position_to_dto(p) for p in snapshot.positions],
@@ -205,6 +213,9 @@ def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
         orders=orders_dto(engine),
         execution=execution_stats_dto(engine),
         system_health=SystemHealthDTO(**engine.system_health()),
+        event_archive_run_dir=str(engine.event_archive_dir.resolve())
+        if engine.event_archive_dir is not None
+        else None,
     )
 
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from common.enums import EngineStatus
 from common.events import EventBus
@@ -102,3 +104,23 @@ def test_touch_methods_on_order_manager() -> None:
     assert oms.last_venue_truth_ts == oms.last_ws_user_activity_ts
     oms.touch_venue_truth_from_rest()
     assert oms.last_venue_truth_ts >= oms.last_ws_user_activity_ts
+
+
+@pytest.mark.asyncio
+async def test_on_account_update_merges_wallet_and_positions() -> None:
+    """Regression: ACCOUNT_UPDATE payload must read wallet_by_asset from ``update``."""
+    eng = Engine.__new__(Engine)
+    eng._oms = MagicMock()
+    eng._portfolio = MagicMock()
+    eng._positions = MagicMock()
+    eng._positions.apply_exchange_positions = AsyncMock()
+    placeholder_pos = MagicMock()
+
+    await Engine._on_account_update(
+        eng,
+        {"wallet_by_asset": {"USDT": 100.25}, "positions": [placeholder_pos]},
+    )
+
+    eng._oms.touch_ws_user_data_activity.assert_called_once()
+    eng._portfolio.update_asset_balance.assert_called_once_with("USDT", 100.25)
+    eng._positions.apply_exchange_positions.assert_awaited_once_with([placeholder_pos])

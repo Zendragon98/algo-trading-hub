@@ -40,6 +40,13 @@ class EngineSnapshot:
         gross_win_pnl: float,
         gross_loss_pnl: float,
         profit_factor: float | None,
+        win_rate_session: float,
+        gross_win_pnl_session: float,
+        gross_loss_pnl_session: float,
+        profit_factor_session: float | None,
+        session_close_wins: int,
+        session_close_losses: int,
+        session_close_breakevens: int,
     ) -> None:
         self.status = state.status
         self.started_at = state.started_at
@@ -62,3 +69,10 @@ class EngineSnapshot:
         self.gross_win_pnl = gross_win_pnl
         self.gross_loss_pnl = gross_loss_pnl
         self.profit_factor = profit_factor
+        self.win_rate_session = win_rate_session
+        self.gross_win_pnl_session = gross_win_pnl_session
+        self.gross_loss_pnl_session = gross_loss_pnl_session
+        self.profit_factor_session = profit_factor_session
+        self.session_close_wins = session_close_wins
+        self.session_close_losses = session_close_losses
+        self.session_close_breakevens = session_close_breakevens

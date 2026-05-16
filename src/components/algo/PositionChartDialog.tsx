@@ -63,9 +63,9 @@ export function PositionChartDialog({
 
   if (!position) return null;
 
-  const dir = position.side === "long" ? 1 : -1;
-  const pnl = (position.mark - position.entry) * position.size * dir;
-  const pnlPct = ((position.mark - position.entry) / position.entry) * 100 * dir;
+  const pnl = position.unrealizedPnl;
+  const basis = position.entry * position.size;
+  const pnlPct = basis > 1e-12 ? (position.unrealizedPnl / basis) * 100 : 0;
   const positive = pnl >= 0;
   const stroke = positive ? "var(--bull)" : "var(--bear)";
 

@@ -82,6 +82,7 @@ async def run() -> None:
         gateway=gateway,
         strategies=strategies,
         recovery_wal=bootstrap.recovery_wal,
+        event_archive_dir=bootstrap.run_dir,
     )
 
     def _position_qty(symbol: str) -> float:

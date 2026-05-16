@@ -179,6 +179,7 @@ async def _run() -> None:
         gateway=gateway,
         strategies=strategies,
         recovery_wal=bootstrap.recovery_wal,
+        event_archive_dir=bootstrap.run_dir,
     )
 
     # Wire live equity + liquidity weights into strategies so they can

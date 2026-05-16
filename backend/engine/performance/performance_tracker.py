@@ -46,6 +46,12 @@ class PerformanceTracker:
         self._fills: list[TradeRecord] = []
         self._realized: list[TradeRecord] = []
         self._history_size = history_size
+        # Cumulative session stats (since process start); independent of the 200 cap.
+        self._session_wins = 0
+        self._session_losses = 0
+        self._session_breakevens = 0
+        self._session_gross_win = 0.0
+        self._session_gross_loss = 0.0
 
     def record_fill(self, fill: Fill, classification: FillClassification) -> TradeRecord:
         record = TradeRecord(
@@ -68,6 +74,15 @@ class PerformanceTracker:
             self._realized.append(record)
             if len(self._realized) > self._history_size:
                 self._realized = self._realized[-self._history_size :]
+            pnl = classification.pnl
+            if pnl > 0.0:
+                self._session_wins += 1
+                self._session_gross_win += pnl
+            elif pnl < 0.0:
+                self._session_losses += 1
+                self._session_gross_loss += -pnl
+            else:
+                self._session_breakevens += 1
 
         return record
 
@@ -100,3 +115,30 @@ class PerformanceTracker:
         if gross_loss <= 0.0:
             return None
         return gross_win / gross_loss
+
+    @property
+    def session_wins(self) -> int:
+        return self._session_wins
+
+    @property
+    def session_losses(self) -> int:
+        return self._session_losses
+
+    @property
+    def session_breakevens(self) -> int:
+        return self._session_breakevens
+
+    def win_rate_session(self) -> float:
+        n = self._session_wins + self._session_losses + self._session_breakevens
+        if n == 0:
+            return 0.0
+        return self._session_wins / n * 100.0
+
+    def gross_pnls_session(self) -> tuple[float, float]:
+        return self._session_gross_win, self._session_gross_loss
+
+    def profit_factor_session(self) -> float | None:
+        gw, gl = self.gross_pnls_session()
+        if gl <= 0.0:
+            return None
+        return gw / gl

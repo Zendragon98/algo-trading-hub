@@ -54,6 +54,14 @@ class _SpyGateway(_MockGateway):
         return list(self._positions)
 
 
+class _EmptyAccountRowsGateway(_SpyGateway):
+    """``fetch_balances_and_positions`` returns no legs (flaky account JSON)."""
+
+    async def fetch_balances_and_positions(self) -> tuple[dict[str, float], list[Position]]:
+        self.n_fetch_balances += 1
+        return {"USDT": 1000.0}, []
+
+
 @pytest.mark.asyncio
 async def test_authoritative_snap_callback_on_success() -> None:
     pos = Position(symbol="BTCUSDT", qty=0.5, avg_entry_price=100.0, mark_price=100.0)
@@ -179,3 +187,30 @@ async def test_extra_local_position_trips_major() -> None:
     )
     await rec.reconcile_once()
     assert breaker.is_blocked(BreakerScope.ENGINE)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_fallback_fetch_positions_when_account_positions_empty() -> None:
+    """If the combined account snapshot lists no legs, retry via ``fetch_positions``."""
+    local = Position(symbol="BTCUSDT", qty=0.5, avg_entry_price=100.0, mark_price=100.0)
+    remote = Position(symbol="BTCUSDT", qty=0.7, avg_entry_price=100.0, mark_price=100.0)
+    bus = EventBus()
+    pt = PositionTracker(bus)
+    pt.seed([local])
+    portfolio = Portfolio(bus, pt)
+    portfolio.seed_cash(1000.0)
+    breaker = CircuitBreaker()
+    gw = _EmptyAccountRowsGateway([remote])
+    rec = Reconciler(
+        gateway=gw,
+        positions=pt,
+        portfolio=portfolio,
+        breaker=breaker,
+        interval_sec=60.0,
+        qty_tolerance=1e-6,
+    )
+    await rec.reconcile_once()
+    healed = pt.get("BTCUSDT")
+    assert healed is not None
+    assert abs(healed.qty - 0.7) < 1e-9
+    assert gw.n_fetch_positions >= 1

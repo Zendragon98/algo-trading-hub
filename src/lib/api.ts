@@ -64,6 +64,13 @@ export type KpiDTO = {
   unrealized_pnl: number;
   gross_notional: number;
   net_notional: number;
+  win_rate_session: number;
+  gross_win_pnl_session: number;
+  gross_loss_pnl_session: number;
+  profit_factor_session: number | null;
+  session_close_wins: number;
+  session_close_losses: number;
+  session_close_breakevens: number;
 };
 
 export type EquityDTO = { equity: number[]; last_ts: number };
@@ -157,6 +164,16 @@ export type KlineDTO = {
   close_time: number;
 };
 
+/** REST `/api/positions` + `StateDTO.positions` wire shape. */
+export type PositionDTO = {
+  symbol: string;
+  side: "long" | "short" | "flat";
+  size: number;
+  entry: number;
+  mark: number;
+  unrealized_pnl: number;
+};
+
 /** Full backend `Settings` model as JSON (GET/PATCH /api/settings). */
 export type SettingsDTO = Record<string, unknown>;
 
@@ -190,7 +207,7 @@ export type StateDTO = {
   strategies: StrategyInfoDTO[];
   kpi: KpiDTO;
   equity: EquityDTO;
-  positions: Position[];
+  positions: PositionDTO[];
   /** Full fill tape (opens + closes) for the RECENT TRADES widget. */
   trades: TradeDTO[];
   /** Last N closes with realized PnL only — powers win-rate KPI (aligned with engine). */
@@ -198,6 +215,8 @@ export type StateDTO = {
   orders: OrdersDTO;
   execution: ExecutionStatsDTO;
   system_health?: SystemHealthDTO | null;
+  /** Absolute path to this process's run folder (journal + JSONL). */
+  event_archive_run_dir?: string | null;
 };
 
 export type BreakerStatusDTO = {
@@ -315,7 +334,7 @@ export const api = {
   state: () => request<StateDTO>("/api/state"),
   status: () => request<StatusDTO>("/api/status"),
   equity: () => request<EquityDTO>("/api/equity"),
-  positions: () => request<Position[]>("/api/positions"),
+  positions: () => request<PositionDTO[]>("/api/positions").then((rows) => rows.map(toPosition)),
   trades: (limit = 40) => request<TradeDTO[]>(`/api/trades?limit=${limit}`),
   logs: (limit = 60) => request<LogEntry[]>(`/api/logs?limit=${limit}`),
   orders: () => request<OrdersDTO>("/api/orders"),
@@ -380,13 +399,36 @@ export type WsEvent =
   | { type: "order"; ts: number; data: ChildOrderDTO }
   | { type: "parent"; ts: number; data: ParentOrderDTO }
   | { type: "execution"; ts: number; data: ExecutionReportDTO }
-  | { type: "position"; ts: number; data: Position & { unrealized_pnl: number; notional: number } }
+  | { type: "position"; ts: number; data: Record<string, unknown> }
   | { type: "equity"; ts: number; data: { equity: number; cash: number; ts: number } }
   | { type: "log"; ts: number; data: { level: LogEntry["level"]; msg: string; logger?: string } }
   | { type: "status"; ts: number; data: StatusEventData }
   | { type: "breaker"; ts: number; data: BreakerStatusDTO & { action?: string } };
 
 // --- camelCase mappers (DTO -> view model) ---
+
+export function toPosition(d: PositionDTO): Position {
+  const side: Position["side"] = d.side === "short" ? "short" : "long";
+  const dir = d.side === "short" ? -1 : 1;
+  const entry = Number(d.entry);
+  const mark = Number(d.mark);
+  const size = Number(d.size);
+  const fallbackMarkPnl =
+    Number.isFinite(entry) && Number.isFinite(mark) && Number.isFinite(size)
+      ? (mark - entry) * size * dir
+      : 0;
+  const u = d.unrealized_pnl;
+  const unrealizedPnl =
+    u !== undefined && u !== null && Number.isFinite(Number(u)) ? Number(u) : fallbackMarkPnl;
+  return {
+    symbol: String(d.symbol ?? ""),
+    side,
+    size: Number.isFinite(size) ? size : 0,
+    entry: Number.isFinite(entry) ? entry : 0,
+    mark: Number.isFinite(mark) ? mark : 0,
+    unrealizedPnl: Number.isFinite(unrealizedPnl) ? unrealizedPnl : 0,
+  };
+}
 
 export function toWorkingOrder(d: ChildOrderDTO): WorkingOrder {
   return {
