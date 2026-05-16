@@ -93,6 +93,22 @@ def test_realized_window_not_evicted_by_opens() -> None:
     assert len(perf.realized_transactions()) == 1
 
 
+def test_flatten_excluded_from_streak_still_counts_for_kpi() -> None:
+    portfolio = MagicMock()
+    perf = PerformanceTracker(portfolio)
+
+    perf.record_fill(_fill(Side.SELL, 1.0, 48.0, idx=0), _cls(-2.0), exclude_from_streak=True)
+
+    assert perf.win_rate() == pytest.approx(0.0)
+    gw, gl = perf.gross_pnls()
+    assert gw == pytest.approx(0.0)
+    assert gl == pytest.approx(2.0)
+    assert len(perf.realized_transactions()) == 1
+    row = perf.realized_transactions()[0]
+    assert row.exclude_from_streak is True
+    assert row.pnl == pytest.approx(-2.0)
+
+
 def test_session_rollups_survive_rolling_trim() -> None:
     """Session counters keep every realized close even when rolling ring evicts."""
 

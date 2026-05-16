@@ -29,6 +29,7 @@ class TradeRecord:
     entry_price: float | None
     exit_price: float | None
     pnl: float | None
+    exclude_from_streak: bool = False
 
 
 class PerformanceTracker:
@@ -53,7 +54,13 @@ class PerformanceTracker:
         self._session_gross_win = 0.0
         self._session_gross_loss = 0.0
 
-    def record_fill(self, fill: Fill, classification: FillClassification) -> TradeRecord:
+    def record_fill(
+        self,
+        fill: Fill,
+        classification: FillClassification,
+        *,
+        exclude_from_streak: bool = False,
+    ) -> TradeRecord:
         record = TradeRecord(
             id=fill.trade_id or fill.child_id,
             ts=fill.ts,
@@ -65,6 +72,7 @@ class PerformanceTracker:
             entry_price=classification.entry_price,
             exit_price=classification.exit_price,
             pnl=classification.pnl,
+            exclude_from_streak=exclude_from_streak,
         )
         self._fills.append(record)
         if len(self._fills) > self._history_size:

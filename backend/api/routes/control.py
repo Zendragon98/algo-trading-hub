@@ -10,6 +10,7 @@ from typing import TypeVar
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from common.enums import EngineStatus
 from engine.core.engine import Engine
 from engine.risk.circuit_breaker import BreakerStatus
 
@@ -103,11 +104,13 @@ async def shutdown(
     request: Request,
     engine: Engine = Depends(get_engine),
 ) -> StatusDTO:
-    """Stop the engine and exit the Python process (same path as SIGINT).
+    """Flatten, cancel all orders, stop the engine, then exit the process.
 
-    Used by the dashboard Kill control when the API is embedded in
-    ``backend/main.py``. Unit tests that mount ``create_app`` without
-    ``request_shutdown`` receive HTTP 501.
+    Used by the dashboard **Kill** control when the API is embedded in
+    ``backend/main.py``. Unwind runs *before* the HTTP response so the operator
+    sees errors if flatten fails; process exit is scheduled after the response.
+    Unit tests that mount ``create_app`` without ``request_shutdown`` receive
+    HTTP 501.
     """
     fn = getattr(request.app.state, "request_shutdown", None)
     if fn is None:
@@ -116,8 +119,14 @@ async def shutdown(
             detail="shutdown is not wired for this server instance",
         )
 
+    async def _kill() -> None:
+        if engine.status is not EngineStatus.STOPPED:
+            await engine.stop(force_flatten=True)
+
+    await _run_or_500("shutdown", _kill)
+
     async def _after_response() -> None:
-        logger.info("shutdown requested via API")
+        logger.info("shutdown requested via API (process exit scheduled)")
         fn()
 
     background_tasks.add_task(_after_response)
@@ -150,9 +159,11 @@ async def set_strategy(
     ``"all"`` to run every strategy with internal position netting.
     """
     try:
-        engine.set_active_strategy(body.name)
+        changed = engine.set_active_strategy(body.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if changed and engine.status is EngineStatus.RUNNING:
+        await _run_or_500("strategy/sync", engine.sync_trading_book_from_rest)
     return _status(engine)
 
 

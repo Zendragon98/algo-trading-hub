@@ -119,7 +119,9 @@ function Index() {
   const breakers = live.breakers;
   const replaySummary = live.replaySummary;
   const kpi = live.kpi;
-  const eventArchiveRunDir = live.eventArchiveRunDir;
+  const backendReachable = live.backendReachable;
+  const backendError = live.error;
+  const streamConnected = live.connected;
 
   const KPI_SCOPE_STORAGE = "algo-kpi-window";
   const [kpiScope, setKpiScope] = useState<"rolling" | "session">(() => {
@@ -232,6 +234,21 @@ function Index() {
     };
   }, [kpiScope, kpi, realizedTrades, trades]);
 
+  const winRateTapeStats = useMemo(() => {
+    let opens = 0;
+    let closes = 0;
+    let closesWithoutPnl = 0;
+    for (const t of trades) {
+      if (t.action === "close") {
+        closes += 1;
+        if (t.pnl == null) closesWithoutPnl += 1;
+      } else {
+        opens += 1;
+      }
+    }
+    return { fills: trades.length, opens, closes, closesWithoutPnl };
+  }, [trades]);
+
   // Fire-and-forget control commands. The engine drives the next status
   // update over the WebSocket so we don't optimistically mutate React state.
   const handleControl = (fn: () => Promise<unknown>) => {
@@ -243,7 +260,25 @@ function Index() {
   const onStart = () => handleControl(api.start);
   const onPause = () => handleControl(api.pause);
   const onStop = () => handleControl(api.stop);
-  const onKill = () => handleControl(api.shutdown);
+  const onKill = () => {
+    const ok = window.confirm(
+      "Kill flattens positions, stops the engine, and exits the backend process.\n\n" +
+        "The dashboard cannot start trading again until you restart the API " +
+        "(e.g. python backend/main.py).\n\nContinue?",
+    );
+    if (!ok) return;
+    handleControl(async () => {
+      try {
+        await api.shutdown();
+      } catch (err) {
+        console.error("shutdown failed", err);
+      } finally {
+        live.markBackendOffline(
+          "Backend stopped (Kill). Restart the API, then press Start.",
+        );
+      }
+    });
+  };
   const onHaltTrading = () =>
     handleControl(async () => {
       await api.tripBreakers();
@@ -291,13 +326,30 @@ function Index() {
     }
   };
 
+  const startDisabled = backendReachable && status === "running";
+
   return (
     <div className="min-h-screen text-foreground">
+      {!backendReachable && backendError && (
+        <div
+          role="alert"
+          className="border-b border-bear/40 bg-bear/10 px-4 py-2 text-center text-xs text-bear lg:px-8"
+        >
+          <span className="font-medium uppercase tracking-wider">Backend offline</span>
+          {" · "}
+          {backendError ??
+            "Restart the trading API, then use Start to resume. Kill exits the whole process."}
+          {!streamConnected && backendReachable && " · Reconnecting live stream…"}
+        </div>
+      )}
+
       <TopBar
         status={status}
         uptimeSec={uptimeSec}
         paperMode={paperMode}
         strategy={strategy}
+        backendReachable={backendReachable}
+        startDisabled={startDisabled}
         onStart={onStart}
         onPause={onPause}
         onKill={onKill}
@@ -327,13 +379,17 @@ function Index() {
             perf={closedTradePerf}
             scope={kpiScope}
             onScopeChange={setKpiScope}
-            eventArchiveRunDir={eventArchiveRunDir}
+            tapeStats={winRateTapeStats}
+            openPositionCount={positions.length}
           />
           <KpiCard
             icon={<Zap className="size-4" />}
             label="STRATEGY"
             value={strategy?.label ?? "—"}
-            sub={strategy?.description ?? "Loading..."}
+            sub={
+              strategy?.description ??
+              (backendReachable ? "Loading..." : "Backend offline — restart API")
+            }
             tone="neutral"
           />
         </section>
@@ -489,7 +545,7 @@ function Index() {
               <div className="grid grid-cols-3 gap-2">
                 <Button
                   onClick={onStart}
-                  disabled={status === "running"}
+                  disabled={startDisabled}
                   className="bg-bull text-bull-foreground hover:bg-bull/90 disabled:opacity-40"
                 >
                   <Play className="size-4" /> START
@@ -516,6 +572,7 @@ function Index() {
               <StrategyPicker
                 strategies={strategies}
                 activeName={strategy?.name ?? null}
+                backendReachable={backendReachable}
                 onSelect={onSelectStrategy}
               />
 
@@ -645,6 +702,8 @@ function TopBar(props: {
   uptimeSec: number;
   paperMode: boolean;
   strategy: StrategyInfo | null;
+  backendReachable: boolean;
+  startDisabled: boolean;
   onStart: () => void;
   onPause: () => void;
   onKill: () => void;
@@ -677,7 +736,7 @@ function TopBar(props: {
                 Algo Console
               </div>
               <div className="text-sm font-semibold tracking-wide">
-                {strategy?.label ?? "Loading..."}
+                {strategy?.label ?? (props.backendReachable ? "Loading..." : "—")}
               </div>
             </div>
           </div>
@@ -714,7 +773,7 @@ function TopBar(props: {
           <Button
             size="sm"
             onClick={props.onStart}
-            disabled={status === "running"}
+            disabled={props.startDisabled}
             className="bg-bull text-bull-foreground hover:bg-bull/90"
           >
             <Play className="size-4" /> Start
@@ -723,12 +782,17 @@ function TopBar(props: {
             size="sm"
             variant="outline"
             onClick={props.onHaltTrading}
-            disabled={status === "stopped"}
+            disabled={!props.backendReachable || status === "stopped"}
             className="border-warning/50 text-warning hover:bg-warning/10"
           >
             <AlertTriangle className="size-4" /> Halt
           </Button>
-          <Button size="sm" variant="destructive" onClick={props.onKill} disabled={status === "stopped"}>
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={props.onKill}
+            disabled={!props.backendReachable}
+          >
             <Power className="size-4" /> Kill
           </Button>
         </div>
@@ -741,12 +805,14 @@ function WinRateKpiCard({
   perf,
   scope,
   onScopeChange,
-  eventArchiveRunDir,
+  tapeStats,
+  openPositionCount,
 }: {
   perf: ClosedTradePerfVm;
   scope: "rolling" | "session";
   onScopeChange: (s: "rolling" | "session") => void;
-  eventArchiveRunDir: string | null;
+  tapeStats: { fills: number; opens: number; closes: number; closesWithoutPnl: number };
+  openPositionCount: number;
 }) {
   const {
     closed,
@@ -800,23 +866,36 @@ function WinRateKpiCard({
               Session
             </ToggleGroupItem>
           </ToggleGroup>
-          {eventArchiveRunDir ? (
-            <p
-              className="text-right font-mono text-[9px] font-normal normal-case tracking-normal text-muted-foreground/90"
-              title={`Replay + fills: ${eventArchiveRunDir}\\events.wal.jsonl (and sibling JSONL)`}
-            >
-              Run dir:{" "}
-              <span className="break-all opacity-90">{eventArchiveRunDir}</span>
-            </p>
-          ) : null}
         </div>
       </div>
 
       {!closed ? (
-        <div className="mt-10 pb-8 text-center text-xs text-muted-foreground">
-          {scope === "session"
-            ? "No realized PnL closes recorded this session yet (since backend start)."
-            : "No realized PnL closes in the rolling window yet (last 200)."}
+        <div className="mt-10 space-y-2 pb-8 text-center text-xs text-muted-foreground">
+          <p>
+            {scope === "session"
+              ? "No reducing fills with realized P&L this session yet."
+              : "No reducing fills with realized P&L in the last 200 closes."}
+          </p>
+          <p className="mx-auto max-w-sm text-[10px] leading-relaxed opacity-90">
+            {tapeStats.fills > 0 ? (
+              <>
+                {tapeStats.fills} fill{tapeStats.fills === 1 ? "" : "s"} on tape (
+                {tapeStats.opens} open{tapeStats.opens === 1 ? "" : "s"}
+                {tapeStats.closes > 0
+                  ? `, ${tapeStats.closes} close${tapeStats.closes === 1 ? "" : "s"}`
+                  : ""}
+                {tapeStats.closesWithoutPnl > 0
+                  ? ` (${tapeStats.closesWithoutPnl} without P&L)`
+                  : ""}
+                ).{" "}
+              </>
+            ) : null}
+            Win rate counts per-leg exits (venue rp or entry→exit), not open entries or mark-to-market
+            open P&L
+            {openPositionCount > 0
+              ? ` (${openPositionCount} leg${openPositionCount === 1 ? "" : "s"} still open).`
+              : "."}
+          </p>
         </div>
       ) : (
         <>
@@ -1031,10 +1110,12 @@ const ALL_STRATEGIES_OPTION: StrategyInfo = {
 function StrategyPicker({
   strategies,
   activeName,
+  backendReachable,
   onSelect,
 }: {
   strategies: StrategyInfo[];
   activeName: string | null;
+  backendReachable: boolean;
   onSelect: (name: string) => void;
 }) {
   const options = [ALL_STRATEGIES_OPTION, ...strategies];
@@ -1043,7 +1124,9 @@ function StrategyPicker({
       <div className="mb-2 flex items-center justify-between text-xs">
         <span className="uppercase tracking-wider text-muted-foreground">Strategy</span>
         {strategies.length === 0 && (
-          <span className="text-[11px] text-muted-foreground">Loading…</span>
+          <span className="text-[11px] text-muted-foreground">
+            {backendReachable ? "Loading…" : "Backend offline"}
+          </span>
         )}
       </div>
       <div className="grid grid-cols-1 gap-1.5">

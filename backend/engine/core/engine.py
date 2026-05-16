@@ -9,7 +9,7 @@ Lifecycle:
                  mark engine RUNNING, start the heartbeat clock.
     `pause()`  - keep streams alive but stop emitting new orders.
                  Existing positions are still monitored.
-    `resume()` - inverse of pause.
+    `resume()` - REST-sync wallet, positions, and open orders, then RUNNING.
     `stop()`   - flatten + cancel everything, disconnect, mark STOPPED.
 """
 
@@ -40,7 +40,7 @@ from ..market_data.feature_store import FeatureStore
 from ..market_data.orderbook import OrderBookStore
 from ..market_data.trade_tape import TradeTape
 from ..orders.order_manager import OrderManager, new_client_order_id, _fill_to_dict
-from ..performance.fill_classification import FillClassification, classify_fill
+from ..performance.fill_classification import classify_fill, position_before_fill
 from ..performance.performance_tracker import PerformanceTracker
 from ..portfolio.portfolio import Portfolio
 from ..position.position_tracker import PositionTracker
@@ -369,12 +369,14 @@ class Engine:
     def is_multi_strategy_mode(self) -> bool:
         return self._active_strategy_name == ALL_STRATEGIES_MODE
 
-    def set_active_strategy(self, name: str) -> None:
+    def set_active_strategy(self, name: str) -> bool:
         """Hot-swap the active strategy or enable multi-strategy netting.
 
         ``name`` must be a registered ``strategy.name`` or ``"all"`` to run
         every strategy with internal position netting. Raises ``ValueError``
         for unknown names so the API layer can surface a 400 to the dashboard.
+
+        Returns True if the active name actually changed.
         """
         raw = (name or "").strip()
         alias = normalize_strategy_name(raw)
@@ -389,7 +391,7 @@ class Engine:
             available = ", ".join(sorted(known)) or "<none>"
             raise ValueError(f"unknown strategy {name!r}; available: {available}")
         if normalised == self._active_strategy_name:
-            return
+            return False
         previous = self._active_strategy_name
         self._active_strategy_name = normalised
         self._stop_monitor.set_externally_managed(self._compute_externally_managed())
@@ -400,7 +402,7 @@ class Engine:
                 previous or "<none>",
                 sym_n,
             )
-            return
+            return True
         active = self._strategies_by_name.get(normalised)
         sym_n = len(active.symbols()) if active is not None else 0
         logger.info(
@@ -409,6 +411,7 @@ class Engine:
             normalised,
             sym_n,
         )
+        return True
 
     def apply_breaker_rearm_side_effects(self, cleared_codes: set[str]) -> None:
         """Reset subsystem baselines when operator rearms latched breakers.
@@ -707,18 +710,66 @@ class Engine:
     async def resume(self) -> None:
         if self._state.status is not EngineStatus.PAUSED:
             return
+        await self.sync_trading_book_from_rest()
         self._state.status = EngineStatus.RUNNING
         await self._publish_status()
         logger.info("engine resumed")
 
-    async def stop(self) -> None:
+    async def sync_trading_book_from_rest(self) -> None:
+        """Pull wallet, positions, and open orders from the venue over REST.
+
+        Used when **resuming** after pause or after a **strategy hot-swap** so
+        the dashboard and OMS match Binance before signals flow again. Cold
+        ``start()`` already seeds + ``OrderReconciler.sync_startup`` — this
+        path targets mid-session operator actions without a full reconnect.
+        """
+        if self._state.status is EngineStatus.STOPPED:
+            return
+        try:
+            balances, positions = await self._gateway.fetch_balances_and_positions()
+        except Exception:  # noqa: BLE001
+            logger.exception("sync_trading_book_from_rest: fetch_balances_and_positions failed")
+            return
+        if balances:
+            self._portfolio.update_balances(balances)
+        open_pos = await self._open_positions_from_rest_slice(positions)
+        await self._positions.sync_from_venue(open_pos)
+        self._oms.touch_venue_truth_from_rest()
+        if getattr(self._settings, "order_reconcile_on_startup", True):
+            try:
+                await self._order_reconciler.sync_startup()
+            except Exception:  # noqa: BLE001
+                logger.exception("sync_trading_book_from_rest: order reconcile failed")
+        logger.info(
+            "trading book synced from REST (%d open position(s))",
+            len(open_pos),
+        )
+
+    async def _open_positions_from_rest_slice(self, positions: list[Position]) -> list[Position]:
+        """Non-zero legs from an account snapshot, with ``positionRisk`` fallback."""
+        open_pos = [p for p in positions if abs(p.qty) > 1e-12]
+        if not open_pos:
+            local_open = [p for p in self._positions.all() if abs(p.qty) > 1e-12]
+            if local_open:
+                try:
+                    alt = await self._gateway.fetch_positions()
+                    open_pos = [p for p in alt if abs(p.qty) > 1e-12]
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "sync_trading_book: fallback fetch_positions failed "
+                        "(account snapshot had no open legs but local book is not flat)",
+                    )
+        return open_pos
+
+    async def stop(self, *, force_flatten: bool = False) -> None:
         if self._state.status is EngineStatus.STOPPED:
             return
         logger.error("engine stopping (operator request)")
         # Optionally market-out residual positions before tearing down
         # connections, so a stop never leaves naked exposure on the
         # venue. Skipped on PAPER smoke tests by setting FLATTEN_ON_STOP=false.
-        if getattr(self._settings, "flatten_on_stop", True):
+        # ``force_flatten`` (dashboard Kill) always unwinds regardless of that flag.
+        if force_flatten or getattr(self._settings, "flatten_on_stop", True):
             try:
                 await self._flatten_and_wait_for_flat()
             except Exception:  # noqa: BLE001
@@ -1213,15 +1264,16 @@ class Engine:
 
         if not await self._oms.on_fill(fill):
             return
-        pre_position = self._positions.get(fill.symbol)
-        classification = classify_fill(pre_position, fill)
-        if self._is_emergency_flatten_fill(fill):
-            classification = FillClassification(
-                action=classification.action,
-                entry_price=classification.entry_price,
-                exit_price=classification.exit_price,
-                pnl=None,
+        post_position = self._positions.get(fill.symbol)
+        pre_position = post_position
+        if self._positions_from_account_updates():
+            pre_position = position_before_fill(
+                post_position,
+                fill,
+                fallback_entry=self._positions.entry_before_flat(fill.symbol),
             )
+        classification = classify_fill(pre_position, fill)
+        exclude_from_streak = self._is_emergency_flatten_fill(fill)
         # Binance ACCOUNT_UPDATE already carries authoritative ``pa``; applying
         # the same ORDER_TRADE_UPDATE fill doubles qty when events arrive out
         # of order (ACCOUNT_UPDATE first — observed on CRVUSDC).
@@ -1229,7 +1281,13 @@ class Engine:
             await self._positions.on_fill(fill)
         position = self._positions.get(fill.symbol) or Position(symbol=fill.symbol)
         self._risk.on_fill(fill, position)
-        record = self._performance.record_fill(fill, classification)
+        record = self._performance.record_fill(
+            fill,
+            classification,
+            exclude_from_streak=exclude_from_streak,
+        )
+        if classification.action == "close":
+            self._positions.clear_entry_before_flat(fill.symbol)
         await self._bus.publish(
             Event(
                 type=EventType.FILL,

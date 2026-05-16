@@ -62,6 +62,8 @@ export type AlgoStream = {
   executionHistory: ExecutionParent[];
   executionAggregate: ExecutionAggregate;
   connected: boolean;
+  /** False when REST hydrate fails or the stream socket is down (e.g. after Kill). */
+  backendReachable: boolean;
   error: string | null;
   systemHealth: SystemHealth | null;
   maxRiskPct: number;
@@ -69,6 +71,8 @@ export type AlgoStream = {
   breakers: BreakerList;
   replaySummary: string | null;
   refresh: () => Promise<void>;
+  /** Call after Kill / confirmed process exit so controls are not stuck on stale status. */
+  markBackendOffline: (message?: string) => void;
   kpi: KpiDTO;
   /** Backend run directory for `events.wal.jsonl` + JSONL exports. */
   eventArchiveRunDir: string | null;
@@ -121,6 +125,7 @@ const EMPTY: AlgoStream = {
   executionHistory: [],
   executionAggregate: EMPTY_AGG,
   connected: false,
+  backendReachable: false,
   error: null,
   systemHealth: null,
   maxRiskPct: 0.35,
@@ -128,6 +133,7 @@ const EMPTY: AlgoStream = {
   breakers: EMPTY_BREAKERS,
   replaySummary: null,
   refresh: NOOP_REFRESH,
+  markBackendOffline: () => {},
   kpi: EMPTY_KPI,
   eventArchiveRunDir: null,
 };
@@ -199,9 +205,23 @@ function mapPositionsFromState(raw: unknown): Position[] {
   return out;
 }
 
+const BACKEND_OFFLINE_MSG =
+  "Backend unreachable. After Kill, restart the API (e.g. python backend/main.py).";
+
+function applyBackendOffline(prev: AlgoStream, message?: string): AlgoStream {
+  return {
+    ...prev,
+    connected: false,
+    backendReachable: false,
+    status: "stopped",
+    error: message ?? prev.error ?? BACKEND_OFFLINE_MSG,
+  };
+}
+
 function applyTradingState(prev: AlgoStream, state: StateDTO): AlgoStream {
   return {
     ...prev,
+    backendReachable: true,
     status: state.status.status,
     paperMode: state.status.paper_mode,
     uptimeSec: Math.floor(state.status.uptime_sec),
@@ -285,6 +305,10 @@ export function useAlgoStream(): AlgoStream {
   const syncTradingStateRef = useRef<(() => Promise<void>) | null>(null);
   const wsResyncTimerRef = useRef<number | null>(null);
 
+  const markBackendOffline = useCallback((message?: string) => {
+    setStream((prev) => applyBackendOffline(prev, message));
+  }, []);
+
   const syncTradingState = useCallback(async () => {
     const state = await api.state();
     startedAtRef.current = Date.now() / 1000 - state.status.uptime_sec;
@@ -309,9 +333,10 @@ export function useAlgoStream(): AlgoStream {
         maxRiskPct: numSetting(settings, "max_risk_pct", 0.35),
         maxGrossNotional: numSetting(settings, "max_gross_notional", 50_000),
         breakers: toBreakerList(breakersDto),
+        connected: prev.connected,
       }));
     } catch (err) {
-      setStream((prev) => ({ ...prev, error: (err as Error).message }));
+      setStream((prev) => applyBackendOffline(prev, (err as Error).message));
       throw err;
     }
   }, []);
@@ -331,7 +356,7 @@ export function useAlgoStream(): AlgoStream {
         if (cancelled) return;
         void syncTradingStateRef.current?.().catch((err: Error) => {
           if (!cancelled) {
-            setStream((prev) => ({ ...prev, error: err.message }));
+            setStream((prev) => applyBackendOffline(prev, err.message));
           }
         });
       }, WS_RESYNC_DEBOUNCE_MS);
@@ -344,7 +369,7 @@ export function useAlgoStream(): AlgoStream {
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
         void syncTradingStateRef.current?.().catch((err: Error) => {
           if (!cancelled) {
-            setStream((prev) => ({ ...prev, error: err.message }));
+            setStream((prev) => applyBackendOffline(prev, err.message));
           }
         });
       }, TRADING_STATE_SYNC_MS);
@@ -410,7 +435,7 @@ export function useAlgoStream(): AlgoStream {
     document.addEventListener("visibilitychange", onVisibility);
 
     ws.onopen = () => {
-      setStream((prev) => ({ ...prev, connected: true, error: null }));
+      setStream((prev) => ({ ...prev, connected: true, error: null, backendReachable: true }));
       scheduleWsResync();
       void syncEquityFromApi();
       startEquityPoll();
@@ -421,7 +446,7 @@ export function useAlgoStream(): AlgoStream {
       ensureFallbackPoll();
     };
     ws.onerror = () => {
-      setStream((prev) => ({ ...prev, error: "ws error" }));
+      setStream((prev) => ({ ...prev, connected: false, error: prev.error ?? "ws error" }));
       ensureFallbackPoll();
     };
 
@@ -472,7 +497,7 @@ export function useAlgoStream(): AlgoStream {
     return () => clearInterval(id);
   }, []);
 
-  return { ...stream, refresh };
+  return { ...stream, refresh, markBackendOffline };
 }
 
 function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
@@ -594,8 +619,12 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
 
     case "fill": {
       const d = event.data;
+      const tradeId = String(d.id ?? d.trade_id ?? d.child_id ?? "");
+      if (tradeId && prev.trades.some((t) => t.id === tradeId)) {
+        return prev;
+      }
       const trade = toTrade({
-        id: d.id ?? d.trade_id ?? d.child_id,
+        id: tradeId,
         ts: fmtTime(event.ts),
         symbol: d.symbol,
         side: d.side,
@@ -607,12 +636,33 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
         pnl: d.pnl,
       });
       const isRealizedClose = trade.action === "close" && trade.pnl != null;
+      const nextTrades = [trade, ...prev.trades].slice(0, PERFORMANCE_TRADE_HISTORY_CAP);
+      const nextRealized = isRealizedClose
+        ? [trade, ...prev.realizedTrades].slice(0, PERFORMANCE_TRADE_HISTORY_CAP)
+        : prev.realizedTrades;
+      let nextKpi = prev.kpi;
+      if (isRealizedClose) {
+        nextKpi = bumpKpiOnRealizedClose(prev.kpi, trade.pnl ?? 0);
+        // Keep rolling KPI fields aligned with the realized close ring.
+        const wins = nextRealized.filter((t) => (t.pnl ?? 0) > 0).length;
+        const grossWin = nextRealized.reduce((a, t) => a + ((t.pnl ?? 0) > 0 ? (t.pnl ?? 0) : 0), 0);
+        const grossLoss = nextRealized.reduce(
+          (a, t) => a + ((t.pnl ?? 0) < 0 ? -(t.pnl ?? 0) : 0),
+          0,
+        );
+        nextKpi = {
+          ...nextKpi,
+          win_rate: nextRealized.length > 0 ? (wins / nextRealized.length) * 100 : 0,
+          gross_win_pnl: grossWin,
+          gross_loss_pnl: grossLoss,
+          profit_factor: grossLoss > 0 ? grossWin / grossLoss : null,
+        };
+      }
       return {
         ...prev,
-        trades: [trade, ...prev.trades].slice(0, PERFORMANCE_TRADE_HISTORY_CAP),
-        realizedTrades: isRealizedClose
-          ? [trade, ...prev.realizedTrades].slice(0, PERFORMANCE_TRADE_HISTORY_CAP)
-          : prev.realizedTrades,
+        trades: nextTrades,
+        realizedTrades: nextRealized,
+        kpi: nextKpi,
       };
     }
 
@@ -677,6 +727,25 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
     default:
       return prev;
   }
+}
+
+function bumpKpiOnRealizedClose(kpi: KpiDTO, pnl: number): KpiDTO {
+  const wins = kpi.session_close_wins + (pnl > 0 ? 1 : 0);
+  const losses = kpi.session_close_losses + (pnl < 0 ? 1 : 0);
+  const breakevens = kpi.session_close_breakevens + (pnl === 0 ? 1 : 0);
+  const closed = wins + losses + breakevens;
+  const grossWin = kpi.gross_win_pnl_session + (pnl > 0 ? pnl : 0);
+  const grossLoss = kpi.gross_loss_pnl_session + (pnl < 0 ? -pnl : 0);
+  return {
+    ...kpi,
+    session_close_wins: wins,
+    session_close_losses: losses,
+    session_close_breakevens: breakevens,
+    win_rate_session: closed > 0 ? (wins / closed) * 100 : 0,
+    gross_win_pnl_session: grossWin,
+    gross_loss_pnl_session: grossLoss,
+    profit_factor_session: grossLoss > 0 ? grossWin / grossLoss : null,
+  };
 }
 
 function aggregate(history: ExecutionParent[]): ExecutionAggregate {

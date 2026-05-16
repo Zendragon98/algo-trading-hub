@@ -99,6 +99,8 @@ sequenceDiagram
 
 Order inside `Engine.start()`: optional WAL replay → REST book snapshots **before** depth WS → market WS → prime mids → account snapshot → order reconcile → user-data WS → background reconcilers.
 
+`Engine.resume()` (and a successful `POST /api/control/strategy` while **RUNNING**) calls `sync_trading_book_from_rest()` first: merge wallet from `GET /fapi/v2/account`, replace the position tracker from the same snapshot (with `positionRisk` fallback if the account slice is empty while local is not flat), bump venue-truth timestamps, then `OrderReconciler.sync_startup()` when `ORDER_RECONCILE_ON_STARTUP=true`.
+
 ### 3. Per-tick trading path
 
 **1 Hz clock:** mark-to-market → connection monitor → breaker tick → risk exits → strategy → pre-trade → router → OMS.
@@ -626,7 +628,7 @@ POST /api/control/breakers/trip               # body: {detail?, flatten?, pause?
 POST /api/control/breakers/rearm              # clears latched majors + resets baselines (streak, daily anchor, session/HWM equity, exec TCA history) for removed codes
 ```
 
-The dashboard **Halt** button calls `breakers/trip` (trading halt + flatten + pause). **Kill** calls `shutdown` and exits the Python process — it is not the trading kill switch.
+The dashboard **Halt** button calls `breakers/trip` (trading halt + flatten + pause). **Kill** calls `shutdown`: flatten all venue positions, cancel open orders, `Engine.stop()`, then exit the Python process — it is not the same as the periodic reconcile kill-switch.
 
 **Paper / testnet tuning:** breaker state is in-memory only (cleared on restart). Tighten `MAX_DRAWDOWN_PCT`, `HWM_DRAWDOWN_KILL_PCT`, or `DAILY_LOSS_KILL_PCT` in `common/config.py` if you want earlier automatic halts on small paper accounts. `WS_STALE_PAUSE_SEC` trips a MINOR engine breach (pauses entries, no auto-flatten).
 
@@ -801,11 +803,11 @@ All payloads use the same field names as `src/components/algo/types.ts` so the f
 | GET    | `/api/logs`                | `?limit=60`                                     | `LogEntry[]`                         |
 | POST   | `/api/control/start`       |                     | new `StatusDTO`                      |
 | POST   | `/api/control/pause`       |                     | new `StatusDTO`                      |
-| POST   | `/api/control/resume`      |                     | new `StatusDTO`                      |
+| POST   | `/api/control/resume`      |                     | new `StatusDTO` (REST-syncs wallet, positions, open orders, then RUNNING) |
 | POST   | `/api/control/stop`        |                     | new `StatusDTO` (halts engine; API keeps running) |
-| POST   | `/api/control/shutdown`    |                     | new `StatusDTO` (exit process; only when `create_app` is wired with `request_shutdown`, e.g. `main.py`) |
+| POST   | `/api/control/shutdown`    |                     | Flatten + cancel + `Engine.stop()`, then exit process (`request_shutdown` in `main.py`) |
 | POST   | `/api/control/flatten`     |                     | Pause, flatten all venue positions (wait until flat or timeout), return `StatusDTO` (engine stays paused) |
-| POST   | `/api/control/strategy`    | `{name}`            | Hot-swap the active strategy (400 on unknown name) |
+| POST   | `/api/control/strategy`    | `{name}`            | Hot-swap the active strategy (400 on unknown name); when the engine is **RUNNING**, REST-syncs positions + orders after a real change |
 | PATCH  | `/api/control/risk`        | `{max_risk_pct}`    | new `StatusDTO`                      |
 | GET    | `/api/settings`            |                     | `{ settings: <full Settings JSON, secrets masked> }` |
 | PATCH  | `/api/settings`            | partial fields      | `{ ok: true, settings: ... }` merge into live runtime config |

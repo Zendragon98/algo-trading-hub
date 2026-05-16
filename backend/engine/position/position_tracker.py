@@ -30,6 +30,8 @@ class PositionTracker:
     def __init__(self, bus: EventBus) -> None:
         self._bus = bus
         self._positions: dict[str, Position] = {}
+        # Avg entry retained when ACCOUNT_UPDATE pops a flat row before the fill WS.
+        self._entry_before_flat: dict[str, float] = {}
         self._lock = asyncio.Lock()
 
     # --- Seeding ---
@@ -77,9 +79,13 @@ class PositionTracker:
         async with self._lock:
             for p in snapshot:
                 if p.qty == 0:
+                    existing = self._positions.get(p.symbol)
+                    if existing is not None and abs(existing.avg_entry_price) > 1e-12:
+                        self._entry_before_flat[p.symbol] = existing.avg_entry_price
                     self._positions.pop(p.symbol, None)
                     continue
                 self._positions[p.symbol] = p
+                self._entry_before_flat.pop(p.symbol, None)
         for p in snapshot:
             # Always publish, including the qty==0 close, so the WS hook
             # in the frontend can drop the symbol from the position panel.
@@ -94,7 +100,13 @@ class PositionTracker:
         open_positions = [p for p in positions if abs(p.qty) > 1e-12]
         async with self._lock:
             removed = set(self._positions) - {p.symbol for p in open_positions}
+            for sym in removed:
+                existing = self._positions[sym]
+                if abs(existing.avg_entry_price) > 1e-12:
+                    self._entry_before_flat[sym] = existing.avg_entry_price
             self._positions = {p.symbol: p for p in open_positions}
+            for p in open_positions:
+                self._entry_before_flat.pop(p.symbol, None)
         for sym in removed:
             await self._publish(Position(symbol=sym, qty=0.0))
         for p in open_positions:
@@ -108,6 +120,15 @@ class PositionTracker:
     def get(self, symbol: str) -> Position | None:
         return self._positions.get(symbol)
 
+    def entry_before_flat(self, symbol: str) -> float | None:
+        """Avg entry cached when the venue row went flat before the fill event."""
+
+        entry = self._entry_before_flat.get(symbol)
+        return entry if entry is not None and entry > 0 else None
+
+    def clear_entry_before_flat(self, symbol: str) -> None:
+        self._entry_before_flat.pop(symbol, None)
+
     # --- Internals ---
 
     def _apply_fill(self, position: Position, fill: Fill) -> None:
@@ -117,6 +138,7 @@ class PositionTracker:
         new_qty = prev_qty + signed
 
         if prev_qty == 0 or _same_sign(prev_qty, signed):
+            self._entry_before_flat.pop(fill.symbol, None)
             # Opening or adding to the same direction: weighted-average entry.
             total_cost = position.avg_entry_price * abs(prev_qty) + fill.price * fill.qty
             total_qty = abs(prev_qty) + fill.qty
@@ -134,6 +156,8 @@ class PositionTracker:
                 position.avg_entry_price = fill.price
             elif new_qty == 0:
                 # Fully closed; reset entry so the next fill seeds it cleanly.
+                if position.avg_entry_price > 0:
+                    self._entry_before_flat[fill.symbol] = position.avg_entry_price
                 position.avg_entry_price = 0.0
             # else: partial close keeps the existing weighted entry intact.
 

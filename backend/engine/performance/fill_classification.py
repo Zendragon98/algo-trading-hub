@@ -16,6 +16,42 @@ class FillClassification:
     pnl: float | None
 
 
+def position_before_fill(
+    post_fill: Position | None,
+    fill: Fill,
+    *,
+    fallback_entry: float | None = None,
+) -> Position | None:
+    """Infer book state immediately before ``fill`` when qty is already post-fill.
+
+    Binance ``ACCOUNT_UPDATE`` often applies the new ``pa`` before
+    ``ORDER_TRADE_UPDATE`` arrives. Classifying against the post-fill book
+    would label reducing fills as opens. When the venue row was already popped
+    (qty flat), ``fallback_entry`` supplies avg entry cached at close time.
+    """
+    signed = fill.qty * fill.side.sign
+    post_qty = post_fill.qty if post_fill else 0.0
+    pre_qty = post_qty - signed
+    if abs(pre_qty) < 1e-12:
+        return None
+    entry = (
+        post_fill.avg_entry_price
+        if post_fill is not None
+        else (fallback_entry or 0.0)
+    )
+    return Position(
+        symbol=post_fill.symbol if post_fill is not None else fill.symbol,
+        qty=pre_qty,
+        avg_entry_price=entry,
+        mark_price=post_fill.mark_price if post_fill is not None else fill.price,
+        realized_pnl=post_fill.realized_pnl if post_fill is not None else 0.0,
+        exchange_unrealized_pnl=(
+            post_fill.exchange_unrealized_pnl if post_fill is not None else 0.0
+        ),
+        updated_at=post_fill.updated_at if post_fill is not None else fill.ts,
+    )
+
+
 def classify_fill(position: Position | None, fill: Fill) -> FillClassification:
     """Mirror PositionTracker._apply_fill open/close logic before the fill is applied."""
     prev_qty = position.qty if position else 0.0

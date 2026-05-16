@@ -150,6 +150,8 @@ class LossTracker:
             if trade.id in self._seen_trade_ids:
                 continue
             self._seen_trade_ids.add(trade.id)
+            if trade.exclude_from_streak:
+                continue
             pnl = trade.pnl
             if pnl is None:
                 continue
