@@ -22,6 +22,7 @@ from gateways.factory import create_gateway
 from .core.engine import Engine
 from .persistence.run_bootstrap import bootstrap_run, shutdown_bootstrap
 from .strategies.market_making import MarketMakingStrategy
+from .strategies.market_making_v2 import MarketMakingV2Strategy
 from .strategies.pairs_trading import PairsTradingStrategy
 from .strategies.sma_crossover import SmaCrossoverStrategy
 
@@ -62,12 +63,15 @@ async def run() -> None:
         "sma": SmaCrossoverStrategy.name,
         "mm": MarketMakingStrategy.name,
         "market_making": MarketMakingStrategy.name,
+        "mm2": MarketMakingV2Strategy.name,
+        "market_making_v2": MarketMakingV2Strategy.name,
     }
     boot = aliases.get(strategy_name, strategy_name)
     all_strategies = [
         PairsTradingStrategy(settings),
         SmaCrossoverStrategy(settings),
         MarketMakingStrategy(settings),
+        MarketMakingV2Strategy(settings),
     ]
     by_name = {s.name: s for s in all_strategies}
     if boot in by_name:
@@ -96,7 +100,7 @@ async def run() -> None:
         if isinstance(strat, SmaCrossoverStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_position_provider(_position_qty)
-        if isinstance(strat, MarketMakingStrategy):
+        if isinstance(strat, (MarketMakingStrategy, MarketMakingV2Strategy)):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_position_provider(_position_qty)
 

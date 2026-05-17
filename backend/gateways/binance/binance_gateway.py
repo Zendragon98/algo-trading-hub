@@ -47,7 +47,12 @@ class BinanceGateway(GatewayInterface):
             rest_429_default_backoff_sec=settings.binance_rest_429_default_backoff_sec,
             rest_pause_buffer_sec=settings.binance_rest_pause_buffer_sec,
         )
-        self._market = MarketConnection(ws_base=settings.binance_ws_base)
+        self._market = MarketConnection(
+            ws_base=settings.binance_ws_base,
+            ping_interval=settings.market_ws_ping_interval_sec,
+            ping_timeout=settings.market_ws_ping_timeout_sec,
+            shard_queue_size=settings.market_ws_shard_queue_size,
+        )
         self._orders = OrderConnection(
             rest=self._rest,
             ws_base=settings.binance_ws_base,
@@ -337,18 +342,27 @@ def _parse_symbol_filters(info: dict[str, Any]) -> dict[str, SymbolFilters]:
         step_size: float | None = None
         tick_size: float | None = None
         min_qty: float | None = None
-        max_qty: float | None = None
+        max_qty_limit: float | None = None
+        max_qty_market: float | None = None
         min_notional: float | None = None
         for f in sym.get("filters") or []:
             ft = f.get("filterType")
-            if ft in ("LOT_SIZE", "MARKET_LOT_SIZE"):
+            if ft == "LOT_SIZE":
                 step_size = _safe_float(f.get("stepSize")) or step_size
                 mq = _safe_float(f.get("minQty"))
                 if mq is not None:
                     min_qty = mq if min_qty is None else max(min_qty, mq)
                 xq = _safe_float(f.get("maxQty"))
                 if xq is not None:
-                    max_qty = xq if max_qty is None else min(max_qty, xq)
+                    max_qty_limit = xq
+            elif ft == "MARKET_LOT_SIZE":
+                step_size = _safe_float(f.get("stepSize")) or step_size
+                mq = _safe_float(f.get("minQty"))
+                if mq is not None:
+                    min_qty = mq if min_qty is None else max(min_qty, mq)
+                xq = _safe_float(f.get("maxQty"))
+                if xq is not None:
+                    max_qty_market = xq
             elif ft == "PRICE_FILTER":
                 tick_size = _safe_float(f.get("tickSize")) or tick_size
             elif ft in ("MIN_NOTIONAL", "NOTIONAL"):
@@ -361,12 +375,16 @@ def _parse_symbol_filters(info: dict[str, Any]) -> dict[str, SymbolFilters]:
                     or _safe_float(f.get("minNotionalValue"))
                 )
                 min_notional = mn or min_notional
+        caps = [c for c in (max_qty_limit, max_qty_market) if c is not None]
+        max_qty = min(caps) if caps else None
         out[symbol] = SymbolFilters(
             symbol=symbol,
             step_size=step_size,
             tick_size=tick_size,
             min_qty=min_qty,
             max_qty=max_qty,
+            max_qty_limit=max_qty_limit,
+            max_qty_market=max_qty_market,
             min_notional=min_notional,
         )
     return out

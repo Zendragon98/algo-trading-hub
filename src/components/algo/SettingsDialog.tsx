@@ -70,7 +70,8 @@ function isStrategyParamKey(key: string): boolean {
     key === "base_currency" ||
     key.startsWith("pair_") ||
     key.startsWith("sma_") ||
-    key.startsWith("mm_")
+    key.startsWith("mm_") ||
+    key.startsWith("mm2_")
   );
 }
 
@@ -96,6 +97,7 @@ const BOOT_STRATEGY_OPTIONS: { value: string; label: string }[] = [
   { value: "pairs_trading_usdt_usdc", label: "Pairs trading (USDT/USDC)" },
   { value: "sma_crossover", label: "SMA crossover" },
   { value: "market_making", label: "Market making (skew + tape)" },
+  { value: "market_making_v2", label: "Market making 2.0 (fee-aware fade)" },
 ];
 
 const selectTriggerClass =
@@ -341,7 +343,10 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
     const common = ["strategy", "symbols", "base_currency"].filter((k) => strategyKeys.includes(k));
     const pair = strategyKeys.filter((k) => k.startsWith("pair_"));
     const sma = strategyKeys.filter((k) => k.startsWith("sma_"));
-    const mm = strategyKeys.filter((k) => k.startsWith("mm_"));
+    const mm = strategyKeys.filter(
+      (k) => k.startsWith("mm_") && !k.startsWith("mm2_"),
+    );
+    const mm2 = strategyKeys.filter((k) => k.startsWith("mm2_"));
 
     return (
       <div className="space-y-4">
@@ -380,6 +385,13 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
           <div className="space-y-3">
             <SectionTitle>Market making (skew + imbalance + tape)</SectionTitle>
             {mm.map((k) => renderField(k))}
+          </div>
+        )}
+
+        {mm2.length > 0 && (
+          <div className="space-y-3">
+            <SectionTitle>Market making 2.0 (fee-aware fade)</SectionTitle>
+            {mm2.map((k) => renderField(k))}
           </div>
         )}
       </div>

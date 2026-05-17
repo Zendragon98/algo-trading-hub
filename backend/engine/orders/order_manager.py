@@ -142,12 +142,22 @@ class OrderManager:
         try:
             placed = await self._gateway.place_order(child)
         except Exception as exc:
+            code = getattr(exc, "code", None)
             # Venue has no position to reduce (-2022); common when local book lags flat.
-            if getattr(exc, "code", None) == -2022:
+            if code == -2022:
                 logger.warning(
                     "reduce_only rejected at venue for %s (symbol=%s qty=%.10f): %s",
                     child.id,
                     child.symbol,
+                    child.qty,
+                    exc,
+                )
+            elif code == -4164:
+                logger.warning(
+                    "place_order below min notional for %s (symbol=%s side=%s qty=%.10f): %s",
+                    child.id,
+                    child.symbol,
+                    child.side.value,
                     child.qty,
                     exc,
                 )

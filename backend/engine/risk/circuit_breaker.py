@@ -177,6 +177,25 @@ class CircuitBreaker:
 
     # --- Reads ---
 
+    def is_engine_halted(self) -> bool:
+        """True when a latched MAJOR engine breach is active (kill switch).
+
+        MINOR engine trips (stale user stream, reconcile lag) are recorded
+        for the dashboard but must not halt entries — they auto-cool down.
+        """
+        for status in self._active.values():
+            if status.scope is not BreakerScope.ENGINE:
+                continue
+            if status.severity is not BreakerSeverity.MAJOR:
+                continue
+            if status.state in (
+                BreakerState.COOLDOWN,
+                BreakerState.LATCHED,
+                BreakerState.TRIPPED,
+            ):
+                return True
+        return False
+
     def is_blocked(
         self,
         scope: BreakerScope,
@@ -186,8 +205,13 @@ class CircuitBreaker:
 
         Engine-scope breaches block everything below them. Symbol-scope
         breaches block that symbol (and the engine when `scope=ENGINE`).
+
+        ENGINE-scope *minor* breaches are excluded: they are telemetry /
+        auto-cooling only and must not block symbol-level entry gates.
         """
         for status in self._active.values():
+            if status.scope is BreakerScope.ENGINE and status.severity is BreakerSeverity.MINOR:
+                continue
             if not _affects(status, scope, target):
                 continue
             if status.state in (BreakerState.COOLDOWN, BreakerState.LATCHED, BreakerState.TRIPPED):

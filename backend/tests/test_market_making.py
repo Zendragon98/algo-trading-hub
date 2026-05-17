@@ -172,6 +172,33 @@ def test_mm_caps_new_entries_per_tick() -> None:
     assert [s.symbol for s in capped] == ["D", "B", "C"]
 
 
+def test_mm_skips_when_book_not_ready() -> None:
+    """Do not tilt on cached skew/tape while L2 is resyncing (mid unset)."""
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        mm_symbols=["BTCUSDT"],
+        mm_skew_scale=1.0,
+        mm_imbalance_scale=15.0,
+        mm_entry_tilt=8.0,
+        mm_signal_mode="fade",
+        mm_min_samples=3,
+        mm_qty=1.0,
+        mm_cooldown_sec=0.0,
+    )
+    strat = MarketMakingStrategy(settings)
+    for _ in range(5):
+        list(strat.on_tick(_feat(mid=100.0, micro=90.0, imb=-1.0)))
+    stale_book = {
+        "BTCUSDT": Features(
+            symbol="BTCUSDT",
+            tape_bid_hit_count=0,
+            tape_ask_hit_count=50,
+        )
+    }
+    assert list(strat.on_tick(stale_book)) == []
+
+
 def test_mm_exits_when_composite_reverts() -> None:
     settings = Settings(
         binance_api_key="x",

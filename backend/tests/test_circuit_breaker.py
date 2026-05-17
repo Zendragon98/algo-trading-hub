@@ -70,6 +70,14 @@ def test_symbol_scope_does_not_block_engine_query() -> None:
     assert not cb.is_blocked(BreakerScope.ENGINE)
 
 
+def test_minor_engine_breach_does_not_halt() -> None:
+    cb = CircuitBreaker()
+    cb.trip(_minor("stale_user_data", BreakerScope.ENGINE, cooldown_sec=10.0))
+    assert cb.is_blocked(BreakerScope.ENGINE) is False
+    assert not cb.is_engine_halted()
+    assert any(s.code == "stale_user_data" for s in cb.active())
+
+
 def test_minor_cannot_demote_active_major() -> None:
     cb = CircuitBreaker()
     cb.trip(_major("daily_loss", BreakerScope.ENGINE))

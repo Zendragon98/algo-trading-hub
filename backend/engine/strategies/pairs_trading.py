@@ -339,6 +339,9 @@ class PairsTradingStrategy(StrategyBase):
                 continue
             if usdt.mid <= 0 or usdc.mid <= 0:
                 continue
+            min_mid = float(self._settings.pair_min_mid_price)
+            if min_mid > 0 and (usdt.mid < min_mid or usdc.mid < min_mid):
+                continue
             bases[self._key(pair)] = _basis(usdc.mid, usdt.mid)
             mids_by_pair[self._key(pair)] = (usdt.mid, usdc.mid)
 
@@ -379,7 +382,31 @@ class PairsTradingStrategy(StrategyBase):
             signals.extend(
                 self._evaluate(pair, stats, z, basis, reference, usdt_mid, usdc_mid)
             )
-        return signals
+        return self._cap_new_entries(signals)
+
+    def _cap_new_entries(self, signals: list[Signal]) -> list[Signal]:
+        """Limit simultaneous new pair opens (by group_id) so flatten stays bounded."""
+        max_n = int(getattr(self._settings, "pair_max_new_entries_per_tick", 0) or 0)
+        if max_n <= 0:
+            return signals
+        other = [s for s in signals if "pairs_open" not in (s.reason or "")]
+        opens = [s for s in signals if "pairs_open" in (s.reason or "")]
+        if not opens:
+            return signals
+        by_gid: dict[str, list[Signal]] = {}
+        for sig in opens:
+            gid = sig.group_id or sig.symbol
+            by_gid.setdefault(gid, []).append(sig)
+        if len(by_gid) <= max_n:
+            return signals
+        ranked = sorted(
+            by_gid.items(),
+            key=lambda item: -max(float(s.score) for s in item[1]),
+        )
+        kept: list[Signal] = []
+        for _, group_sigs in ranked[:max_n]:
+            kept.extend(group_sigs)
+        return other + kept
 
     def _fetch_weights(self) -> dict[str, float]:
         """Return the latest per-symbol volume cache, or ``{}`` when missing."""

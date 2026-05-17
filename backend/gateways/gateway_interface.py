@@ -48,7 +48,9 @@ class SymbolFilters:
     step_size: float | None = None       # qty must be a multiple of this
     tick_size: float | None = None       # price must be a multiple of this
     min_qty: float | None = None         # smallest qty the venue accepts
-    max_qty: float | None = None         # largest qty per order (limit + market)
+    max_qty: float | None = None         # conservative cap (min of limit + market)
+    max_qty_limit: float | None = None   # LOT_SIZE maxQty
+    max_qty_market: float | None = None  # MARKET_LOT_SIZE maxQty
     min_notional: float | None = None    # smallest qty * price the venue accepts
 
 

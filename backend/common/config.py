@@ -56,9 +56,19 @@ class Settings(BaseSettings):
     # Client-side REST pacing + HTTP 429 handling (see BinanceRestClient).
     # Slightly conservative default to stay under Binance futures REST weight limits
     # when connect + reconcile + orders share one client.
-    binance_rest_min_interval_ms: int = 100
+    binance_rest_min_interval_ms: int = 150
     binance_rest_429_default_backoff_sec: float = 60.0
     binance_rest_pause_buffer_sec: float = 0.5
+    # Public market-data WS keepalive (see market_connection.py).
+    market_ws_ping_interval_sec: float = 20.0
+    market_ws_ping_timeout_sec: float = 180.0
+    # Per-shard ingest queue between the socket reader and MD handlers (backpressure).
+    market_ws_shard_queue_size: int = 4096
+    # Debounce coalesced L2 REST resync after market WS shard reconnects.
+    market_ws_reconnect_resync_delay_sec: float = 3.0
+    # Bounded parallel REST ``/depth`` during book resync (startup vs reconnect).
+    book_resync_concurrency: int = 4
+    book_resync_reconnect_concurrency: int = 2
 
     # --- IBKR (Interactive Brokers) ---
     # Defaults match the canonical paper-trading IB Gateway / TWS port (7497).
@@ -77,7 +87,7 @@ class Settings(BaseSettings):
     )
     base_currency: str = "USDT"
     engine_autostart: bool = False
-    # Which strategy set to run: "pairs" | "sma" | "market_making" | "all".
+    # Which strategy set to run: "pairs" | "sma" | "market_making" | "market_making_v2" | "all".
     # "all" runs every registered strategy with internal position netting.
     strategy: str = "pairs"
 
@@ -88,7 +98,7 @@ class Settings(BaseSettings):
     # hit. Position size is then `(equity * risk_per_trade_pct) / stop_pct`,
     # which is the canonical "size by stop" rule traders use on futures.
     max_risk_pct: float = 0.35
-    risk_per_trade_pct: float = 0.005
+    risk_per_trade_pct: float = 0.003
     max_gross_notional: float = 50_000.0
     max_drawdown_pct: float = 0.10
     default_stop_loss_pct: float = 0.005
@@ -133,9 +143,9 @@ class Settings(BaseSettings):
     max_consecutive_rejects: int = 3
     # Portfolio guards
     daily_loss_kill_pct: float = 0.05       # MAJOR: daily-loss kill
-    max_consecutive_losses: int = 10        # MAJOR: losing-trade streak before latch
+    max_consecutive_losses: int = 15        # MAJOR: losing-trade streak before latch
     consecutive_loss_min_abs_usd: float = Field(
-        default=0.0,
+        default=1.0,
         ge=0.0,
         description=(
             "If > 0, realised losses smaller than this |PnL| in quote terms do "
@@ -147,9 +157,11 @@ class Settings(BaseSettings):
     exec_quality_window: int = 10           # number of completed parents to avg
     # System-level
     ws_stale_pause_sec: float = 30.0        # auto-pause on WS silence
+    # User-data stream can be quiet for minutes when flat; use a longer threshold.
+    user_data_stale_sec: float = 180.0
     # Mid priming: wait for ``bookTicker`` before falling back to REST ``/depth``.
     prime_ws_timeout_sec: float = 10.0
-    reconcile_interval_sec: float = 60.0    # gateway-state reconcile cadence
+    reconcile_interval_sec: float = 120.0   # gateway-state reconcile cadence
     reconcile_qty_tolerance: float = 1e-6   # qty mismatch threshold
     # When True, periodic reconcile skips GET /account + /positionRisk while the
     # user-data stream (ORDER_TRADE_UPDATE, ACCOUNT_UPDATE) was active within
@@ -172,6 +184,8 @@ class Settings(BaseSettings):
     flatten_vwap_slices: int = 4
     # Breaker lifecycle
     breaker_minor_cooldown_sec: float = 60.0
+    # After auto-flatten for consecutive_losses, clear the latch so paper runs recover.
+    auto_rearm_consecutive_losses_after_flatten: bool = True
 
     # --- Pre-trade validation (PreTradeValidator) ---
     max_order_notional_usd: float = 0.0   # 0 = disabled; absolute USD cap per order
@@ -216,23 +230,28 @@ class Settings(BaseSettings):
     # `engine.risk.stop_loss.StopLossMonitor` and
     # `engine.strategies.strategy_base.StrategyBase.manages_own_risk`.
     pair_calibration_path: str = ""  # optional JSON from analytics.pair_analyzer
-    pair_entry_z: float = 2.0
-    pair_exit_z: float = 0.5
+    pair_entry_z: float = 3.0
+    pair_exit_z: float = 0.35
     pair_stop_z: float = 4.0
     # Rolling window for historical z-score estimation (seconds).
     pair_z_window_sec: int = 600
     # Anti-churn guards. These exist to prevent "flip-flop" trading when z
     # oscillates around the entry/exit thresholds or when partial fills arrive
     # across multiple ticks.
-    pair_min_hold_sec: int = 30
-    pair_cooldown_sec: int = 15
+    pair_min_hold_sec: int = 75
+    pair_cooldown_sec: int = 90
     pair_pending_timeout_sec: int = 120
     # Hybrid-sizing ceiling for pairs entries. The strategy scales qty
     # linearly with |z|/entry_z above the entry floor, capped at this
     # multiplier so a transient z-spike can't blow up the leg notional.
-    pair_size_scale_cap: float = 2.0
+    pair_size_scale_cap: float = 1.15
+    # Cap new pair opens per tick (exits/partials are not capped). 0 = unlimited.
+    pair_max_new_entries_per_tick: int = 2
     # Minimum deviation samples before z-score is trusted (1Hz ticks ≈ seconds).
     pair_min_z_samples: int = 30
+    # Skip pairs where either leg mid is below this (avoids sub-$0.001 memes
+    # that often trip MIN_NOTIONAL / tick-size quirks on testnet).
+    pair_min_mid_price: float = 0.001
     # Abort a one-legged pending open after this many seconds (reduce-only unwind).
     pair_partial_fill_abort_sec: int = 90
     # Signal.score floor on pair entries so the router uses urgent slicing.
@@ -278,29 +297,41 @@ class Settings(BaseSettings):
         default_factory=list,
     )
     sma_symbol: str = "BTCUSDT"
-    sma_fast_window: int = 10
-    sma_slow_window: int = 30
+    sma_fast_window: int = 8
+    sma_slow_window: int = 24
     # When >0, each SMA sample is one *closed bar* of this length (seconds),
     # using the last mid seen in that bar as the close — windows are then in
     # bar count (intraday-style). When 0, one sample per engine heartbeat (~1Hz).
-    sma_bar_interval_sec: float = 300.0
+    sma_bar_interval_sec: float = 0.0
     # Skip symbols below this mid (stops cannot resolve on sub-tick alts).
     sma_min_mid_price: float = 0.01
     # Portfolio risk budget per round-trip (split evenly across ``sma_symbols``).
     # Falls back to ``sma_qty`` when equity is unavailable (e.g. boot
     # before the first ``fetch_balance`` lands).
-    sma_risk_per_trade_pct: float = 0.005
+    sma_risk_per_trade_pct: float = 0.002
     sma_qty: float = 0.001
-    sma_cooldown_sec: int = 15
+    sma_cooldown_sec: int = 45
+    sma_max_entries_per_tick: int = 2
     # INFO heartbeat while the SMA scanner is active (0 = off).
     sma_scan_log_interval_sec: float = 60.0
     # Cap SMA_SYMBOLS=AUTO to the top-N USDT perps by 24h quote volume (0 = full universe).
-    sma_max_symbols: int = 0
+    sma_max_symbols: int = 10
 
     # --- Market-making tilt strategy (skew + imbalance + tape) ---
     # MM_SYMBOLS: CSV list, or ``AUTO`` for the full engine ``SYMBOLS`` universe.
-    # When empty, MM scans every symbol in ``SYMBOLS`` (same as AUTO).
-    mm_symbols: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # Default is a small liquid set so MM does not inherit the full pairs AUTO list.
+    mm_symbols: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "BTCUSDT",
+            "ETHUSDT",
+            "SOLUSDT",
+            "BNBUSDT",
+            "XRPUSDT",
+            "DOGEUSDT",
+            "ADAUSDT",
+            "AVAXUSDT",
+        ],
+    )
     # Rolling mean of (micro_price - mid)/mid in bps over this many seconds.
     mm_skew_window_sec: float = 300.0
     mm_skew_scale: float = 1.0
@@ -308,19 +339,59 @@ class Settings(BaseSettings):
     # Count-based tape pressure uses TRADE_TAPE_WINDOW_SEC (default 300s): scale on
     # (ask_hit_count - bid_hit_count) / total_trades when total >= mm_min_tape_trades.
     mm_tape_scale: float = 12.0
-    mm_min_tape_trades: int = 5
+    mm_min_tape_trades: int = 3
     # Composite = skew + imbalance + tape terms; act when |composite| >= this.
-    mm_entry_tilt: float = 8.0
+    mm_entry_tilt: float = 7.0
     # Mean-reversion exit when |composite| falls below this (0 = 35% of mm_entry_tilt).
     mm_exit_tilt: float = 0.0
     # "fade" = buy on very negative composite / sell on very positive; "follow" = opposite mapping.
     mm_signal_mode: str = "fade"
     mm_min_samples: int = 5
-    mm_risk_per_trade_pct: float = 0.005
+    mm_risk_per_trade_pct: float = 0.002
     mm_qty: float = 0.001
-    mm_cooldown_sec: float = 12.0
+    mm_cooldown_sec: float = 20.0
     # Cap new MM entries per engine tick (exits are not capped). 0 = unlimited.
-    mm_max_entries_per_tick: int = 4
+    mm_max_entries_per_tick: int = 1
+
+    # --- Market-making 2.0 (fee-aware fade; skew + imbalance + tape) ---
+    mm2_symbols: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "BTCUSDT",
+            "ETHUSDT",
+            "SOLUSDT",
+            "BNBUSDT",
+            "XRPUSDT",
+            "DOGEUSDT",
+            "ADAUSDT",
+            "AVAXUSDT",
+        ],
+    )
+    mm2_skew_window_sec: float = 300.0
+    mm2_skew_scale: float = 1.0
+    mm2_imbalance_scale: float = 8.0
+    mm2_tape_scale: float = 12.0
+    mm2_min_tape_trades: int = 5
+    mm2_entry_tilt: float = 8.0
+    mm2_exit_tilt: float = 0.0
+    mm2_min_skew_bps: float = 1.0
+    mm2_tape_confirm: float = 0.08
+    mm2_taker_fee_bps: float = 4.0
+    mm2_maker_fee_bps: float = 2.0
+    mm2_fee_round_trip_bps: float = 0.0
+    mm2_spread_buffer_bps: float = 2.0
+    mm2_min_spread_bps: float = 0.0
+    mm2_min_edge_bps: float = 0.0
+    mm2_min_exit_profit_bps: float = 5.0
+    mm2_max_hold_sec: float = 150.0
+    mm2_min_samples: int = 5
+    mm2_risk_per_trade_pct: float = 0.002
+    mm2_qty: float = 0.001
+    mm2_cooldown_sec: float = 25.0
+    mm2_max_entries_per_tick: int = 1
+    # When >0, require |composite| >= entry + fee_rt×scale (composite-fee gate).
+    # 0 = off (default); use MM2_MIN_SPREAD_BPS for a literal spread floor instead.
+    mm2_composite_fee_scale: float = 0.0
+    mm2_scan_log_interval_sec: float = 60.0
 
     # --- API ---
     api_host: str = "127.0.0.1"
@@ -342,7 +413,9 @@ class Settings(BaseSettings):
     log_file_max_bytes: int = 10_000_000  # 10 MB before rotation
     log_file_backup_count: int = 5
 
-    @field_validator("symbols", "sma_symbols", "mm_symbols", "cors_origins", mode="before")
+    @field_validator(
+        "symbols", "sma_symbols", "mm_symbols", "mm2_symbols", "cors_origins", mode="before"
+    )
     @classmethod
     def _split_csv(cls, value: object) -> object:
         # pydantic-settings hands us a raw string from the .env file; split
@@ -398,6 +471,8 @@ def normalize_strategy_name(value: str) -> str:
         "sma": "sma_crossover",
         "mm": "market_making",
         "market_making": "market_making",
+        "mm2": "market_making_v2",
+        "market_making_v2": "market_making_v2",
         "all": "all",
         "multi": "all",
     }

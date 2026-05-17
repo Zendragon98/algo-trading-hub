@@ -236,10 +236,26 @@ class VwapExecutor:
                         parent.id,
                     )
                     break
+                except ValueError as exc:
+                    logger.warning(
+                        "slice %d skipped (venue bounds) parent=%s: %s",
+                        slc.index,
+                        parent.id,
+                        exc,
+                    )
+                    await self._om.cancel_parent(parent.id)
+                    return
                 except Exception as exc:  # noqa: BLE001
                     if _is_reduce_only_reject(exc):
                         logger.warning(
                             "slice %d aborted (reduce_only) parent=%s: %s",
+                            slc.index,
+                            parent.id,
+                            exc,
+                        )
+                    elif getattr(exc, "code", None) == -4164:
+                        logger.warning(
+                            "slice %d aborted (min notional) parent=%s: %s",
                             slc.index,
                             parent.id,
                             exc,
@@ -383,7 +399,8 @@ class VwapExecutor:
         # out of the gateway and spamming logs.
         filters = self._gateway.get_symbol_filters(parent.symbol)
         ref_price = price if price is not None else self._price(parent.symbol)
-        slice_qty = venue_cap_qty(slc.qty, filters)
+        is_market = order_type is OrderType.MARKET
+        slice_qty = venue_cap_qty(slc.qty, filters, market_order=is_market)
         if not _slice_satisfies(slice_qty, filters, ref_price, reduce_only=parent.reduce_only):
             raise ValueError(
                 f"slice qty violates venue filters (symbol={parent.symbol} qty={slice_qty:.10f} "

@@ -207,6 +207,7 @@ class SmaCrossoverStrategy(StrategyBase):
             )
             signals.append(sig)
 
+        signals = self._cap_entries(signals)
         self._maybe_log_scan_heartbeat(
             now=now,
             quoted=quoted,
@@ -218,6 +219,17 @@ class SmaCrossoverStrategy(StrategyBase):
             signal_count=len(signals),
         )
         return signals
+
+    def _cap_entries(self, signals: list[Signal]) -> list[Signal]:
+        max_n = int(getattr(self._settings, "sma_max_entries_per_tick", 0) or 0)
+        if max_n <= 0:
+            return signals
+        exits = [s for s in signals if s.reduce_only]
+        entries = [s for s in signals if not s.reduce_only]
+        if len(entries) <= max_n:
+            return signals
+        entries.sort(key=lambda s: -float(s.score))
+        return exits + entries[:max_n]
 
     def _maybe_log_scan_heartbeat(
         self,

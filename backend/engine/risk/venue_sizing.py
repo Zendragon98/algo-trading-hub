@@ -46,11 +46,21 @@ def _floor_to_step(qty: float, step: float) -> float:
     return n * step
 
 
-def venue_cap_qty(qty: float, filters: SymbolFilters | None) -> float:
+def venue_cap_qty(
+    qty: float,
+    filters: SymbolFilters | None,
+    *,
+    market_order: bool = False,
+) -> float:
     """Clamp ``qty`` down to the venue per-order maximum, floored to step."""
-    if filters is None or filters.max_qty is None:
+    if filters is None:
         return qty
-    capped = min(qty, filters.max_qty)
+    cap = filters.max_qty_market if market_order else filters.max_qty_limit
+    if cap is None:
+        cap = filters.max_qty
+    if cap is None:
+        return qty
+    capped = min(qty, cap)
     if filters.step_size is not None and filters.step_size > 0:
         capped = _floor_to_step(capped, filters.step_size)
     return capped

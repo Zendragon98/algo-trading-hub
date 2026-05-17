@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
+  ChevronDown,
   CircleDot,
   Cpu,
   Download,
@@ -30,6 +31,11 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { EquityChart } from "@/components/algo/EquityChart";
@@ -97,7 +103,32 @@ type ClosedTradePerfVm = {
   winCount: number;
   lossCount: number;
   breakevenCount: number;
+  avgWin: number | null;
+  avgLoss: number | null;
+  payoffRatio: number | null;
+  expectancy: number | null;
+  breakevenWrPct: number | null;
 };
+
+function derivePayoffMetrics(
+  winCount: number,
+  lossCount: number,
+  grossWin: number,
+  grossLoss: number,
+  closed: number,
+  netFromCloses: number,
+) {
+  const avgWin = winCount > 0 ? grossWin / winCount : null;
+  const avgLoss = lossCount > 0 ? grossLoss / lossCount : null;
+  const payoffRatio =
+    avgWin != null && avgLoss != null && avgLoss > 1e-12 ? avgWin / avgLoss : null;
+  const expectancy = closed > 0 ? netFromCloses / closed : null;
+  const breakevenWrPct =
+    avgWin != null && avgLoss != null && avgWin + avgLoss > 1e-12
+      ? (avgLoss / (avgWin + avgLoss)) * 100
+      : null;
+  return { avgWin, avgLoss, payoffRatio, expectancy, breakevenWrPct };
+}
 
 function Index() {
   const live = useAlgoStream();
@@ -126,6 +157,15 @@ function Index() {
   const backendReachable = live.backendReachable;
   const backendError = live.error;
   const streamConnected = live.connected;
+
+  const HEALTH_EXPANDED_STORAGE = "algo-health-expanded";
+  const [healthExpanded, setHealthExpanded] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(HEALTH_EXPANDED_STORAGE) === "true";
+  });
+  useEffect(() => {
+    window.localStorage.setItem(HEALTH_EXPANDED_STORAGE, healthExpanded ? "true" : "false");
+  }, [healthExpanded]);
 
   const KPI_SCOPE_STORAGE = "algo-kpi-window";
   const [kpiScope, setKpiScope] = useState<"rolling" | "session">(() => {
@@ -172,6 +212,11 @@ function Index() {
     winCount: 0,
     lossCount: 0,
     breakevenCount: 0,
+    avgWin: null,
+    avgLoss: null,
+    payoffRatio: null,
+    expectancy: null,
+    breakevenWrPct: null,
   });
 
   /** Rolling = last ≤200 realized closes; session = all realized closes since backend start. */
@@ -186,16 +231,18 @@ function Index() {
       }
       const gw = kpi.gross_win_pnl_session;
       const gl = kpi.gross_loss_pnl_session;
+      const netFromCloses = gw - gl;
       return {
         winRatePct: kpi.win_rate_session,
         profitFactor: kpi.profit_factor_session,
         grossWin: gw,
         grossLoss: gl,
-        netFromCloses: gw - gl,
+        netFromCloses,
         closed,
         winCount: wins,
         lossCount: losses,
         breakevenCount: be,
+        ...derivePayoffMetrics(wins, losses, gw, gl, closed, netFromCloses),
       };
     }
 
@@ -236,6 +283,14 @@ function Index() {
       winCount,
       lossCount,
       breakevenCount,
+      ...derivePayoffMetrics(
+        winCount,
+        lossCount,
+        grossWin,
+        grossLoss,
+        closed.length,
+        netFromCloses,
+      ),
     };
   }, [kpiScope, kpi, realizedTrades, trades]);
 
@@ -441,114 +496,6 @@ function Index() {
           </section>
         ) : null}
 
-        {systemHealth ? (
-          <section className="mt-4">
-            <Panel
-              title="SYSTEM HEALTH"
-              right={
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 gap-1 text-[11px]"
-                    onClick={() => void onExportReport()}
-                  >
-                    <Download className="size-3" /> export
-                  </Button>
-                  <LiveDot active={status === "running"} />
-                </div>
-              }
-            >
-              {exportError ? (
-                <p className="mb-2 px-4 text-[11px] text-bear">{exportError}</p>
-              ) : null}
-              <div className="grid grid-cols-2 gap-3 px-4 pb-2 text-xs md:grid-cols-4 lg:grid-cols-8">
-                <HealthChip
-                  label="Tick age"
-                  value={
-                    systemHealth.tickAgeSec >= 0
-                      ? `${systemHealth.tickAgeSec.toFixed(1)}s`
-                      : "—"
-                  }
-                  ok={systemHealth.tickAgeSec >= 0 && systemHealth.tickAgeSec < 15}
-                />
-                <HealthChip
-                  label="User-data age"
-                  {...userDataAgeDisplay(systemHealth)}
-                />
-                <HealthChip
-                  label="Order reconcile"
-                  value={
-                    systemHealth.orderReconcile.ok === false
-                      ? `mismatch (${String(systemHealth.orderReconcile.venue_only ?? 0)}/${String(systemHealth.orderReconcile.local_only ?? 0)})`
-                      : "OK"
-                  }
-                  ok={systemHealth.orderReconcile.ok !== false}
-                />
-                <HealthChip
-                  label="Breakers"
-                  value={
-                    systemHealth.activeBreakers.length
-                      ? systemHealth.activeBreakers.join(", ")
-                      : "none"
-                  }
-                  ok={systemHealth.activeBreakers.length === 0}
-                />
-                <HealthChip
-                  label="p95 tick→submit"
-                  {...latencyP95Display(systemHealth.latency, "tick_to_submit_ms", 500)}
-                />
-                <HealthChip
-                  label="p95 submit→ack"
-                  {...latencyP95Display(systemHealth.latency, "submit_to_ack_ms", 500)}
-                />
-                <HealthChip
-                  label="Clock skew"
-                  {...clockSkewDisplay(systemHealth)}
-                />
-                <HealthChip
-                  label="Gross notional"
-                  value={`$${systemHealth.grossNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
-                  ok={systemHealth.grossNotional <= maxGrossNotional}
-                />
-              </div>
-              {Object.keys(systemHealth.mdHealth).length > 0 ? (
-                <div className="mt-3 flex flex-wrap gap-2 px-4 pb-4">
-                  {Object.entries(systemHealth.mdHealth).map(([sym, h]) => (
-                    <span
-                      key={sym}
-                      className={cn(
-                        "rounded border px-2 py-0.5 text-[10px] tabular-nums",
-                        h.crossed_count > 0 || h.last_diff_age_ms > 30_000
-                          ? "border-bear/40 text-bear"
-                          : "border-border text-muted-foreground",
-                      )}
-                    >
-                      {sym} gaps={h.sequence_gaps} age=
-                      {h.last_diff_age_ms >= 0 ? `${(h.last_diff_age_ms / 1000).toFixed(0)}s` : "—"}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-            </Panel>
-          </section>
-        ) : null}
-
-        <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <RiskPanel
-            systemHealth={systemHealth}
-            maxRiskPct={maxRiskPct}
-            maxGrossNotional={maxGrossNotional}
-            totalEquity={totalEquity}
-          />
-          <BreakersPanel
-            breakers={breakers}
-            onRearmAll={() => onRearmBreakers()}
-            onRearmCode={(code) => onRearmBreakers(code)}
-          />
-        </section>
-
-        {/* Main grid */}
         <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
           {/* Equity chart */}
           <Panel
@@ -665,10 +612,31 @@ function Index() {
           </Panel>
         </section>
 
-        {/* Positions + log */}
         <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <div className="flex flex-col gap-4">
+            <BreakersPanel
+              breakers={breakers}
+              onRearmAll={() => onRearmBreakers()}
+              onRearmCode={(code) => onRearmBreakers(code)}
+            />
+            <RiskPanel
+              systemHealth={systemHealth}
+              maxRiskPct={maxRiskPct}
+              maxGrossNotional={maxGrossNotional}
+              totalEquity={totalEquity}
+            />
+          </div>
           <Panel
             className="lg:col-span-2"
+            title="LIVE LOG"
+            right={<LiveDot active={status === "running"} />}
+          >
+            <LogStream logs={logs} className="h-[400px]" />
+          </Panel>
+        </section>
+
+        <section className="mt-4">
+          <Panel
             title="OPEN POSITIONS"
             right={
               <span className="text-[11px] text-muted-foreground">{positions.length} active</span>
@@ -676,11 +644,21 @@ function Index() {
           >
             <PositionsTable positions={positions} onOpen={(p) => setChartSymbol(p.symbol)} />
           </Panel>
-
-          <Panel title="LIVE LOG" right={<LiveDot active={status === "running"} />}>
-            <LogStream logs={logs} />
-          </Panel>
         </section>
+
+        {systemHealth ? (
+          <section className="mt-4">
+            <SystemHealthPanel
+              health={systemHealth}
+              maxGrossNotional={maxGrossNotional}
+              status={status}
+              expanded={healthExpanded}
+              onExpandedChange={setHealthExpanded}
+              exportError={exportError}
+              onExportReport={onExportReport}
+            />
+          </section>
+        ) : null}
 
         {/* OMS: working parent VWAPs + their child orders */}
         <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -933,6 +911,11 @@ function WinRateKpiCard({
     winCount,
     lossCount,
     breakevenCount,
+    avgWin,
+    avgLoss,
+    payoffRatio,
+    expectancy,
+    breakevenWrPct,
   } = perf;
 
   const winSeg = closed > 0 ? (winCount / closed) * 100 : 0;
@@ -946,6 +929,22 @@ function WinRateKpiCard({
     netFromCloses > 0 ? "text-bull" : netFromCloses < 0 ? "text-bear" : "text-muted-foreground";
   const netFormatted =
     netFromCloses >= 0 ? `+$${formatUsdPayoffCell(netFromCloses)}` : `−$${formatUsdPayoffCell(Math.abs(netFromCloses))}`;
+
+  const expectancyTone =
+    expectancy != null && expectancy > 0
+      ? "text-bull"
+      : expectancy != null && expectancy < 0
+        ? "text-bear"
+        : "text-muted-foreground";
+  const expectancyFormatted =
+    expectancy != null ? formatSignedRealizedPnl(expectancy) : "—";
+
+  const wrVsBreakeven =
+    breakevenWrPct != null
+      ? winRatePct >= breakevenWrPct - 0.05
+        ? "at-or-above"
+        : "below"
+      : null;
 
   return (
     <div className="relative overflow-hidden rounded-sm border border-border bg-card/60 p-4">
@@ -1046,6 +1045,77 @@ function WinRateKpiCard({
             {closed} realized closes · {winSeg.toFixed(0)} / {flatSeg.toFixed(0)} / {lossSeg.toFixed(0)}% W / BE / L
           </p>
 
+          <div className="mt-4 rounded-md border border-border/55 bg-muted/10 p-2.5">
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              Payoff profile
+            </p>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-2.5">
+              <div>
+                <p className="font-mono text-[9px] uppercase tracking-wide text-muted-foreground">Avg win</p>
+                <p className="mt-0.5 font-mono text-sm tabular-nums text-bull">
+                  {avgWin != null ? `+$${formatUsdPayoffCell(avgWin)}` : "—"}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="font-mono text-[9px] uppercase tracking-wide text-muted-foreground">Avg loss</p>
+                <p className="mt-0.5 font-mono text-sm tabular-nums text-bear">
+                  {avgLoss != null ? `−$${formatUsdPayoffCell(avgLoss)}` : "—"}
+                </p>
+              </div>
+              <div>
+                <p className="font-mono text-[9px] uppercase tracking-wide text-muted-foreground">Payoff (R)</p>
+                <p
+                  className={cn(
+                    "mt-0.5 font-mono text-sm tabular-nums",
+                    payoffRatio != null && payoffRatio >= 1
+                      ? "text-bull"
+                      : payoffRatio != null
+                        ? "text-bear"
+                        : "text-muted-foreground",
+                  )}
+                  title="Average win ÷ average loss — how much you make per $1 lost"
+                >
+                  {payoffRatio != null ? (
+                    <>
+                      {payoffRatio.toFixed(2)}
+                      <span className="text-xs text-muted-foreground">×</span>
+                    </>
+                  ) : (
+                    "—"
+                  )}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="font-mono text-[9px] uppercase tracking-wide text-muted-foreground">Expectancy</p>
+                <p
+                  className={cn("mt-0.5 font-mono text-sm tabular-nums", expectancyTone)}
+                  title="Net P&L per realized close"
+                >
+                  {expectancyFormatted}
+                  {expectancy != null ? (
+                    <span className="text-[10px] font-normal text-muted-foreground">/close</span>
+                  ) : null}
+                </p>
+              </div>
+            </div>
+            {breakevenWrPct != null ? (
+              <p
+                className={cn(
+                  "mt-2 border-t border-border/40 pt-2 font-mono text-[10px] leading-snug",
+                  wrVsBreakeven === "at-or-above" ? "text-bull/90" : "text-bear/90",
+                )}
+              >
+                Breakeven WR{" "}
+                <span className="tabular-nums text-foreground">{breakevenWrPct.toFixed(1)}%</span>
+                <span className="text-muted-foreground"> at this avg win/loss · actual </span>
+                <span className="tabular-nums text-foreground">{winRatePct.toFixed(1)}%</span>
+                <span className="text-muted-foreground">
+                  {wrVsBreakeven === "at-or-above" ? " (at or above)" : " (below — need higher WR or larger wins)"}
+                </span>
+              </p>
+            ) : null}
+          </div>
+
           <div className="mt-4 space-y-2">
             <div className="flex items-center justify-between gap-2 text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
               <span className="flex items-center gap-1">
@@ -1123,8 +1193,12 @@ function WinRateKpiCard({
               <code className="rounded bg-muted/60 px-0.5">rp</code> when it is non-zero; otherwise the console uses{' '}
               <span className="whitespace-nowrap">(exit − entry) × closed qty</span>. If{' '}
               <code className="rounded bg-muted/60 px-0.5">rp</code> looks like dust vs that economics (e.g. sub-cent vs several
-              dollars), the engine keeps the computed slice PnL. Profit factor = Σ&nbsp;positive closes ÷ Σ&nbsp;|negative
-              closes|. Excludes transfers, funding, and fees unless the venue folds them into{' '}
+              dollars), the engine keeps the computed slice PnL. <strong className="text-foreground">Avg win/loss</strong> are
+              mean P&L on winning vs losing closes; <strong className="text-foreground">payoff (R)</strong> = avg win ÷ avg
+              loss; <strong className="text-foreground">expectancy</strong> = net ÷ closes;{" "}
+              <strong className="text-foreground">breakeven WR</strong> = avg loss ÷ (avg win + avg loss). Profit factor =
+              Σ&nbsp;positive closes ÷ Σ&nbsp;|negative closes|. Excludes transfers, funding, and fees unless the venue folds
+              them into{' '}
               <code className="rounded bg-muted/60 px-0.5">rp</code>. Dollar labels use extra precision when totals are small
               so they reconcile with the factor; RECENT TRADES uses the same idea so tiny realized amounts are not shown as
               <span className="whitespace-nowrap">+0.00</span>.
@@ -1450,6 +1524,152 @@ function clockSkewDisplay(health: SystemHealth): { value: string; ok: boolean } 
   };
 }
 
+function SystemHealthPanel({
+  health,
+  maxGrossNotional,
+  status,
+  expanded,
+  onExpandedChange,
+  exportError,
+  onExportReport,
+}: {
+  health: SystemHealth;
+  maxGrossNotional: number;
+  status: AlgoStatus;
+  expanded: boolean;
+  onExpandedChange: (open: boolean) => void;
+  exportError: string | null;
+  onExportReport: () => void | Promise<void>;
+}) {
+  const issueCount = [
+    health.tickAgeSec < 0 || health.tickAgeSec >= 15,
+    !userDataAgeDisplay(health).ok,
+    health.orderReconcile.ok === false,
+    health.activeBreakers.length > 0,
+    !latencyP95Display(health.latency, "tick_to_submit_ms", 500).ok,
+    !latencyP95Display(health.latency, "submit_to_ack_ms", 500).ok,
+    !clockSkewDisplay(health).ok,
+    health.grossNotional > maxGrossNotional,
+  ].filter(Boolean).length;
+
+  return (
+    <Collapsible open={expanded} onOpenChange={onExpandedChange}>
+      <div className="overflow-hidden rounded-sm border border-border bg-card/60">
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="flex w-full items-center justify-between border-b border-border px-4 py-2 text-left transition-colors hover:bg-muted/30"
+          >
+            <div className="flex items-center gap-2">
+              <h2 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                System health
+              </h2>
+              {issueCount > 0 ? (
+                <Badge variant="outline" className="border-bear/40 text-[10px] text-bear">
+                  {issueCount} issue{issueCount === 1 ? "" : "s"}
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="border-bull/40 text-[10px] text-bull">
+                  OK
+                </Badge>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-muted-foreground">
+                {expanded ? "Hide" : "Show"} diagnostics
+              </span>
+              <ChevronDown
+                className={cn(
+                  "size-4 text-muted-foreground transition-transform",
+                  expanded && "rotate-180",
+                )}
+              />
+            </div>
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="flex items-center justify-end gap-2 border-b border-border px-4 py-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1 text-[11px]"
+              onClick={() => void onExportReport()}
+            >
+              <Download className="size-3" /> export
+            </Button>
+            <LiveDot active={status === "running"} />
+          </div>
+          {exportError ? (
+            <p className="mb-2 px-4 text-[11px] text-bear">{exportError}</p>
+          ) : null}
+          <div className="grid grid-cols-2 gap-3 px-4 pb-2 text-xs md:grid-cols-4 lg:grid-cols-8">
+            <HealthChip
+              label="Tick age"
+              value={
+                health.tickAgeSec >= 0 ? `${health.tickAgeSec.toFixed(1)}s` : "—"
+              }
+              ok={health.tickAgeSec >= 0 && health.tickAgeSec < 15}
+            />
+            <HealthChip label="User-data age" {...userDataAgeDisplay(health)} />
+            <HealthChip
+              label="Order reconcile"
+              value={
+                health.orderReconcile.ok === false
+                  ? `mismatch (${String(health.orderReconcile.venue_only ?? 0)}/${String(health.orderReconcile.local_only ?? 0)})`
+                  : "OK"
+              }
+              ok={health.orderReconcile.ok !== false}
+            />
+            <HealthChip
+              label="Breakers"
+              value={
+                health.activeBreakers.length
+                  ? health.activeBreakers.join(", ")
+                  : "none"
+              }
+              ok={health.activeBreakers.length === 0}
+            />
+            <HealthChip
+              label="p95 tick→submit"
+              {...latencyP95Display(health.latency, "tick_to_submit_ms", 500)}
+            />
+            <HealthChip
+              label="p95 submit→ack"
+              {...latencyP95Display(health.latency, "submit_to_ack_ms", 500)}
+            />
+            <HealthChip label="Clock skew" {...clockSkewDisplay(health)} />
+            <HealthChip
+              label="Gross notional"
+              value={`$${health.grossNotional.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+              ok={health.grossNotional <= maxGrossNotional}
+            />
+          </div>
+          {Object.keys(health.mdHealth).length > 0 ? (
+            <div className="mt-3 flex flex-wrap gap-2 px-4 pb-4">
+              {Object.entries(health.mdHealth).map(([sym, h]) => (
+                <span
+                  key={sym}
+                  className={cn(
+                    "rounded border px-2 py-0.5 text-[10px] tabular-nums",
+                    h.crossed_count > 0 || h.last_diff_age_ms > 30_000
+                      ? "border-bear/40 text-bear"
+                      : "border-border text-muted-foreground",
+                  )}
+                >
+                  {sym} gaps={h.sequence_gaps} age=
+                  {h.last_diff_age_ms >= 0
+                    ? `${(h.last_diff_age_ms / 1000).toFixed(0)}s`
+                    : "—"}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
+
 function HealthChip({
   label,
   value,
@@ -1632,7 +1852,7 @@ function TradesTable({ trades }: { trades: Trade[] }) {
   );
 }
 
-function LogStream({ logs }: { logs: LogEntry[] }) {
+function LogStream({ logs, className }: { logs: LogEntry[]; className?: string }) {
   const color: Record<LogEntry["level"], string> = {
     info: "text-muted-foreground",
     warn: "text-warning",
@@ -1646,7 +1866,7 @@ function LogStream({ logs }: { logs: LogEntry[] }) {
     signal: "SIG ",
   };
   return (
-    <ScrollArea className="h-[320px]">
+    <ScrollArea className={cn("h-[320px]", className)}>
       <div className="space-y-1 px-3 py-2 font-mono text-[12px] leading-relaxed">
         {logs.map((l, i) => (
           <div key={i} className="flex gap-2">

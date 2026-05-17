@@ -7,6 +7,9 @@ to hundreds of REST ``/depth`` calls (slow).
 We shard large universes across multiple sockets:
     - Shard 0: ``!ticker@arr`` only (isolates the heavy all-market fan-out)
     - Further shards: symbol chunks (bookTicker, aggTrade, depth) without ``!ticker@arr``.
+
+Each shard uses a dedicated ingest queue so the socket reader returns quickly
+and WebSocket keepalive pings are not starved by slow MD handlers.
 """
 
 from __future__ import annotations
@@ -38,6 +41,10 @@ logger = logging.getLogger(__name__)
 _MAX_STREAMS_PER_CONNECTION = 1024
 # Many proxies / load balancers reject very long GET URLs; stay conservative.
 _MAX_STREAM_URL_CHARS = 3800
+# Yield the event loop between ticker-array batches so shard pings are answered.
+_TICKER_ARR_DISPATCH_CHUNK = 16
+# Sentinel to stop the per-shard processor when the reader exits.
+_QUEUE_STOP = object()
 
 
 def _stream_parts_for_symbols(symbols: list[str]) -> list[str]:
@@ -87,8 +94,18 @@ def _shard_symbols_for_streams(symbols: list[str]) -> list[tuple[list[str], bool
 class MarketConnection:
     """Handles the public Futures market-data stream (possibly sharded)."""
 
-    def __init__(self, ws_base: str) -> None:
+    def __init__(
+        self,
+        ws_base: str,
+        *,
+        ping_interval: float = 20.0,
+        ping_timeout: float = 180.0,
+        shard_queue_size: int = 4096,
+    ) -> None:
         self._ws_base = ws_base.rstrip("/")
+        self._ping_interval = max(1.0, float(ping_interval))
+        self._ping_timeout = max(self._ping_interval + 1.0, float(ping_timeout))
+        self._shard_queue_size = max(256, int(shard_queue_size))
         self._symbols: list[str] = []
         self._on_tick: TickCallback | None = None
         self._on_depth: DepthCallback | None = None
@@ -96,8 +113,18 @@ class MarketConnection:
         self._on_quote_vol: QuoteVolume24hCallback | None = None
         self._on_reconnect: MarketReconnectCallback | None = None
         self._tasks: list[asyncio.Task[None]] = []
+        self._child_tasks: set[asyncio.Task[None]] = set()
         self._stop = asyncio.Event()
         self._shard_had_session: dict[int, bool] = {}
+        self._ticker_arr_tasks: set[asyncio.Task[None]] = set()
+
+    def _spawn(self, coro, *, name: str | None = None) -> asyncio.Task[None]:
+        """Track shard reader/processor tasks so ``stop()`` can await them."""
+
+        task: asyncio.Task[None] = asyncio.create_task(coro, name=name)
+        self._child_tasks.add(task)
+        task.add_done_callback(self._child_tasks.discard)
+        return task
 
     async def start(
         self,
@@ -152,6 +179,22 @@ class MarketConnection:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         self._tasks.clear()
+        for task in list(self._child_tasks):
+            task.cancel()
+        for task in list(self._child_tasks):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        self._child_tasks.clear()
+        for task in list(self._ticker_arr_tasks):
+            task.cancel()
+        for task in list(self._ticker_arr_tasks):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        self._ticker_arr_tasks.clear()
 
     async def _run_shard(
         self,
@@ -179,6 +222,13 @@ class MarketConnection:
 
         backoff = 1.0
         while not self._stop.is_set():
+            ingest: asyncio.Queue[str | object] = asyncio.Queue(
+                maxsize=self._shard_queue_size,
+            )
+            processor = self._spawn(
+                self._process_shard_queue(shard_id, ingest),
+                name=f"binance-market-ws-{shard_id}-processor",
+            )
             try:
                 logger.info(
                     "market_ws shard %d connecting (%d streams, %d symbols%s)",
@@ -187,24 +237,30 @@ class MarketConnection:
                     len(symbols),
                     ", !ticker@arr" if include_ticker_arr else "",
                 )
-                # Generous keepalive: a full ``!ticker@arr`` fan-out can briefly
-                # saturate the event loop; tight ping timeouts look like 1011s.
                 async with websockets.connect(
                     url,
-                    ping_interval=20,
-                    ping_timeout=60,
+                    ping_interval=self._ping_interval,
+                    ping_timeout=self._ping_timeout,
                     close_timeout=10,
                     max_size=2**22,
                 ) as ws:
                     backoff = 1.0
                     if self._shard_had_session.get(shard_id) and self._on_reconnect is not None:
                         shard_syms = [s.upper() for s in symbols]
-                        asyncio.create_task(
+                        self._spawn(
                             self._run_reconnect_handler(shard_id, shard_syms),
                             name=f"binance-market-ws-{shard_id}-resync",
                         )
                     self._shard_had_session[shard_id] = True
-                    await self._read_loop(ws)
+                    reader = self._spawn(
+                        self._read_into_queue(ws, ingest),
+                        name=f"binance-market-ws-{shard_id}-reader",
+                    )
+                    try:
+                        await reader
+                    finally:
+                        ingest.put_nowait(_QUEUE_STOP)
+                        await processor
             except (ConnectionClosed, OSError) as exc:
                 logger.warning(
                     "market_ws shard %d disconnected: %s; retry in %.1fs",
@@ -212,8 +268,67 @@ class MarketConnection:
                     exc,
                     backoff,
                 )
+                if not processor.done():
+                    processor.cancel()
+                    try:
+                        await processor
+                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        pass
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
+
+    async def _read_into_queue(
+        self,
+        ws: websockets.WebSocketClientProtocol,
+        ingest: asyncio.Queue[str | object],
+    ) -> None:
+        """Drain the socket into ``ingest`` so keepalive pings stay timely."""
+        async for raw in ws:
+            if self._stop.is_set():
+                return
+            await ingest.put(raw)
+
+    async def _process_shard_queue(
+        self,
+        shard_id: int,
+        ingest: asyncio.Queue[str | object],
+    ) -> None:
+        while True:
+            item = await ingest.get()
+            try:
+                if item is _QUEUE_STOP:
+                    return
+                if not isinstance(item, str):
+                    continue
+                try:
+                    message = json.loads(item)
+                except json.JSONDecodeError:
+                    logger.debug("market_ws non-json frame")
+                    continue
+
+                stream: str | None = message.get("stream")
+                data = message.get("data")
+                if stream == "!ticker@arr" and isinstance(data, list):
+                    self._schedule_ticker_arr(shard_id, data)
+                    continue
+
+                if stream is None or data is None or not isinstance(data, dict):
+                    continue
+
+                try:
+                    await self._dispatch(stream, data)
+                except Exception:  # noqa: BLE001 -- never let a handler kill the socket
+                    logger.exception("market_ws handler raised")
+            finally:
+                ingest.task_done()
+
+    def _schedule_ticker_arr(self, shard_id: int, rows: list[dict]) -> None:
+        task = asyncio.create_task(
+            self._dispatch_ticker_arr(shard_id, rows),
+            name=f"binance-market-ws-{shard_id}-ticker-arr",
+        )
+        self._ticker_arr_tasks.add(task)
+        task.add_done_callback(self._ticker_arr_tasks.discard)
 
     async def _run_reconnect_handler(self, shard_id: int, symbols: list[str]) -> None:
         if self._on_reconnect is None:
@@ -226,34 +341,7 @@ class MarketConnection:
                 shard_id,
             )
 
-    async def _read_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
-        async for raw in ws:
-            if self._stop.is_set():
-                return
-            try:
-                message = json.loads(raw)
-            except json.JSONDecodeError:
-                logger.debug("market_ws non-json frame")
-                continue
-
-            stream: str | None = message.get("stream")
-            data = message.get("data")
-            if stream == "!ticker@arr" and isinstance(data, list):
-                try:
-                    await self._dispatch_ticker_arr(data)
-                except Exception:  # noqa: BLE001
-                    logger.exception("market_ws ticker@arr handler raised")
-                continue
-
-            if stream is None or data is None or not isinstance(data, dict):
-                continue
-
-            try:
-                await self._dispatch(stream, data)
-            except Exception:  # noqa: BLE001 -- never let a handler kill the socket
-                logger.exception("market_ws handler raised")
-
-    async def _dispatch_ticker_arr(self, rows: list[dict]) -> None:
+    async def _dispatch_ticker_arr(self, shard_id: int, rows: list[dict]) -> None:
         """Fan out 24h quote volume from the all-markets ticker array."""
         if self._on_quote_vol is None:
             return
@@ -270,8 +358,14 @@ class MarketConnection:
             except (TypeError, ValueError):
                 continue
             tasks.append(self._on_quote_vol(sym.upper(), qv))
-        if tasks:
-            await asyncio.gather(*tasks)
+        if not tasks:
+            return
+        try:
+            for i in range(0, len(tasks), _TICKER_ARR_DISPATCH_CHUNK):
+                await asyncio.gather(*tasks[i : i + _TICKER_ARR_DISPATCH_CHUNK])
+                await asyncio.sleep(0)
+        except Exception:  # noqa: BLE001
+            logger.exception("market_ws shard %d ticker@arr handler raised", shard_id)
 
     async def _dispatch(self, stream: str, data: dict) -> None:
         # Stream names look like "btcusdt@bookTicker". Split once on '@'.

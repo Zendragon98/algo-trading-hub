@@ -37,6 +37,7 @@ from common.logging import configure_logging
 from engine.core.engine import ALL_STRATEGIES_MODE, Engine
 from engine.persistence.run_bootstrap import bootstrap_run, shutdown_bootstrap
 from engine.strategies.market_making import MarketMakingStrategy
+from engine.strategies.market_making_v2 import MarketMakingV2Strategy
 from engine.strategies.pairs_trading import PairsTradingStrategy
 from engine.strategies.sma_crossover import SmaCrossoverStrategy
 from gateways.binance.rest_client import BinanceRestClient
@@ -173,6 +174,7 @@ async def _run() -> None:
         PairsTradingStrategy(settings),
         SmaCrossoverStrategy(settings),
         MarketMakingStrategy(settings),
+        MarketMakingV2Strategy(settings),
     ]
     known_names = {s.name for s in strategies} | {ALL_STRATEGIES_MODE}
     # Operators usually write the short alias ("pairs" / "sma" / "all") in .env;
@@ -218,7 +220,7 @@ async def _run() -> None:
         if isinstance(strat, SmaCrossoverStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_position_provider(_position_qty_for(strat.name))
-        if isinstance(strat, MarketMakingStrategy):
+        if isinstance(strat, (MarketMakingStrategy, MarketMakingV2Strategy)):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_position_provider(_position_qty_for(strat.name))
 

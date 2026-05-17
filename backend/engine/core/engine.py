@@ -21,6 +21,7 @@ import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any, Iterable
 
 from common.config import Settings, normalize_strategy_name
@@ -62,7 +63,7 @@ from ..observability.latency_tracker import LatencyTracker
 from ..risk.pretrade_validator import PreTradeValidator
 from ..risk.risk_manager import ExitIntent, RiskManager
 from ..risk.stop_loss import StopLossMonitor
-from ..risk.venue_sizing import venue_cap_qty, venue_min_qty
+from ..risk.venue_sizing import venue_cap_qty, venue_min_qty, venue_qty_in_bounds
 from ..strategies.signal_netter import NettedSignal, net_strategy_signals
 from ..strategies.strategy_base import StrategyBase
 from ..persistence.journal import replay_wal_async
@@ -158,13 +159,9 @@ class Engine:
         self._parent_ledger_applied_fraction: dict[str, float] = {}
         self._state = EngineState()
 
-        # All symbols any strategy cares about — that's what we subscribe to.
-        wanted: set[str] = set()
-        for strat in strategies:
-            wanted.update(strat.symbols())
-        # Fall back to settings.symbols if no strategy is configured (smoke test).
-        raw_syms = sorted(wanted) if wanted else list(settings.symbols)
-        self._symbols = _venue_symbol_list(raw_syms, list(settings.symbols))
+        # Subscribe only to the active strategy's universe (+ open positions).
+        # Hot-swap calls ``refresh_market_universe`` to resubscribe without restart.
+        self._symbols = self._resolve_market_symbols()
 
         # Market data layer
         self._books = OrderBookStore(self._symbols)
@@ -236,7 +233,13 @@ class Engine:
         )
         self._md_bootstrap_done = False
         self._start_lock = asyncio.Lock()
-        self._book_snapshot_sem = asyncio.Semaphore(8)
+        self._book_snapshot_sem = asyncio.Semaphore(
+            max(1, int(getattr(settings, "book_resync_concurrency", 8))),
+        )
+        self._reconnect_resync_lock = asyncio.Lock()
+        self._reconnect_resync_pending: set[str] = set()
+        self._reconnect_resync_debounce_task: asyncio.Task[None] | None = None
+        self._bulk_resync_symbols: set[str] = set()
         self._resnapshot_inflight: set[str] = set()
         self._clock_skew_ms: float = 0.0
         self._clock_skew_synced: bool = False
@@ -392,6 +395,74 @@ class Engine:
     def is_multi_strategy_mode(self) -> bool:
         return self._active_strategy_name == ALL_STRATEGIES_MODE
 
+    def _strategy_symbol_candidates(self) -> set[str]:
+        """Symbols required by the active mode (single strategy or ``all`` netting)."""
+
+        if self.is_multi_strategy_mode():
+            wanted: set[str] = set()
+            for strat in self._strategies:
+                wanted.update(strat.symbols())
+            return wanted
+        active = self._strategies_by_name.get(self._active_strategy_name)
+        if active is not None:
+            return set(active.symbols())
+        return {str(s).strip().upper() for s in (self._settings.symbols or []) if str(s).strip()}
+
+    def _resolve_market_symbols(self) -> list[str]:
+        """Venue symbols for market-data WS: strategy universe + open positions."""
+
+        wanted = self._strategy_symbol_candidates()
+        positions = getattr(self, "_positions", None)
+        if positions is not None:
+            for pos in positions.all():
+                if abs(pos.qty) > 1e-12:
+                    wanted.add(pos.symbol.upper())
+        raw = sorted(wanted) if wanted else list(self._settings.symbols)
+        return _venue_symbol_list(raw, list(self._settings.symbols))
+
+    async def refresh_market_universe(self) -> bool:
+        """Resubscribe market WS when the active strategy's symbol set changes.
+
+        Called after a dashboard hot-swap while the engine is RUNNING so we do
+        not keep 400+ idle streams from strategies that are no longer active.
+        """
+
+        if not self._md_bootstrap_done:
+            return False
+        if self._state.status is not EngineStatus.RUNNING:
+            return False
+        new_syms = self._resolve_market_symbols()
+        if new_syms == self._symbols:
+            return False
+        old_set = set(self._symbols)
+        new_set = set(new_syms)
+        added = sorted(new_set - old_set)
+        removed = old_set - new_set
+        self._symbols = new_syms
+        for sym in removed:
+            self._latest_tick.pop(sym, None)
+        logger.info(
+            "market universe refresh: %d symbols (+%d -%d)",
+            len(new_syms),
+            len(added),
+            len(removed),
+        )
+        await self._gateway.subscribe_market_data(
+            symbols=self._symbols,
+            on_tick=self._on_tick,
+            on_depth=self._on_depth,
+            on_trade=self._on_trade,
+            on_quote_volume_24h=self._on_quote_volume_24h,
+            on_reconnect=self._on_market_ws_reconnect,
+        )
+        await self._resync_symbol_books(
+            added if added else list(new_syms),
+            reason="strategy_swap",
+            invalidate=True,
+        )
+        await self._prime_symbol_prices()
+        return True
+
     def set_active_strategy(self, name: str) -> bool:
         """Hot-swap the active strategy or enable multi-strategy netting.
 
@@ -418,22 +489,20 @@ class Engine:
         previous = self._active_strategy_name
         self._active_strategy_name = normalised
         self._stop_monitor.set_externally_managed(self._compute_externally_managed())
+        sym_n = len(self._resolve_market_symbols())
         if normalised == ALL_STRATEGIES_MODE:
-            sym_n = len(self._symbols)
             logger.info(
-                "strategy hot-swap: %s -> all (netted, %d symbols)",
+                "strategy hot-swap: %s -> all (netted, %d market symbols)",
                 previous or "<none>",
                 sym_n,
             )
-            return True
-        active = self._strategies_by_name.get(normalised)
-        sym_n = len(active.symbols()) if active is not None else 0
-        logger.info(
-            "strategy hot-swap: %s -> %s (%d symbols)",
-            previous or "<none>",
-            normalised,
-            sym_n,
-        )
+        else:
+            logger.info(
+                "strategy hot-swap: %s -> %s (%d market symbols)",
+                previous or "<none>",
+                normalised,
+                sym_n,
+            )
         return True
 
     def apply_breaker_rearm_side_effects(self, cleared_codes: set[str]) -> None:
@@ -494,6 +563,9 @@ class Engine:
         self._loss_tracker.apply_settings(s)
         self._exec_quality_guard.apply_settings(s)
         self._connection_monitor.apply_settings(s)
+        self._book_snapshot_sem = asyncio.Semaphore(
+            max(1, int(getattr(s, "book_resync_concurrency", 8))),
+        )
         self._reconciler.apply_settings(s)
         self._pretrade.apply_settings(s)
         self._order_reconciler.apply_settings(s)
@@ -844,6 +916,7 @@ class Engine:
         await self._reconciler.stop()
         await self._order_reconciler.stop()
         await self._cancel_refresh_loops()
+        await self._cancel_reconnect_resync_task()
         await self._router.shutdown()
         try:
             await self._gateway.cancel_all_open_orders()
@@ -890,6 +963,8 @@ class Engine:
                 await self._positions.sync_from_venue(open_pos)
             except Exception:  # noqa: BLE001
                 logger.exception("final venue position sync after flatten failed")
+            if was_running and self._state.status is EngineStatus.PAUSED:
+                await self.resume()
 
     async def _cancel_refresh_loops(self) -> None:
         """Cancel + await the background resync tasks spawned in start().
@@ -1243,9 +1318,11 @@ class Engine:
             book_last_update_id=book.last_update_id,
         )
         if action is DiffAction.RESNAPSHOT:
-            if gap > 0:
-                self._md_quality.record_gap(diff.symbol, gap)
             sym = diff.symbol
+            if sym in self._bulk_resync_symbols:
+                return
+            if gap > 0:
+                self._md_quality.record_gap(sym, gap)
             if sym not in self._resnapshot_inflight:
                 self._resnapshot_inflight.add(sym)
                 try:
@@ -1268,8 +1345,86 @@ class Engine:
         self._touch_symbol_from_book(diff.symbol, book)
 
     async def _on_market_ws_reconnect(self, symbols: list[str]) -> None:
-        """REST-resync L2 books after a public market WebSocket reconnect."""
-        await self._resync_symbol_books(symbols, reason="reconnect")
+        """REST-resync L2 books after a public market WebSocket reconnect.
+
+        Debounce + coalesce shard reconnects so parallel snapshot storms do not
+        starve market WS ping handlers.
+        """
+        self._reconnect_resync_pending.update(s.upper() for s in symbols)
+        task = self._reconnect_resync_debounce_task
+        if task is not None and not task.done():
+            return
+        self._reconnect_resync_debounce_task = asyncio.create_task(
+            self._flush_reconnect_resync(),
+            name="engine-market-ws-reconnect-resync",
+        )
+
+    async def _flush_reconnect_resync(self) -> None:
+        delay = max(
+            0.0,
+            float(getattr(self._settings, "market_ws_reconnect_resync_delay_sec", 3.0)),
+        )
+        if delay > 0:
+            await asyncio.sleep(delay)
+        async with self._reconnect_resync_lock:
+            while self._reconnect_resync_pending:
+                batch = sorted(self._reconnect_resync_pending)
+                self._reconnect_resync_pending.clear()
+                await self._resync_symbol_books(batch, reason="reconnect")
+
+    def _book_resync_concurrency(self, reason: str) -> int:
+        if reason == "reconnect":
+            return max(
+                1,
+                int(getattr(self._settings, "book_resync_reconnect_concurrency", 3)),
+            )
+        return max(1, int(getattr(self._settings, "book_resync_concurrency", 8)))
+
+    async def _run_book_resync_workers(
+        self,
+        symbols: list[str],
+        *,
+        concurrency: int,
+        worker: Callable[[str], Awaitable[None]],
+    ) -> int:
+        """Run ``worker(symbol)`` with a fixed pool size (no N-task gather storms)."""
+        if not symbols:
+            return 0
+        limit = min(max(1, concurrency), len(symbols))
+        sym_iter = iter(symbols)
+        iter_lock = asyncio.Lock()
+        failures = 0
+        fail_lock = asyncio.Lock()
+
+        async def _runner() -> None:
+            nonlocal failures
+            while True:
+                async with iter_lock:
+                    try:
+                        sym = next(sym_iter)
+                    except StopIteration:
+                        return
+                try:
+                    await worker(sym)
+                except Exception:  # noqa: BLE001
+                    logger.exception("book resync worker failed for %s", sym)
+                    async with fail_lock:
+                        failures += 1
+                await asyncio.sleep(0)
+
+        await asyncio.gather(*(_runner() for _ in range(limit)))
+        return failures
+
+    async def _cancel_reconnect_resync_task(self) -> None:
+        task = self._reconnect_resync_debounce_task
+        if task is None:
+            return
+        self._reconnect_resync_debounce_task = None
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
 
     async def _resync_symbol_books(
         self,
@@ -1282,12 +1437,14 @@ class Engine:
         if not symbols:
             return
         logger.info("%s: resyncing %d symbol L2 book(s)", reason, len(symbols))
+        normalized = [s.upper() for s in symbols]
         if invalidate:
-            self._md_quality.invalidate(symbols)
-            for sym in symbols:
+            self._md_quality.invalidate(normalized)
+            for sym in normalized:
                 self._books.get(sym).invalidate()
 
-        total = len(symbols)
+        self._bulk_resync_symbols.update(normalized)
+        total = len(normalized)
         done = 0
         done_lock = asyncio.Lock()
         show_progress = publish_startup or self._state.status is EngineStatus.RUNNING
@@ -1313,9 +1470,8 @@ class Engine:
                     total=total,
                     symbol=symbol,
                 )
-            elif self._book_resync is not None:
-                await self._publish_book_resync(done=in_flight, total=total, symbol=symbol)
             await self._snapshot_book(symbol)
+            await asyncio.sleep(0)
             async with done_lock:
                 done += 1
                 completed = done
@@ -1327,18 +1483,27 @@ class Engine:
                     total=total,
                     symbol=symbol,
                 )
-            elif self._book_resync is not None:
+            elif self._book_resync is not None and (
+                completed % 8 == 0 or completed == total
+            ):
                 await self._publish_book_resync(done=completed, total=total, symbol=symbol)
 
-        results = await asyncio.gather(*(_one(s) for s in symbols), return_exceptions=True)
-        failures = sum(1 for r in results if isinstance(r, Exception))
-        if failures:
-            logger.warning(
-                "%s book resync: %d/%d snapshots failed",
-                reason,
-                failures,
-                len(symbols),
+        try:
+            failures = await self._run_book_resync_workers(
+                normalized,
+                concurrency=self._book_resync_concurrency(reason),
+                worker=_one,
             )
+            if failures:
+                logger.warning(
+                    "%s book resync: %d/%d snapshots failed",
+                    reason,
+                    failures,
+                    len(normalized),
+                )
+        finally:
+            self._bulk_resync_symbols.difference_update(normalized)
+
         if self._book_resync is not None and reason != "startup":
             self._book_resync = None
             await self._publish_book_resync(clear=True)
@@ -1589,23 +1754,29 @@ class Engine:
         stale = self._md_quality.tick_staleness(now=time.time())
         for sym in stale[:_MAX_MD_RESNAPSHOTS_PER_TICK]:
             await self._snapshot_book(sym)
-        active = self._strategies_by_name.get(self._active_strategy_name)
-        if active is not None:
-            self._refresh_ticks_from_books(active.symbols())
+        if self.is_multi_strategy_mode():
+            self._refresh_ticks_from_books(self._symbols)
+        else:
+            active = self._strategies_by_name.get(self._active_strategy_name)
+            if active is not None:
+                self._refresh_ticks_from_books(active.symbols())
+        if self._book_resync is not None:
+            return
         await self._evaluate_exits()
         await self._evaluate_strategies()
 
     async def _maybe_flatten_for_breaker(self) -> None:
-        if not self._breaker.is_blocked(BreakerScope.ENGINE):
+        if not self._breaker.is_engine_halted():
             self._auto_flatten_in_progress = False
             self._latched_major_flatten_done = False
             return
         if self._auto_flatten_in_progress:
             return
-        # Only flatten on MAJOR engine-scope trips; minor cooldowns just
-        # pause new orders.
-        active = [s for s in self._breaker.active() if s.scope is BreakerScope.ENGINE]
-        if not any(s.severity is BreakerSeverity.MAJOR for s in active):
+        active = [
+            s for s in self._breaker.active()
+            if s.scope is BreakerScope.ENGINE and s.severity is BreakerSeverity.MAJOR
+        ]
+        if not active:
             return
         if self._latched_major_flatten_done:
             return
@@ -1617,6 +1788,14 @@ class Engine:
             logger.exception("auto-flatten failed")
         else:
             self._latched_major_flatten_done = True
+            if getattr(self._settings, "auto_rearm_consecutive_losses_after_flatten", True):
+                if any(s.code == "consecutive_losses" for s in active):
+                    if self._breaker.rearm(code="consecutive_losses"):
+                        self.apply_breaker_rearm_side_effects({"consecutive_losses"})
+                        self._latched_major_flatten_done = False
+                        logger.info(
+                            "consecutive_losses cleared after auto-flatten; trading may resume",
+                        )
 
     async def _evaluate_exits(self) -> None:
         positions = self._positions.all()
@@ -1802,6 +1981,18 @@ class Engine:
         if pair_qty <= 0:
             logger.info("group %s aborted: venue max_qty caps pair to zero", group_id)
             return
+        for leg in legs:
+            filt = self._gateway.get_symbol_filters(leg.symbol)
+            mid = mids[leg.symbol]
+            if not venue_qty_in_bounds(pair_qty, filt, mid, reduce_only=False):
+                logger.info(
+                    "group %s aborted: %s qty=%.8f fails venue bounds (mid=%.8f)",
+                    group_id,
+                    leg.symbol,
+                    pair_qty,
+                    mid,
+                )
+                return
         result = self._pretrade.validate_group(
             legs,
             pair_qty,
@@ -1919,12 +2110,14 @@ class Engine:
                 logger.exception("book snapshot failed for %s", symbol)
                 return
             last_id = int(data.get("lastUpdateId", 0))
-            self._books.get(symbol).apply_snapshot(
+            book = self._books.get(symbol)
+            book.apply_snapshot(
                 bids=[(float(p), float(q)) for p, q in data.get("bids", [])],
                 asks=[(float(p), float(q)) for p, q in data.get("asks", [])],
                 last_update_id=last_id,
             )
             self._md_quality.on_snapshot(symbol, last_id)
+            self._touch_symbol_from_book(symbol, book)
 
     def _mid_for(self, symbol: str) -> float | None:
         tick = self._latest_tick.get(symbol)

@@ -150,7 +150,7 @@ async def test_no_breach_when_positions_match() -> None:
 
 
 @pytest.mark.asyncio
-async def test_qty_mismatch_trips_major_and_heals_local() -> None:
+async def test_qty_mismatch_heals_local_without_major_trip() -> None:
     local = Position(symbol="BTCUSDT", qty=0.5, avg_entry_price=100.0, mark_price=100.0)
     remote = Position(symbol="BTCUSDT", qty=0.7, avg_entry_price=100.0, mark_price=100.0)
     bus = EventBus()
@@ -165,14 +165,14 @@ async def test_qty_mismatch_trips_major_and_heals_local() -> None:
         interval_sec=60.0, qty_tolerance=1e-6,
     )
     await rec.reconcile_once()
-    assert breaker.is_blocked(BreakerScope.ENGINE)
+    assert not breaker.is_blocked(BreakerScope.ENGINE)
     healed = pt.get("BTCUSDT")
     assert healed is not None
     assert abs(healed.qty - 0.7) < 1e-9
 
 
 @pytest.mark.asyncio
-async def test_extra_local_position_trips_major() -> None:
+async def test_extra_local_position_healed_without_major_trip() -> None:
     local = Position(symbol="ETHUSDT", qty=0.5, avg_entry_price=100.0, mark_price=100.0)
     bus = EventBus()
     pt = PositionTracker(bus)
@@ -186,7 +186,8 @@ async def test_extra_local_position_trips_major() -> None:
         interval_sec=60.0, qty_tolerance=1e-6,
     )
     await rec.reconcile_once()
-    assert breaker.is_blocked(BreakerScope.ENGINE)
+    assert not breaker.is_blocked(BreakerScope.ENGINE)
+    assert pt.get("ETHUSDT") is None
 
 
 @pytest.mark.asyncio

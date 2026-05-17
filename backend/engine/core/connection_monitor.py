@@ -38,14 +38,17 @@ class ConnectionMonitor:
         self,
         breaker: CircuitBreaker,
         ws_stale_pause_sec: float,
+        user_data_stale_sec: float,
         cooldown_sec: float,
     ) -> None:
         self._breaker = breaker
         self._stale_threshold = max(0.0, ws_stale_pause_sec)
+        self._user_stale_threshold = max(0.0, user_data_stale_sec)
         self._cooldown_sec = max(0.0, cooldown_sec)
 
     def apply_settings(self, settings: Settings) -> None:
         self._stale_threshold = max(0.0, settings.ws_stale_pause_sec)
+        self._user_stale_threshold = max(0.0, settings.user_data_stale_sec)
         self._cooldown_sec = max(0.0, settings.breaker_minor_cooldown_sec)
 
     @classmethod
@@ -57,6 +60,7 @@ class ConnectionMonitor:
         return cls(
             breaker=breaker,
             ws_stale_pause_sec=settings.ws_stale_pause_sec,
+            user_data_stale_sec=settings.user_data_stale_sec,
             cooldown_sec=settings.breaker_minor_cooldown_sec,
         )
 
@@ -92,9 +96,10 @@ class ConnectionMonitor:
                     )
                 )
 
-        if check_user_data_stale and last_user_data_ts > 0:
+        user_limit = self._user_stale_threshold or self._stale_threshold
+        if check_user_data_stale and last_user_data_ts > 0 and user_limit > 0:
             user_age = max(0.0, now - last_user_data_ts)
-            if user_age > self._stale_threshold:
+            if user_age > user_limit:
                 self._breaker.trip(
                     Breach(
                         code="stale_user_data",

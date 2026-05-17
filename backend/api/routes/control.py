@@ -161,6 +161,7 @@ async def set_strategy(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if changed and engine.status is EngineStatus.RUNNING:
+        await _run_or_500("strategy/market", engine.refresh_market_universe)
         await _run_or_500("strategy/sync", engine.sync_trading_book_from_rest)
     return _status(engine)
 

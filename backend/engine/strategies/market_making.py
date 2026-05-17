@@ -140,6 +140,10 @@ class MarketMakingStrategy(StrategyBase):
             feat = features.get(symbol)
             if feat is None:
                 continue
+            # During L2 resync the book is invalidated; skew history and tape
+            # can still look tradable while MarketDataGuard will veto stale ticks.
+            if feat.mid is None:
+                continue
             state = self._state_for(symbol)
             self._sync_open_side_from_position(state, symbol)
 

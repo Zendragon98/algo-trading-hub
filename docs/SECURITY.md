@@ -96,7 +96,7 @@ The following are **not** guarded by `API_TOKEN` in middleware:
 ## 6. Supply chain and dependencies
 
 - **Python:** pin versions in `backend/requirements.txt` (or migrate to lockfile policy per your org).
-- **JavaScript:** `package.json` + lockfile discipline (`package-lock`/`bun.lock` if used).
+- **JavaScript:** `package.json` + `package-lock.json` (commit lockfile; use `npm ci` in CI).
 - Run organisational **SCA** (Dependabot, Snyk, etc.) and **license** review before production.
 
 ---

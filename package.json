@@ -3,11 +3,14 @@
   "private": true,
   "sideEffects": false,
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "dev": "vite dev",
-    "build": "vite build",
-    "build:dev": "vite build --mode development",
-    "preview": "vite preview",
+    "dev": "node ./node_modules/vite/bin/vite.js dev",
+    "build": "node ./node_modules/vite/bin/vite.js build",
+    "build:dev": "node ./node_modules/vite/bin/vite.js build --mode development",
+    "preview": "node ./node_modules/vite/bin/vite.js preview",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
@@ -86,6 +89,6 @@
     "prettier": "^3.7.3",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.56.1",
-    "vite": "6.4.2"
+    "vite": "^7.3.3"
   }
 }

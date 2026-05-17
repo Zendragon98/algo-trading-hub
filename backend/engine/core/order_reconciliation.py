@@ -211,7 +211,8 @@ class OrderReconciler:
             self._breaker.rearm(code="order_reconcile_mismatch")
         elif self._on_mismatch is not None:
             await self._on_mismatch(self.last_result)
-        if trip_on_mismatch and (orphans_venue or orphans_local):
+        # Transient local-only drift (VWAP in flight) is common; venue orphans are riskier.
+        if trip_on_mismatch and (orphans_venue or len(orphans_local) >= 3):
             self._breaker.trip(
                 Breach(
                     code="order_reconcile_mismatch",

@@ -260,9 +260,10 @@ Preview diagrams: [mermaid.live](https://mermaid.live) or VS Code Mermaid extens
 | **Pairs** | `pairs_trading` | `SYMBOLS` USDT+USDC perps | Self-managed (z-space SL/TP) | Volume-weighted implied USDT/USDC basis deviation |
 | **SMA** | `sma_crossover` | `SMA_SYMBOLS` | Engine per-leg brackets | Fast/slow SMA cross per symbol |
 | **Market making** | `market_making` | `MM_SYMBOLS` | Engine per-leg brackets | Fade/follow composite of skew · imbalance · tape |
+| **Market making 2.0** | `market_making_v2` | `MM2_SYMBOLS` | Engine per-leg brackets | Fee-aware fade: spread gate, tape confirm, profit/time exits |
 | **All** | `all` | Union of above | Per-strategy rules | Net signals per symbol before one execution path |
 
-Hot-swap: `POST /api/control/strategy` with `{ "name": "pairs_trading" }` (or `sma_crossover`, `market_making`, `all`). Boot default: `STRATEGY` in `.env`.
+Hot-swap: `POST /api/control/strategy` with `{ "name": "pairs_trading" }` (or `sma_crossover`, `market_making`, `market_making_v2`, `all`). Boot default: `STRATEGY` in `.env`.
 
 ---
 
@@ -331,7 +332,7 @@ algo-trading-hub/
 
 | Requirement | Notes |
 |-------------|-------|
-| **Node.js 20+** or **Bun 1.2+** | Frontend dev server |
+| **Node.js 20+** | Frontend dev server (`npm`) |
 | **Python 3.11+** | Backend engine + API |
 | **Binance Futures Testnet** keys | https://testnet.binancefuture.com |
 
@@ -370,8 +371,8 @@ python main.py
 ### 2. Frontend
 
 ```bash
-bun install        # or: npm install
-bun run dev        # or: npm run dev
+npm install
+npm run dev
 ```
 
 - UI: **http://localhost:5173**

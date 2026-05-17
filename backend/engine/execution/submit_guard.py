@@ -116,7 +116,7 @@ class SubmitGuard:
 
     def can_submit_parent(self, symbol: str) -> tuple[bool, str]:
         """Pre-router check used by ExecutionRouter.submit."""
-        if self._breaker.is_blocked(BreakerScope.ENGINE):
+        if self._breaker.is_engine_halted():
             return False, "engine_breaker"
         if self._breaker.is_blocked(BreakerScope.SYMBOL, symbol):
             return False, "symbol_breaker"
@@ -138,7 +138,7 @@ class SubmitGuard:
         is the right discriminator.
         """
         if not reduce_only:
-            if self._breaker.is_blocked(BreakerScope.ENGINE):
+            if self._breaker.is_engine_halted():
                 return False, "engine_breaker"
             if self._breaker.is_blocked(BreakerScope.SYMBOL, symbol):
                 return False, "symbol_breaker"

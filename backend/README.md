@@ -237,7 +237,7 @@ cp .env.example .env
 python main.py
 ```
 
-API at **http://127.0.0.1:8000** (REST + `/ws`). Frontend in a second terminal from repo root: `bun install && bun run dev` → http://localhost:5173.
+API at **http://127.0.0.1:8000** (REST + `/ws`). Frontend in a second terminal from repo root: `npm install && npm run dev` → http://localhost:5173.
 
 By default the engine boots **stopped** — press Start in the UI or `POST /api/control/start`. Auto-start: `ENGINE_AUTOSTART=true` in `.env` or `python main.py --engine`. API-only (engine paused): `python main.py --no-engine`.
 

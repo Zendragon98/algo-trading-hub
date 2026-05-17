@@ -194,16 +194,30 @@ class Reconciler:
             )
 
         for symbol, venue_qty, local_qty in mismatches:
+            local_after = local_qty
+            if self._heal_on_mismatch:
+                pos = self._positions.get(symbol)
+                local_after = pos.qty if pos is not None else 0.0
+                if abs(venue_qty - local_after) <= self._qty_tolerance:
+                    logger.info(
+                        "reconcile mismatch on %s healed (venue=%.6f local was %.6f)",
+                        symbol,
+                        venue_qty,
+                        local_qty,
+                    )
+                    continue
             logger.error(
                 "reconcile mismatch on %s: venue=%.10f local=%.10f",
-                symbol, venue_qty, local_qty,
+                symbol,
+                venue_qty,
+                local_after,
             )
             self._breaker.trip(
                 Breach(
                     code="reconcile_mismatch",
                     scope=BreakerScope.ENGINE,
                     severity=BreakerSeverity.MAJOR,
-                    detail=f"{symbol} venue={venue_qty:.6f} local={local_qty:.6f}",
+                    detail=f"{symbol} venue={venue_qty:.6f} local={local_after:.6f}",
                 )
             )
 

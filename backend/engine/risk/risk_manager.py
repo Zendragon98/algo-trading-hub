@@ -86,8 +86,8 @@ class RiskManager:
 
     @property
     def kill_switch(self) -> bool:
-        """Back-compat: True iff any ENGINE-scope breach is active."""
-        return self._breaker.is_blocked(BreakerScope.ENGINE)
+        """Back-compat: True iff a MAJOR engine-scope breach is active."""
+        return self._breaker.is_engine_halted()
 
     @property
     def breaker(self) -> CircuitBreaker:
@@ -143,7 +143,7 @@ class RiskManager:
         spread_bps: float | None = None,
     ) -> RiskDecision:
         # Engine- or symbol-scope breach blocks every entry path.
-        if self._breaker.is_blocked(BreakerScope.ENGINE):
+        if self._breaker.is_engine_halted():
             return RiskDecision(False, reason="kill_switch active")
         if self._breaker.is_blocked(BreakerScope.SYMBOL, signal.symbol):
             return RiskDecision(False, reason="symbol breaker active")
