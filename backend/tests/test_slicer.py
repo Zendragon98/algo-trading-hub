@@ -25,7 +25,7 @@ def test_frontload_decays() -> None:
     assert pytest.approx(_qty_sum(slices), rel=1e-6) == 10.0
     # Strictly decreasing series.
     qtys = [s.qty for s in slices]
-    for a, b in zip(qtys, qtys[1:]):
+    for a, b in zip(qtys, qtys[1:], strict=False):
         assert a > b
 
 
@@ -33,7 +33,7 @@ def test_backload_grows() -> None:
     slices = build_schedule(mode=AlgoMode.BACKLOAD, total_qty=10.0, duration_sec=60.0, n_slices=6)
     assert pytest.approx(_qty_sum(slices), rel=1e-6) == 10.0
     qtys = [s.qty for s in slices]
-    for a, b in zip(qtys, qtys[1:]):
+    for a, b in zip(qtys, qtys[1:], strict=False):
         assert a < b
 
 

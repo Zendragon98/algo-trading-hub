@@ -6,7 +6,7 @@ same way. The fields and naming are dictated by the React console.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from common.types import ChildOrder, Position
 from engine.core.engine import ALL_STRATEGIES_MODE, Engine
@@ -23,13 +23,13 @@ from .schemas import (
     ExecutionStatsDTO,
     KpiDTO,
     LogDTO,
-    StartupProgressDTO,
-    StrategyInfoDTO,
     OrdersDTO,
     ParentOrderDTO,
     PositionDTO,
+    StartupProgressDTO,
     StateDTO,
     StatusDTO,
+    StrategyInfoDTO,
     SystemHealthDTO,
     TradeDTO,
 )
@@ -58,7 +58,7 @@ def build_status_dto(engine: Engine) -> StatusDTO:
 
 
 def _fmt_ts(epoch: float) -> str:
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%H:%M:%S")
+    return datetime.fromtimestamp(epoch, tz=UTC).strftime("%H:%M:%S")
 
 
 def position_to_dto(position: Position) -> PositionDTO:
@@ -253,4 +253,4 @@ def log_event_to_dto(payload: dict) -> LogDTO:
 
 
 def _fmt_now() -> str:
-    return datetime.now(tz=timezone.utc).strftime("%H:%M:%S")
+    return datetime.now(tz=UTC).strftime("%H:%M:%S")

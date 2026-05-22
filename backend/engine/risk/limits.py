@@ -21,7 +21,7 @@ class Limits:
     default_take_profit_pct: float
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "Limits":
+    def from_settings(cls, settings: Settings) -> Limits:
         return cls(
             max_risk_pct=settings.max_risk_pct,
             max_gross_notional=settings.max_gross_notional,

@@ -13,7 +13,6 @@ from engine.market_data.feature_store import Features  # noqa: E402
 from engine.strategies.blended_signals import BlendedSignalsStrategy  # noqa: E402
 from engine.strategies.indicators import (  # noqa: E402
     bollinger_bands,
-    ema_step,
     macd_step,
     rsi_from_closes,
 )

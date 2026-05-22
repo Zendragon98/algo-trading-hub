@@ -390,10 +390,6 @@ class Settings(BaseSettings):
     # (ask_hit_count - bid_hit_count) / total_trades when total >= mm_min_tape_trades.
     mm_tape_scale: float = 12.0
     mm_min_tape_trades: int = 3
-    # Deprecated: legacy tilt MM (unused). Quote MM uses MM_SKEW_* / MM_QUOTE_* only.
-    mm_entry_tilt: float = 7.0
-    mm_exit_tilt: float = 0.0
-    mm_signal_mode: str = "fade"
     mm_min_samples: int = 5
     mm_risk_per_trade_pct: float = 0.002
     mm_qty: float = 0.001
@@ -409,10 +405,30 @@ class Settings(BaseSettings):
     mm_auto_min_mid_price: float = 0.05
     mm_auto_min_spread_bps: float = 0.8
     mm_auto_max_spread_bps: float = 20.0
-    mm_auto_max_spread_cv: float = 0.45
-    mm_auto_max_mid_vol_bps: float = 15.0
+    # Stability caps: 0 = derive from scan percentiles + 24h range vol (see mm_universe_scanner).
+    mm_auto_max_spread_cv: float = 0.0
+    mm_auto_max_mid_vol_bps: float = 0.0
+    mm_auto_stability_percentile: float = 75.0
+    mm_auto_spread_cv_floor: float = 0.12
+    mm_auto_spread_cv_cap: float = 0.70
+    mm_auto_mid_vol_floor_bps: float = 2.0
+    mm_auto_mid_vol_cap_bps: float = 35.0
+    mm_auto_vol_regime_mult: float = 1.25
     mm_auto_min_edge_bps: float = 0.0  # 0 = 2× maker fee + spread buffer
     mm_auto_scan_ttl_sec: float = 3600.0
+    # Set at boot when MM_SYMBOLS/MM2_SYMBOLS were AUTO; enables live universe refresh.
+    mm_universe_auto: bool = False
+    mm2_universe_auto: bool = False
+    mm_universe_refresh_sec: float = 3600.0
+    mm_universe_adverse_refresh_cooldown_sec: float = 600.0
+    mm_universe_adverse_check_sec: float = 30.0
+    mm_universe_adverse_markout_bps: float = 0.0
+    mm_universe_adverse_min_symbols: int = 2
+    mm_universe_adverse_spread_widen_mult: float = 1.75
+    mm_universe_adverse_regime_vol_bps: float = 25.0
+    mm_universe_regime_symbols: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["BTCUSDT", "ETHUSDT"],
+    )
 
     # --- Market-making 2.0 (fee-aware fade; skew + imbalance + tape) ---
     mm2_symbols: Annotated[list[str], NoDecode] = Field(
@@ -432,9 +448,6 @@ class Settings(BaseSettings):
     mm2_imbalance_scale: float = 8.0
     mm2_tape_scale: float = 12.0
     mm2_min_tape_trades: int = 5
-    # Deprecated: legacy tilt MM2 (unused). Quote MM2 uses MM2_* + mm_core via adapter.
-    mm2_entry_tilt: float = 8.0
-    mm2_exit_tilt: float = 0.0
     mm2_min_skew_bps: float = 1.0
     mm2_tape_confirm: float = 0.08
     mm2_taker_fee_bps: float = 4.0
@@ -614,6 +627,7 @@ class Settings(BaseSettings):
         "blend_symbols",
         "mm_symbols",
         "mm2_symbols",
+        "mm_universe_regime_symbols",
         "cors_origins",
         mode="before",
     )

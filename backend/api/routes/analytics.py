@@ -15,6 +15,7 @@ from ..schemas import (
     MmUniverseRankingDTO,
     MmUniverseScanReportDTO,
     MmUniverseScanRequestDTO,
+    MmUniverseThresholdsDTO,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,11 +45,24 @@ async def get_mm_universe_report() -> MmUniverseScanReportDTO | None:
     report = load_mm_universe_report()
     if report is None:
         return None
+    th_dto = None
+    if report.thresholds is not None:
+        t = report.thresholds
+        th_dto = MmUniverseThresholdsDTO(
+            max_spread_cv=t.max_spread_cv,
+            max_mid_vol_bps=t.max_mid_vol_bps,
+            stability_percentile=t.stability_percentile,
+            spread_cv_median=t.spread_cv_median,
+            mid_vol_median=t.mid_vol_median,
+            range_vol_24h_median=t.range_vol_24h_median,
+            source=t.source,
+        )
     return MmUniverseScanReportDTO(
         generated_at=report.generated_at,
         recommended=report.recommended,
         candidates_scanned=report.candidates_scanned,
         sample_rounds=report.sample_rounds,
+        thresholds=th_dto,
         rankings=[
             MmUniverseRankingDTO(
                 symbol=r.symbol,

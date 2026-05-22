@@ -74,7 +74,7 @@ class _Flatten2022OnceGateway(_MockGateway):
         if self.reject_next_reduce_only and order.reduce_only:
             self.reject_next_reduce_only = False
             err = RuntimeError("ReduceOnly Order is rejected.")
-            setattr(err, "code", -2022)
+            err.code = -2022
             raise err
         return await super().place_order(order)
 

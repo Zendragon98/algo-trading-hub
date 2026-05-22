@@ -17,13 +17,14 @@ import urllib.request
 from test_strategies_live import (  # noqa: E402
     API,
     PROBLEM_PATTERNS,
-    STRATEGIES as _ALL_STRATEGIES,
     _flatten_settle,
     _get,
     _latest_log,
     _log_slice_since,
-    _post,
     _run_strategy,
+)
+from test_strategies_live import (
+    STRATEGIES as _ALL_STRATEGIES,
 )
 
 LIQUID_SYMBOLS = [

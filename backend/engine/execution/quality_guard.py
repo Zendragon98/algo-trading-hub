@@ -47,7 +47,7 @@ class ExecutionQualityGuard:
         settings: Settings,
         breaker: CircuitBreaker,
         tracker: ExecutionTracker,
-    ) -> "ExecutionQualityGuard":
+    ) -> ExecutionQualityGuard:
         return cls(
             breaker=breaker,
             tracker=tracker,

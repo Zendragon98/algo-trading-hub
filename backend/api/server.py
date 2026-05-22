@@ -11,7 +11,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 def _fmt(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M:%S")
+    return datetime.fromtimestamp(ts, tz=UTC).strftime("%H:%M:%S")
 
 
 async def _log_buffer_pump(bus: EventBus) -> None:

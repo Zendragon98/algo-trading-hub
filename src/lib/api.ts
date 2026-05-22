@@ -704,12 +704,23 @@ export type MmUniverseRankingDTO = {
   reject_reason: string | null;
 };
 
+export type MmUniverseThresholdsDTO = {
+  max_spread_cv: number;
+  max_mid_vol_bps: number;
+  stability_percentile: number;
+  spread_cv_median: number;
+  mid_vol_median: number;
+  range_vol_24h_median: number;
+  source: string;
+};
+
 export type MmUniverseScanReportDTO = {
   generated_at: string;
   recommended: string[];
   candidates_scanned: number;
   sample_rounds: number;
   rankings: MmUniverseRankingDTO[];
+  thresholds: MmUniverseThresholdsDTO | null;
 };
 
 export type AnalyticsJobDTO = {

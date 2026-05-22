@@ -13,7 +13,13 @@ import signal
 import sys
 import time
 
-from analytics.jobs import claim_next_job, execute_job, finish_job, poll_interval_sec, resolve_jobs_dir
+from analytics.jobs import (
+    claim_next_job,
+    execute_job,
+    finish_job,
+    poll_interval_sec,
+    resolve_jobs_dir,
+)
 
 logger = logging.getLogger(__name__)
 _stop = False

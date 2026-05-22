@@ -6,12 +6,12 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends
 
+from analytics.daily_report import build_report, find_latest_run
 from common.config import Settings, get_settings
+from engine.core.engine import Engine
 
 from ..dependencies import get_engine
 from ..schemas import DailyReportDTO
-from analytics.daily_report import build_report, find_latest_run
-from engine.core.engine import Engine
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 

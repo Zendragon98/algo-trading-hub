@@ -262,12 +262,15 @@ def _run_mm_universe_scan_job(payload: dict[str, Any]) -> dict[str, Any]:
         }
         for r in sorted(report.rankings, key=lambda x: x.score, reverse=True)[:30]
     ]
-    return {
+    result: dict[str, Any] = {
         "path": str(path),
         "recommended": report.recommended,
         "candidates_scanned": report.candidates_scanned,
         "top_rankings": top,
     }
+    if report.thresholds is not None:
+        result["thresholds"] = asdict(report.thresholds)
+    return result
 
 
 def _run_report_job(payload: dict[str, Any]) -> dict[str, Any]:

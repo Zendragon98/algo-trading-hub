@@ -285,8 +285,6 @@ backend/
     data_loader.py           pulls klines into data/*.parquet
     pair_analyzer.py         z-score + cointegration + half-life
     orderbook_analyzer.py    trade-tape distributions for the AlgoWheel
-    reports.py               JSON / CSV writers
-
   api/                       FastAPI surface
     server.py                app factory + lifespan + CORS
     schemas.py               Pydantic DTOs that mirror src/components/algo/types.ts
@@ -543,7 +541,7 @@ Live logs emit `venue=`, `res=`, `inv=`, `pnl_bps=` on each quote refresh (SIG l
 
 **Per-symbol spreads:** Run `python -m analytics.mm_spread_pipeline` to ingest L2 and write `data/mm_spread_calibration.json` (loaded via `MM_SPREAD_CALIBRATION_PATH`). Manual `MM_SYMBOL_HALF_SPREAD_BPS` overrides win over calibration. Live `MM_QUOTE_USE_VENUE_SPREAD_FLOOR` + inventory skew adjust from that baseline.
 
-**Key settings:** `MM_QUOTE_*`, `MM_RESERVATION_INVENTORY_BPS`, `MM_INVENTORY_SPREAD_SKEW_BPS`, `MM_INVENTORY_*`, `MM_JUMP_*`, `MM_DEPLETION_*`, `MM_TOXICITY_THRESHOLD`. `MM_SKEW_*` / `MM_TAPE_*` feed the micro shift into reservation mid. (`MM_ENTRY_TILT` / `MM_EXIT_TILT` are legacy and unused by quote MM.)
+**Key settings:** `MM_QUOTE_*`, `MM_RESERVATION_INVENTORY_BPS`, `MM_INVENTORY_SPREAD_SKEW_BPS`, `MM_INVENTORY_*`, `MM_JUMP_*`, `MM_DEPLETION_*`, `MM_TOXICITY_THRESHOLD`. `MM_SKEW_*` / `MM_TAPE_*` feed the micro shift into reservation mid.
 
 `market_making_v2` adds fee-aware spread floor (`MM2_MIN_SPREAD_BPS`) and cancels quotes when skew is below `MM2_MIN_SKEW_BPS` (same pull pattern as the spread gate). Hot-swap: `POST /api/control/strategy { "name": "market_making" }`.
 
@@ -720,8 +718,11 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `MM_SYMBOLS`                 | `AUTO`                               | MM universe (CSV or `AUTO` → `mm_universe_scanner` analytics) |
 | `MM_AUTO_MAX_SYMBOLS`        | `12`                                 | Top-N symbols from scan when `MM_SYMBOLS=AUTO` |
 | `MM_AUTO_MIN_QUOTE_VOLUME`   | `5000000`                            | Min 24h USDT quote volume for scan candidates |
-| `MM_SIGNAL_MODE`             | `fade`                               | `fade` \| `follow` — mean-reversion vs continuation |
-| `MM_ENTRY_TILT` / `MM_EXIT_TILT` | `8.0` / `0`                      | Entry threshold; exit = 35% of entry when exit is `0` |
+| `MM_AUTO_STABILITY_PERCENTILE` | `75`                               | P75 of spread CV / mid-vol among candidates sets caps |
+| `MM_AUTO_MAX_SPREAD_CV`      | `0` (auto)                           | Override spread-instability cap (0 = derive) |
+| `MM_AUTO_MAX_MID_VOL_BPS`    | `0` (auto)                           | Override mid-jitter cap (0 = derive from vol) |
+| `MM_UNIVERSE_REFRESH_SEC`    | `3600`                               | Periodic rescan when AUTO (0 = off) |
+| `MM_UNIVERSE_ADVERSE_*`      | see config                           | Re-scan when markout/toxic/jump/spread/regime breach |
 | `MM_SKEW_WINDOW_SEC`         | `300`                                | Rolling window for micro-price skew average |
 | `MM_RISK_PER_TRADE_PCT` / `MM_QTY` / `MM_COOLDOWN_SEC` | `0.005` / `0.001` / `12` | Sizing + per-symbol cooldown |
 | `MM_MAX_ENTRIES_PER_TICK`    | `4`                                  | Max new MM entries per 1 Hz tick (by score); exits uncapped |

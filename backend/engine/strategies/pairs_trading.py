@@ -293,8 +293,8 @@ class PairsTradingStrategy(StrategyBase):
         self._load_symbol_calibration_pairs(settings)
 
     def _load_symbol_calibration_pairs(self, settings: Settings) -> None:
-        from .mm_calibrated import calibration_path
         from ..market_data.symbol_calibration import load_symbol_calibration
+        from .mm_calibrated import calibration_path
 
         path = calibration_path(settings)
         if not path:

@@ -15,7 +15,7 @@ parent so the remaining schedule never fires.
 from __future__ import annotations
 
 import logging
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 from ..risk.circuit_breaker import (
     Breach,

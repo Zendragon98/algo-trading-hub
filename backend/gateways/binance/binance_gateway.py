@@ -22,12 +22,12 @@ from ..gateway_interface import (
     TradeCallback,
 )
 from .account_connection import AccountConnection
-from .market_connection import MarketConnection
 from .leverage_bracket_cache import (
     leverage_bracket_cache_path,
     load_leverage_bracket_cache,
     save_leverage_bracket_cache,
 )
+from .market_connection import MarketConnection
 from .order_connection import OrderConnection
 from .rest_client import BinanceRestClient, BinanceRestError
 

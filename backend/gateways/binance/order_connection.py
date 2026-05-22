@@ -11,9 +11,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 from collections.abc import Awaitable, Callable
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
 import websockets

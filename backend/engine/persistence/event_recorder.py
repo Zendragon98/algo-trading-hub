@@ -21,7 +21,7 @@ import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
 
@@ -187,7 +187,7 @@ class EventRecorder:
     def _write_manifest(self) -> None:
         """Drop a tiny manifest.json so a run folder is self-describing."""
         manifest = {
-            "started_at": datetime.now(tz=timezone.utc).isoformat(),
+            "started_at": datetime.now(tz=UTC).isoformat(),
             "record_ticks": self._cfg.record_ticks,
             "streams": [_FILENAMES[t] for t in self._types if t in _FILENAMES],
         }
@@ -206,7 +206,7 @@ def make_run_dir(base: Path | str) -> Path:
     Returned path is created on disk so callers can write into it
     immediately.
     """
-    stamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    stamp = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
     path = Path(base) / stamp
     path.mkdir(parents=True, exist_ok=True)
     return path

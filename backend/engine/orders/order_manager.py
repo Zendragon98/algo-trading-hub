@@ -14,9 +14,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time as _time
-import uuid
+from collections.abc import Iterable
 from dataclasses import asdict
-from typing import Iterable, Protocol
+from typing import Protocol
 
 from common.enums import EventType, OrderStatus
 from common.events import Event, EventBus

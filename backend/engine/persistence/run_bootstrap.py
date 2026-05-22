@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from common.config import Settings
@@ -70,7 +70,7 @@ def open_journal(
     if not settings.journal_enabled or run_dir is None:
         return None
     journal = EventJournal(run_dir=run_dir, run_id=run_dir.name)
-    journal.open(datetime.now(tz=timezone.utc).isoformat())
+    journal.open(datetime.now(tz=UTC).isoformat())
     bus.attach_journal(journal)
     return journal
 

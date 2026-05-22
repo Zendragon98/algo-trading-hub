@@ -63,7 +63,7 @@ class _BusHandler(logging.Handler):
     the loop runs are queued and flushed via ``flush_pending_bus_logs``.
     """
 
-    def __init__(self, bus: "EventBus", *, level: int = logging.INFO) -> None:
+    def __init__(self, bus: EventBus, *, level: int = logging.INFO) -> None:
         super().__init__(level=level)
         self._bus = bus
 
@@ -94,7 +94,7 @@ class _BusHandler(logging.Handler):
         loop.create_task(self._bus.publish(event))
 
 
-async def flush_pending_bus_logs(bus: "EventBus") -> None:
+async def flush_pending_bus_logs(bus: EventBus) -> None:
     """Publish log lines that were emitted before the asyncio loop started."""
     if not _PENDING_BUS:
         return
@@ -117,7 +117,7 @@ _RECORD_TO_LEVEL = {
 
 
 def configure_logging(
-    bus: "EventBus | None" = None,
+    bus: EventBus | None = None,
     level: int = logging.INFO,
     log_file: Path | str | None = None,
     log_file_max_bytes: int = 10_000_000,
@@ -231,7 +231,7 @@ def group_signal_log(
     logger: logging.Logger,
     group_id: str,
     headline: str,
-    legs: list["Signal"],
+    legs: list[Signal],
 ) -> None:
     """SIG-level log for pair/group dispatch with leg context."""
     if not legs:

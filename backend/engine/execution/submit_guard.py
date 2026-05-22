@@ -22,7 +22,7 @@ import asyncio
 import logging
 import time as _time
 from collections import defaultdict
-from typing import Callable
+from collections.abc import Callable
 
 from common.config import Settings
 from common.enums import OrderStatus
@@ -102,7 +102,7 @@ class SubmitGuard:
         settings: Settings,
         breaker: CircuitBreaker,
         open_parent_count: Callable[[], int],
-    ) -> "SubmitGuard":
+    ) -> SubmitGuard:
         return cls(
             breaker=breaker,
             open_parent_count=open_parent_count,

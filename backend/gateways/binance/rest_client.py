@@ -18,7 +18,7 @@ import hmac
 import logging
 import re
 import time
-from datetime import timezone
+from datetime import UTC
 from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlencode
@@ -63,7 +63,7 @@ def parse_retry_after_header(headers: httpx.Headers) -> float | None:
         if dt is None:
             return None
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return max(0.0, dt.timestamp() - time.time())
     except (TypeError, ValueError, OSError):
         return None

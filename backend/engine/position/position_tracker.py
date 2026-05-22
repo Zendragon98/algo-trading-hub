@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from dataclasses import asdict
-from typing import Iterable
 
 from common.enums import EventType, Side
 from common.events import Event, EventBus

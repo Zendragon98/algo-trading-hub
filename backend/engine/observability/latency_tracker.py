@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 import time as _time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from common.events import Event, EventBus
 from common.enums import EventType
+from common.events import Event, EventBus
 
 logger = logging.getLogger(__name__)
 

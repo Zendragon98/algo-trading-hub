@@ -34,6 +34,16 @@ DEFAULT_REPORT_PATH = backend_data_root() / "mm_universe_scan.json"
 
 
 @dataclass(slots=True)
+class TickerVolStats:
+    quote_volume: float
+    last_price: float
+    high: float
+    low: float
+    price_change_pct: float
+    range_vol_24h_bps: float
+
+
+@dataclass(slots=True)
 class MmSymbolScore:
     symbol: str
     quote_volume_24h: float
@@ -45,6 +55,19 @@ class MmSymbolScore:
     score: float
     eligible: bool
     reject_reason: str | None = None
+    range_vol_24h_bps: float = 0.0
+    intraday_vol_bps: float = 0.0
+
+
+@dataclass(slots=True)
+class StabilityThresholds:
+    max_spread_cv: float
+    max_mid_vol_bps: float
+    stability_percentile: float
+    spread_cv_median: float
+    mid_vol_median: float
+    range_vol_24h_median: float
+    source: str  # "percentile" | "override"
 
 
 @dataclass(slots=True)
@@ -54,6 +77,145 @@ class MmUniverseReport:
     rankings: list[MmSymbolScore]
     candidates_scanned: int
     sample_rounds: int
+    thresholds: StabilityThresholds | None = None
+
+
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+
+def _range_vol_24h_bps(high: float, low: float, last: float) -> float:
+    if last <= 0 or high < low:
+        return 0.0
+    return (high - low) / last * 10_000.0
+
+
+def _sample_window_sec(settings: Settings) -> float:
+    rounds = max(1, int(settings.mm_auto_sample_rounds))
+    interval = float(settings.mm_auto_sample_interval_sec)
+    return max(1.0, rounds * interval)
+
+
+def _intraday_vol_from_range(range_vol_24h_bps: float, sample_window_sec: float) -> float:
+    """Scale 24h high-low range to the bookTicker sample window (√time)."""
+    if range_vol_24h_bps <= 0:
+        return 0.0
+    fraction = sample_window_sec / 86_400.0
+    return range_vol_24h_bps * math.sqrt(fraction)
+
+
+def _parse_ticker_vol_row(row: dict[str, Any]) -> TickerVolStats | None:
+    try:
+        sym = str(row.get("symbol", "")).upper()
+        if not sym:
+            return None
+        qv = float(row["quoteVolume"])
+        last = float(row["lastPrice"])
+        high = float(row["highPrice"])
+        low = float(row["lowPrice"])
+        chg = abs(float(row.get("priceChangePercent", 0.0)))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if last <= 0:
+        return None
+    return TickerVolStats(
+        quote_volume=qv,
+        last_price=last,
+        high=high,
+        low=low,
+        price_change_pct=chg,
+        range_vol_24h_bps=_range_vol_24h_bps(high, low, last),
+    )
+
+
+def _effective_mid_vol_bps(
+    sampled_mid_vol: float,
+    range_vol_24h_bps: float,
+    *,
+    sample_window_sec: float,
+) -> tuple[float, float]:
+    """Return (effective_mid_vol_bps, intraday_vol_bps from 24h range)."""
+    intraday = _intraday_vol_from_range(range_vol_24h_bps, sample_window_sec)
+    if sampled_mid_vol <= 0:
+        return intraday, intraday
+    if intraday <= 0:
+        return sampled_mid_vol, 0.0
+    return max(sampled_mid_vol, intraday * 0.9), intraday
+
+
+def derive_stability_thresholds(
+    settings: Settings,
+    *,
+    spread_cvs: list[float],
+    mid_vols: list[float],
+    range_vols_24h: list[float],
+    intraday_vols: list[float],
+) -> StabilityThresholds:
+    """Derive max spread CV and mid-vol caps from the candidate cross-section."""
+    pct = float(settings.mm_auto_stability_percentile)
+    cv_floor = float(settings.mm_auto_spread_cv_floor)
+    cv_cap = float(settings.mm_auto_spread_cv_cap)
+    mid_floor = float(settings.mm_auto_mid_vol_floor_bps)
+    mid_cap = float(settings.mm_auto_mid_vol_cap_bps)
+    regime_mult = float(settings.mm_auto_vol_regime_mult)
+    explicit_cv = float(settings.mm_auto_max_spread_cv)
+    explicit_mid = float(settings.mm_auto_max_mid_vol_bps)
+
+    clean_cvs = [c for c in spread_cvs if 0 < c < 5.0]
+    clean_mids = [m for m in mid_vols if 0 <= m < 200.0]
+    clean_ranges = [r for r in range_vols_24h if 0 < r < 800.0]
+    clean_intraday = [v for v in intraday_vols if 0 < v < 200.0]
+    vol_pool = clean_mids + clean_intraday
+
+    cv_median = float(np.median(clean_cvs)) if clean_cvs else 0.0
+    mid_median = float(np.median(vol_pool)) if vol_pool else 0.0
+    range_median = float(np.median(clean_ranges)) if clean_ranges else 0.0
+
+    if explicit_cv > 0:
+        max_cv = explicit_cv
+        source = "override"
+    elif len(clean_cvs) >= 5:
+        max_cv = float(np.percentile(clean_cvs, pct))
+        source = "percentile"
+    elif clean_cvs:
+        max_cv = cv_median * 1.35
+        source = "percentile"
+    else:
+        max_cv = 0.45
+        source = "fallback"
+
+    if explicit_mid > 0:
+        max_mid = explicit_mid
+        if source == "percentile":
+            source = "override"
+    elif len(vol_pool) >= 5:
+        max_mid = float(np.percentile(vol_pool, pct))
+        source = "percentile"
+    elif vol_pool:
+        max_mid = mid_median * 1.35
+        source = "percentile"
+    else:
+        max_mid = 12.0
+        source = "fallback"
+
+    if clean_ranges and explicit_mid <= 0:
+        regime = float(np.median(sorted(clean_ranges)[: min(5, len(clean_ranges))]))
+        window = _sample_window_sec(settings)
+        regime_short = _intraday_vol_from_range(regime, window)
+        max_mid = max(max_mid, regime_short * regime_mult)
+
+    max_cv = _clamp(max_cv, cv_floor, cv_cap)
+    max_mid = _clamp(max_mid, mid_floor, mid_cap)
+
+    return StabilityThresholds(
+        max_spread_cv=max_cv,
+        max_mid_vol_bps=max_mid,
+        stability_percentile=pct,
+        spread_cv_median=cv_median,
+        mid_vol_median=mid_median,
+        range_vol_24h_median=range_median,
+        source=source,
+    )
 
 
 def _min_edge_bps(settings: Settings) -> float:
@@ -187,7 +349,15 @@ async def scan_mm_universe(
     try:
         info = await client.exchange_info()
         universe = discover_usdt_perps(info)
-        stats = await client.fetch_24h_stats(universe)
+        wanted = set(universe)
+        ticker_by_sym: dict[str, TickerVolStats] = {}
+        for row in await client.ticker_24hr():
+            sym = str(row.get("symbol", "")).upper()
+            if sym not in wanted:
+                continue
+            parsed = _parse_ticker_vol_row(row)
+            if parsed is not None:
+                ticker_by_sym[sym] = parsed
 
         min_px = float(settings.mm_auto_min_mid_price)
         min_vol = float(settings.mm_auto_min_quote_volume)
@@ -195,13 +365,12 @@ async def scan_mm_universe(
 
         candidates: list[tuple[str, float, float]] = []
         for sym in universe:
-            row = stats.get(sym)
-            if row is None:
+            tv = ticker_by_sym.get(sym)
+            if tv is None:
                 continue
-            qv, px = row
-            if px < min_px or qv < min_vol:
+            if tv.last_price < min_px or tv.quote_volume < min_vol:
                 continue
-            candidates.append((sym, qv, px))
+            candidates.append((sym, tv.quote_volume, tv.last_price))
         candidates.sort(key=lambda x: x[1], reverse=True)
         if prefilter > 0:
             candidates = candidates[:prefilter]
@@ -226,11 +395,57 @@ async def scan_mm_universe(
                 if sp is not None:
                     sample_stats[sym] = (sp, 0.0, 0.0)
 
-        min_edge = _min_edge_bps(settings)
-        rankings: list[MmSymbolScore] = []
+        sample_window = _sample_window_sec(settings)
+        spread_cvs: list[float] = []
+        mid_vols: list[float] = []
+        range_vols: list[float] = []
+        intraday_vols: list[float] = []
+        scored_rows: list[tuple[str, float, float, float, float, float, float, float, float]] = []
+
         for sym, qv, px in candidates:
             sampled = sample_stats.get(sym)
+            tv = ticker_by_sym.get(sym)
+            range_24h = tv.range_vol_24h_bps if tv else 0.0
             if sampled is None:
+                continue
+            median_sp, spread_cv, sampled_mid = sampled
+            effective_mid, intraday = _effective_mid_vol_bps(
+                sampled_mid,
+                range_24h,
+                sample_window_sec=sample_window,
+            )
+            spread_cvs.append(spread_cv)
+            mid_vols.append(effective_mid)
+            range_vols.append(range_24h)
+            intraday_vols.append(intraday)
+            scored_rows.append(
+                (sym, qv, px, median_sp, spread_cv, effective_mid, range_24h, intraday, median_sp),
+            )
+
+        thresholds = derive_stability_thresholds(
+            settings,
+            spread_cvs=spread_cvs,
+            mid_vols=mid_vols,
+            range_vols_24h=range_vols,
+            intraday_vols=intraday_vols,
+        )
+        logger.info(
+            "mm stability thresholds (source=%s, p%.0f): max_spread_cv=%.3f max_mid_vol_bps=%.2f "
+            "(medians cv=%.3f mid=%.2f range24h=%.1f)",
+            thresholds.source,
+            thresholds.stability_percentile,
+            thresholds.max_spread_cv,
+            thresholds.max_mid_vol_bps,
+            thresholds.spread_cv_median,
+            thresholds.mid_vol_median,
+            thresholds.range_vol_24h_median,
+        )
+
+        min_edge = _min_edge_bps(settings)
+        rankings: list[MmSymbolScore] = []
+        scored_set = {r[0] for r in scored_rows}
+        for sym, qv, px in candidates:
+            if sym not in scored_set:
                 rankings.append(
                     MmSymbolScore(
                         symbol=sym,
@@ -246,18 +461,18 @@ async def scan_mm_universe(
                     ),
                 )
                 continue
-            median_sp, spread_cv, mid_vol = sampled
+        for sym, qv, px, median_sp, spread_cv, effective_mid, range_24h, intraday, _ in scored_rows:
             edge = median_sp - min_edge
             score, eligible, reason = score_mm_candidate(
                 quote_volume=qv,
                 median_spread_bps=median_sp,
                 spread_cv=spread_cv,
-                mid_vol_bps=mid_vol,
+                mid_vol_bps=effective_mid,
                 min_volume=min_vol,
                 min_spread_bps=float(settings.mm_auto_min_spread_bps),
                 max_spread_bps=float(settings.mm_auto_max_spread_bps),
-                max_spread_cv=float(settings.mm_auto_max_spread_cv),
-                max_mid_vol_bps=float(settings.mm_auto_max_mid_vol_bps),
+                max_spread_cv=thresholds.max_spread_cv,
+                max_mid_vol_bps=thresholds.max_mid_vol_bps,
                 min_edge_bps=min_edge,
             )
             rankings.append(
@@ -267,11 +482,13 @@ async def scan_mm_universe(
                     last_price=px,
                     median_spread_bps=median_sp,
                     spread_cv=spread_cv,
-                    mid_vol_bps=mid_vol,
+                    mid_vol_bps=effective_mid,
                     edge_bps=edge,
                     score=score,
                     eligible=eligible,
                     reject_reason=reason,
+                    range_vol_24h_bps=range_24h,
+                    intraday_vol_bps=intraday,
                 ),
             )
 
@@ -293,6 +510,7 @@ async def scan_mm_universe(
             rankings=rankings,
             candidates_scanned=len(candidates),
             sample_rounds=int(settings.mm_auto_sample_rounds) if sample else 0,
+            thresholds=thresholds,
         )
     finally:
         if own_rest:
@@ -305,13 +523,15 @@ def write_mm_universe_report(
 ) -> Path:
     dest = path or DEFAULT_REPORT_PATH
     dest.parent.mkdir(parents=True, exist_ok=True)
-    body = {
+    body: dict[str, Any] = {
         "generated_at": report.generated_at,
         "recommended": report.recommended,
         "candidates_scanned": report.candidates_scanned,
         "sample_rounds": report.sample_rounds,
         "rankings": [asdict(r) for r in report.rankings],
     }
+    if report.thresholds is not None:
+        body["thresholds"] = asdict(report.thresholds)
     dest.write_text(json.dumps(body, indent=2), encoding="utf-8")
     logger.info(
         "mm universe scan: %d candidates, %d eligible, recommended=%s -> %s",
@@ -330,12 +550,15 @@ def load_mm_universe_report(path: Path | None = None) -> MmUniverseReport | None
     try:
         data = json.loads(dest.read_text(encoding="utf-8"))
         rankings = [MmSymbolScore(**row) for row in data.get("rankings", [])]
+        th_raw = data.get("thresholds")
+        thresholds = StabilityThresholds(**th_raw) if isinstance(th_raw, dict) else None
         return MmUniverseReport(
             generated_at=str(data.get("generated_at", "")),
             recommended=[str(s).upper() for s in data.get("recommended", [])],
             rankings=rankings,
             candidates_scanned=int(data.get("candidates_scanned", 0)),
             sample_rounds=int(data.get("sample_rounds", 0)),
+            thresholds=thresholds,
         )
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         logger.exception("failed to load mm universe report %s", dest)

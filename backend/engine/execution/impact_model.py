@@ -25,7 +25,7 @@ class ImpactConfig:
     top_n: int = 10        # depth levels considered consumable
 
     @classmethod
-    def from_settings(cls, settings) -> "ImpactConfig":
+    def from_settings(cls, settings) -> ImpactConfig:
         """The production engine does not apply this model; tests may opt in explicitly."""
         _ = settings
         return cls(enabled=False)

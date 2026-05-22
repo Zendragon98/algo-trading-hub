@@ -11,10 +11,11 @@ import json
 import logging
 import os
 import time
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import Literal
 
 import pandas as pd
 

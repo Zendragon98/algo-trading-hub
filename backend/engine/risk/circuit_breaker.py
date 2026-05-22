@@ -22,9 +22,9 @@ from __future__ import annotations
 
 import logging
 import time as _time
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable
 
 from common.enums import EventType
 from common.events import Event, EventBus

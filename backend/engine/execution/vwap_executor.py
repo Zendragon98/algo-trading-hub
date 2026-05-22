@@ -15,14 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Awaitable, Callable
 
 from common.config import Settings
 from common.enums import AlgoMode, OrderType, Side, Urgency
-from engine.orders.order_state_machine import TERMINAL_ORDER_STATUSES
 from common.types import ChildOrder, ParentOrder
-
+from engine.orders.order_state_machine import TERMINAL_ORDER_STATUSES
 from gateways.gateway_interface import GatewayInterface, SymbolFilters
 
 from ..market_data.feature_store import FeatureStore

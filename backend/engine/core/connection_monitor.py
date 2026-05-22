@@ -58,7 +58,7 @@ class ConnectionMonitor:
         cls,
         settings: Settings,
         breaker: CircuitBreaker,
-    ) -> "ConnectionMonitor":
+    ) -> ConnectionMonitor:
         return cls(
             breaker=breaker,
             ws_stale_pause_sec=settings.ws_stale_pause_sec,

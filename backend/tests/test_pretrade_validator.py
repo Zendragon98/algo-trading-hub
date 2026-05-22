@@ -4,25 +4,26 @@ from __future__ import annotations
 
 import os
 
-import pytest
-
 os.environ.setdefault("BINANCE_API_KEY", "test")
 os.environ.setdefault("BINANCE_API_SECRET", "test")
 
 from common.config import Settings  # noqa: E402
 from common.enums import Side  # noqa: E402
 from common.events import EventBus  # noqa: E402
-from common.types import Signal  # noqa: E402
+from common.types import (  # noqa: E402
+    Kline,
+    Position,
+    Signal,  # noqa: E402
+)
 from engine.portfolio.portfolio import Portfolio  # noqa: E402
 from engine.position.position_tracker import PositionTracker  # noqa: E402
 from engine.risk.circuit_breaker import CircuitBreaker  # noqa: E402
+from engine.risk.limits import Limits  # noqa: E402
 from engine.risk.pnl_tracker import PnLTracker  # noqa: E402
 from engine.risk.pretrade_validator import PreTradeValidator  # noqa: E402
 from engine.risk.risk_manager import RiskManager  # noqa: E402
 from engine.risk.stop_loss import StopLossMonitor  # noqa: E402
-from engine.risk.limits import Limits  # noqa: E402
 from gateways.gateway_interface import GatewayInterface, SymbolFilters  # noqa: E402
-from common.types import Kline, Position  # noqa: E402
 
 
 class _Gw(GatewayInterface):

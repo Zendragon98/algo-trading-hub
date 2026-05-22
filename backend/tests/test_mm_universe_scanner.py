@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -10,6 +9,7 @@ import pytest
 from analytics.mm_universe_scanner import (
     MmSymbolScore,
     MmUniverseReport,
+    derive_stability_thresholds,
     load_mm_universe_report,
     report_is_fresh,
     score_mm_candidate,
@@ -126,3 +126,43 @@ def test_min_edge_from_settings() -> None:
 
     s = Settings(mm_auto_min_edge_bps=0.0, mm2_maker_fee_bps=2.0, mm2_spread_buffer_bps=2.0)
     assert _min_edge_bps(s) == pytest.approx(6.0)
+
+
+def test_derive_thresholds_from_percentile() -> None:
+    s = Settings(
+        mm_auto_max_spread_cv=0.0,
+        mm_auto_max_mid_vol_bps=0.0,
+        mm_auto_stability_percentile=75.0,
+    )
+    th = derive_stability_thresholds(
+        s,
+        spread_cvs=[0.1, 0.12, 0.15, 0.18, 0.2, 0.25, 0.3, 0.4],
+        mid_vols=[2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0],
+        range_vols_24h=[80.0, 90.0, 100.0, 110.0, 120.0, 130.0, 140.0, 150.0],
+        intraday_vols=[1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0],
+    )
+    assert th.source == "percentile"
+    assert th.max_spread_cv == pytest.approx(0.2625, rel=0.02)
+    assert th.max_mid_vol_bps >= 5.0
+
+
+def test_derive_thresholds_explicit_override() -> None:
+    s = Settings(mm_auto_max_spread_cv=0.5, mm_auto_max_mid_vol_bps=20.0)
+    th = derive_stability_thresholds(
+        s,
+        spread_cvs=[0.1, 0.2],
+        mid_vols=[3.0, 4.0],
+        range_vols_24h=[100.0, 110.0],
+        intraday_vols=[1.0, 2.0],
+    )
+    assert th.source == "override"
+    assert th.max_spread_cv == 0.5
+    assert th.max_mid_vol_bps == 20.0
+
+
+def test_effective_mid_vol_uses_24h_range() -> None:
+    from analytics.mm_universe_scanner import _effective_mid_vol_bps
+
+    eff, intra = _effective_mid_vol_bps(1.0, 200.0, sample_window_sec=20.0)
+    assert intra > 1.0
+    assert eff >= intra * 0.9

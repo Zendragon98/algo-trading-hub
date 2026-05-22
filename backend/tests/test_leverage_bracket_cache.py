@@ -5,9 +5,9 @@ import time
 from types import SimpleNamespace
 
 from gateways.binance.leverage_bracket_cache import (
+    leverage_bracket_cache_path,
     load_leverage_bracket_cache,
     save_leverage_bracket_cache,
-    leverage_bracket_cache_path,
 )
 
 

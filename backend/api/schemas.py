@@ -389,12 +389,23 @@ class MmUniverseRankingDTO(BaseModel):
     reject_reason: str | None = None
 
 
+class MmUniverseThresholdsDTO(BaseModel):
+    max_spread_cv: float
+    max_mid_vol_bps: float
+    stability_percentile: float
+    spread_cv_median: float = 0.0
+    mid_vol_median: float = 0.0
+    range_vol_24h_median: float = 0.0
+    source: str = "percentile"
+
+
 class MmUniverseScanReportDTO(BaseModel):
     generated_at: str
     recommended: list[str]
     candidates_scanned: int = 0
     sample_rounds: int = 0
     rankings: list[MmUniverseRankingDTO] = Field(default_factory=list)
+    thresholds: MmUniverseThresholdsDTO | None = None
 
 
 class MmUniverseScanRequestDTO(BaseModel):

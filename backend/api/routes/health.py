@@ -10,9 +10,9 @@ from fastapi import APIRouter, Depends
 logger = logging.getLogger(__name__)
 
 from common.enums import EngineStatus
+from engine.core.engine import Engine
 
 from ..dependencies import get_engine
-from engine.core.engine import Engine
 
 router = APIRouter(tags=["health"])
 

@@ -5,9 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
-
-from common.events import EventBus  # noqa: E402
 from engine.persistence.run_bootstrap import resolve_run_dir  # noqa: E402
 
 

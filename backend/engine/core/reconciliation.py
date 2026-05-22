@@ -83,7 +83,7 @@ class Reconciler:
         breaker: CircuitBreaker,
         skip_rest_poll: Callable[[], bool] | None = None,
         on_authoritative_snap: Callable[[], None] | None = None,
-    ) -> "Reconciler":
+    ) -> Reconciler:
         inst = cls(
             gateway=gateway,
             positions=positions,

@@ -10,7 +10,6 @@ from common.config import Settings
 from common.enums import Side
 from common.logging import group_signal_log, signal_log_emit
 from common.types import Signal
-
 from gateways.gateway_interface import GatewayInterface
 
 from ..portfolio.portfolio import Portfolio

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from engine.risk.circuit_breaker import (
     Breach,
     BreakerScope,

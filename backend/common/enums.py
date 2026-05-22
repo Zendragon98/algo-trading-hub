@@ -20,7 +20,7 @@ class Side(str, Enum):
     SELL = "sell"
 
     @property
-    def opposite(self) -> "Side":
+    def opposite(self) -> Side:
         return Side.SELL if self is Side.BUY else Side.BUY
 
     @property

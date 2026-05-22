@@ -21,8 +21,8 @@ observe a single source of truth for safety state.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from common.config import Settings
 from common.types import Fill, Position, Signal, Tick
@@ -103,7 +103,7 @@ class RiskManager:
         symbol: str,
         tick_ts: float | None,
         spread_bps: float | None,
-    ) -> "Breach | None":
+    ) -> Breach | None:
         """Public wrapper around the market-data guard.
 
         Used by the engine's group-dispatch path so a stale leg can short

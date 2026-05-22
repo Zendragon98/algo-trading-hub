@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 
@@ -26,7 +26,7 @@ _BUFFER_TASK: asyncio.Task | None = None
 
 
 def _fmt(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M:%S")
+    return datetime.fromtimestamp(ts, tz=UTC).strftime("%H:%M:%S")
 
 
 async def _populate_from_bus(bus: EventBus) -> None:

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from gateways.binance.market_connection import (
-    _MAX_STREAMS_PER_CONNECTION,
     _MAX_STREAM_URL_CHARS,
+    _MAX_STREAMS_PER_CONNECTION,
     _joined_stream_url_len,
     _shard_symbols_for_streams,
     _stream_parts_for_symbols,

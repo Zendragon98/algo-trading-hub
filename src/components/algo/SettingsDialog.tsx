@@ -314,26 +314,6 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
       );
     }
 
-    if (key === "mm_signal_mode") {
-      const v = String(val ?? "").toLowerCase();
-      const known = v === "fade" || v === "follow";
-      const mmModeOptions: { value: string; label: string }[] = [];
-      if (!known && v) mmModeOptions.push({ value: v, label: `${v} (current)` });
-      mmModeOptions.push(
-        { value: "fade", label: "fade (buy weakness)" },
-        { value: "follow", label: "follow (buy strength)" },
-      );
-      const mmValue = v || "fade";
-      return (
-        <div key={key} className="space-y-1.5">
-          <Label htmlFor={key} className="text-[11px] uppercase tracking-wider text-muted-foreground">
-            {label}
-          </Label>
-          <SettingsSelect id={key} value={mmValue} onChange={(next) => updateField(key, next)} options={mmModeOptions} />
-        </div>
-      );
-    }
-
     if (key === "mm_symbol_half_spread_bps" || key === "mm_symbol_quote_overrides") {
       const text =
         typeof val === "object" && val !== null

@@ -67,7 +67,6 @@ class DataQualityMonitor:
             - Later events need ``pu ==`` the previous event's ``u`` when ``pu``
               is present; otherwise ``U <= prev_u + 1``.
         """
-        sym = diff.symbol
         if not book_ready:
             return DiffAction.RESNAPSHOT, 0
 

@@ -79,7 +79,7 @@ class MarketDataGuard:
         self._spread_ceiling = max(0.0, settings.spread_wide_ceiling_bps)
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "MarketDataGuard":
+    def from_settings(cls, settings: Settings) -> MarketDataGuard:
         return cls(
             max_tick_age_sec=settings.max_tick_age_sec,
             max_entry_spread_bps=settings.max_entry_spread_bps,

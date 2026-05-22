@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .symbol_calibration import SymbolCalibration, load_symbol_calibration
+from .symbol_calibration import load_symbol_calibration
 
 
 @dataclass(frozen=True, slots=True)

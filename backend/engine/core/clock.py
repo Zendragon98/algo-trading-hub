@@ -52,5 +52,5 @@ class Clock:
                 logger.exception("clock tick raised")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self._interval)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue

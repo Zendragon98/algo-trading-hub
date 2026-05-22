@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from time import time
-from typing import Mapping
 
 from common.enums import EventType
 from common.events import Event, EventBus

@@ -33,7 +33,7 @@ class WheelConfig:
     hit_ratio_threshold: float = 0.60
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "WheelConfig":
+    def from_settings(cls, settings: Settings) -> WheelConfig:
         return cls(
             imbalance_threshold=float(settings.imbalance_threshold),
             hit_ratio_threshold=float(settings.hit_ratio_threshold),

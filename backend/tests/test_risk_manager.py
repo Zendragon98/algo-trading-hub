@@ -20,10 +20,10 @@ from common.events import EventBus  # noqa: E402
 from common.types import Position, Signal, Tick  # noqa: E402
 from engine.portfolio.portfolio import Portfolio  # noqa: E402
 from engine.position.position_tracker import PositionTracker  # noqa: E402
+from engine.risk.limits import Limits  # noqa: E402
 from engine.risk.pnl_tracker import PnLTracker  # noqa: E402
 from engine.risk.risk_manager import RiskManager  # noqa: E402
 from engine.risk.stop_loss import StopLossMonitor  # noqa: E402
-from engine.risk.limits import Limits  # noqa: E402
 
 
 def _build(settings: Settings) -> tuple[RiskManager, Portfolio]:
@@ -146,7 +146,9 @@ def test_rejects_when_kill_switch() -> None:
     confirm the next pre-trade gate vetoes.
     """
     from engine.risk.circuit_breaker import (  # noqa: WPS433  -- test-local import
-        Breach, BreakerScope, BreakerSeverity,
+        Breach,
+        BreakerScope,
+        BreakerSeverity,
     )
     settings = _settings()
     rm, _ = _build(settings)

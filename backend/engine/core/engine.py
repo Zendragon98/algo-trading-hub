@@ -348,6 +348,11 @@ class Engine:
         # cadences (30 s vs 30 min).
         self._balance_resync_task: asyncio.Task[None] | None = None
         self._volume_refresh_task: asyncio.Task[None] | None = None
+        self._mm_universe_refresh_task: asyncio.Task[None] | None = None
+        self._mm_universe_last_refresh_ts: float = 0.0
+        self._mm_universe_last_adverse_refresh_ts: float = 0.0
+        self._mm_universe_last_adverse_check_ts: float = 0.0
+        self._mm_universe_spread_baselines: dict[str, float] = {}
         # Latest 24h notional volume per symbol; refreshed periodically and
         # consumed by strategies via Engine.volume_weights.
         self._volume_weights: dict[str, float] = {}
@@ -857,6 +862,15 @@ class Engine:
         self._volume_refresh_task = asyncio.create_task(
             self._volume_refresh_loop(), name="engine-volume-refresh",
         )
+        if self._mm_universe_refresh_enabled():
+            self._mm_universe_spread_baselines = self._load_mm_universe_spread_baselines()
+            self._mm_universe_last_refresh_ts = time.time()
+            refresh_sec = float(self._settings.mm_universe_refresh_sec)
+            if refresh_sec > 0:
+                self._mm_universe_refresh_task = asyncio.create_task(
+                    self._mm_universe_refresh_loop(),
+                    name="engine-mm-universe-refresh",
+                )
         # Start the periodic venue reconciliation loop so OMS/Portfolio
         # drift from a missed user-data event is caught within one cycle.
         self._reconciler.start()
@@ -1098,7 +1112,11 @@ class Engine:
         stopped before reaching RUNNING); each ``None`` slot is just
         skipped.
         """
-        for slot_name in ("_balance_resync_task", "_volume_refresh_task"):
+        for slot_name in (
+            "_balance_resync_task",
+            "_volume_refresh_task",
+            "_mm_universe_refresh_task",
+        ):
             task: asyncio.Task[None] | None = getattr(self, slot_name)
             if task is None:
                 continue
@@ -1146,6 +1164,163 @@ class Engine:
                 backoff = getattr(exc, "retry_after_sec", None)
                 if backoff is not None:
                     await asyncio.sleep(min(float(backoff) + 1.0, 86_400.0))
+
+    def _mm_universe_refresh_enabled(self) -> bool:
+        return bool(
+            self._settings.mm_universe_auto or self._settings.mm2_universe_auto,
+        )
+
+    def _active_mm_symbols(self) -> list[str]:
+        syms: set[str] = set()
+        if self.is_multi_strategy_mode():
+            targets = self._strategies
+        else:
+            active = self._strategies_by_name.get(self._active_strategy_name)
+            targets = [active] if active is not None else []
+        for strat in targets:
+            if strat is None or not mm_core.is_mm_strategy(strat.name):
+                continue
+            syms.update(strat.symbols())
+        return sorted(syms)
+
+    def _load_mm_universe_spread_baselines(self) -> dict[str, float]:
+        try:
+            from analytics.mm_universe_refresher import load_spread_baselines
+
+            return load_spread_baselines()
+        except Exception:  # noqa: BLE001
+            logger.debug("mm universe spread baselines unavailable", exc_info=True)
+            return {}
+
+    async def _mm_universe_refresh_loop(self) -> None:
+        """Periodic full MM universe rescan when ``MM_SYMBOLS`` was AUTO at boot."""
+        while True:
+            try:
+                interval = max(60.0, float(self._settings.mm_universe_refresh_sec))
+                await asyncio.sleep(interval)
+                await self._refresh_mm_universe(reason="periodic")
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("mm universe periodic refresh failed")
+
+    async def _maybe_refresh_mm_universe_adverse(self) -> None:
+        if not self._mm_universe_refresh_enabled():
+            return
+        now = time.time()
+        check_sec = max(5.0, float(self._settings.mm_universe_adverse_check_sec))
+        if now - self._mm_universe_last_adverse_check_ts < check_sec:
+            return
+        self._mm_universe_last_adverse_check_ts = now
+
+        from analytics.mm_universe_refresher import (
+            SymbolMicroSnapshot,
+            evaluate_adverse_universe,
+            should_run_adverse_refresh,
+        )
+
+        if not should_run_adverse_refresh(
+            last_adverse_refresh_ts=self._mm_universe_last_adverse_refresh_ts,
+            cooldown_sec=float(self._settings.mm_universe_adverse_refresh_cooldown_sec),
+            now=now,
+        ):
+            return
+
+        mm_syms = self._active_mm_symbols()
+        if not mm_syms:
+            return
+
+        snaps: dict[str, SymbolMicroSnapshot] = {}
+        for sym in mm_syms:
+            own = self._sync_own_book(sym)
+            pos = self._positions.get(sym)
+            pos_qty = pos.qty if pos is not None else 0.0
+            feat = self._features.snapshot(sym, own=own, position_qty=pos_qty)
+            snaps[sym] = SymbolMicroSnapshot(
+                markout_adverse_ewma_bps=feat.markout_adverse_ewma_bps,
+                is_toxic=feat.is_toxic,
+                jump_active=feat.jump_active,
+                spread_bps=feat.spread_bps,
+                vol_ewma_bps=feat.vol_ewma_bps,
+                mid_return_1s_bps=feat.mid_return_1s_bps,
+            )
+
+        signal = evaluate_adverse_universe(
+            mm_syms,
+            snaps,
+            settings=self._settings,
+            spread_baselines=self._mm_universe_spread_baselines,
+        )
+        if signal is None:
+            return
+        logger.warning(
+            "mm universe adverse signal: %s — %s (%s)",
+            signal.reason,
+            signal.detail,
+            ", ".join(signal.symbols[:8]),
+        )
+        await self._refresh_mm_universe(reason=signal.reason)
+
+    async def _refresh_mm_universe(self, *, reason: str) -> bool:
+        if not self._mm_universe_refresh_enabled():
+            return False
+        if self._state.status is not EngineStatus.RUNNING:
+            return False
+
+        from analytics.mm_universe_scanner import resolve_mm_universe
+        from gateways.binance.rest_client import BinanceRestClient
+
+        rest = getattr(self._gateway, "_rest", None)
+        own_rest = rest is None
+        if own_rest:
+            rest = BinanceRestClient(
+                base_url=self._settings.binance_rest_base,
+                api_key=self._settings.binance_api_key,
+                api_secret=self._settings.binance_api_secret,
+            )
+        try:
+            symbols = await resolve_mm_universe(
+                self._settings,
+                rest=rest,
+                force_rescan=True,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("mm universe refresh failed (%s)", reason)
+            return False
+        finally:
+            if own_rest and rest is not None:
+                await rest.close()
+
+        if not symbols:
+            return False
+
+        patch: dict[str, Any] = {}
+        if self._settings.mm_universe_auto:
+            patch["mm_symbols"] = symbols
+        if self._settings.mm2_universe_auto:
+            patch["mm2_symbols"] = symbols
+        if not patch:
+            return False
+
+        prev = set(self._active_mm_symbols())
+        self.apply_settings_patch(patch)
+        self._mm_universe_spread_baselines = self._load_mm_universe_spread_baselines()
+        now = time.time()
+        self._mm_universe_last_refresh_ts = now
+        if reason != "periodic":
+            self._mm_universe_last_adverse_refresh_ts = now
+
+        changed = await self.refresh_market_universe()
+        new_set = set(symbols)
+        logger.info(
+            "mm universe refresh (%s): %d symbols %s -> %s market_ws_changed=%s",
+            reason,
+            len(symbols),
+            sorted(prev)[:8],
+            symbols[:12],
+            changed,
+        )
+        return changed or prev != new_set
 
     async def _volume_refresh_loop(self) -> None:
         """Periodically top up volume weights when WS cache is incomplete.
@@ -1989,6 +2164,8 @@ class Engine:
         await self._publish_ops_status()
         if self._state.status is not EngineStatus.RUNNING:
             return
+
+        await self._maybe_refresh_mm_universe_adverse()
 
         # Risk-driven exits first; an exit can't be vetoed by risk again
         # because it's already a closing trade.

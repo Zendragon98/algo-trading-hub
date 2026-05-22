@@ -23,7 +23,6 @@ os.environ.setdefault("BINANCE_API_SECRET", "test")
 from collections.abc import Iterable  # noqa: E402
 
 from common.config import Settings  # noqa: E402
-from common.enums import Side  # noqa: E402
 from common.events import EventBus  # noqa: E402
 from common.types import ChildOrder, Kline, Position, Signal  # noqa: E402
 from engine.core.engine import Engine  # noqa: E402
@@ -210,7 +209,7 @@ def test_multi_symbol_sma_keeps_per_symbol_state() -> None:
     btc_path = [100.0, 100.0, 99.0, 99.0, 110.0, 111.0]
     eth_path = [50.0, 50.0, 49.0, 49.0, 55.0, 56.0]
     seen: set[str] = set()
-    for b, e in zip(btc_path, eth_path):
+    for b, e in zip(btc_path, eth_path, strict=False):
         sigs = list(strat.on_tick({"BTCUSDT": _feat("BTCUSDT", b), "ETHUSDT": _feat("ETHUSDT", e)}))
         for s in sigs:
             seen.add(s.symbol)

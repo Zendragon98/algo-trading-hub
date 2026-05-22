@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+from api.serializers import child_order_to_dto
 from common.enums import OrderStatus, OrderType, Side
 from common.types import ChildOrder
-
-from api.serializers import child_order_to_dto
 
 
 def test_child_order_to_dto_normalizes_order_type_for_api() -> None:

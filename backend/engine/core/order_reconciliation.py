@@ -11,7 +11,6 @@ from common.config import Settings
 from common.enums import EventType, OrderStatus
 from common.events import Event, EventBus
 from common.types import ChildOrder
-
 from gateways.gateway_interface import GatewayInterface
 
 from ..orders.order_manager import OrderManager
@@ -82,7 +81,7 @@ class OrderReconciler:
         gateway: GatewayInterface,
         oms: OrderManager,
         breaker: CircuitBreaker,
-    ) -> "OrderReconciler":
+    ) -> OrderReconciler:
         inst = cls(
             gateway=gateway,
             oms=oms,

@@ -29,7 +29,7 @@ class ExposureTracker:
         self._free_margin_pct = max(0.0, min(min_free_margin_pct, 1.0))
 
     @classmethod
-    def from_settings(cls, settings: Settings, portfolio: Portfolio) -> "ExposureTracker":
+    def from_settings(cls, settings: Settings, portfolio: Portfolio) -> ExposureTracker:
         return cls(
             portfolio=portfolio,
             max_symbol_notional_pct=settings.max_symbol_notional_pct,

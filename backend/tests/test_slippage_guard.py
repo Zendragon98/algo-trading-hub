@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
-from common.enums import EventType, Side
+from common.enums import Side
 from common.events import EventBus
 from common.types import ParentOrder
 from engine.execution.execution_metrics import ExecutionTracker

@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import time as _time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from common.config import Settings
 
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 def _utc_day_start(now: float) -> float:
-    dt = datetime.fromtimestamp(now, tz=timezone.utc).replace(
+    dt = datetime.fromtimestamp(now, tz=UTC).replace(
         hour=0, minute=0, second=0, microsecond=0,
     )
     return dt.timestamp()
@@ -86,7 +86,7 @@ class LossTracker:
         portfolio: Portfolio,
         performance: PerformanceTracker,
         breaker: CircuitBreaker,
-    ) -> "LossTracker":
+    ) -> LossTracker:
         return cls(
             portfolio=portfolio,
             performance=performance,
