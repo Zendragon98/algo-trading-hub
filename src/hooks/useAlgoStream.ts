@@ -23,6 +23,14 @@ import {
   type StatusEventData,
   type WsEvent,
 } from "@/lib/api";
+import {
+  accumulateParentClose,
+  appendRealizedClose,
+  bumpKpiOnRealizedClose,
+  finalizeParentCloseTrade,
+  rollingKpiFromRealized,
+  type PendingParentClose,
+} from "@/lib/parentCloseKpi";
 import type {
   AlgoStatus,
   BreakerList,
@@ -238,7 +246,12 @@ function applyBackendOffline(prev: AlgoStream, message?: string): AlgoStream {
   };
 }
 
-function applyTradingState(prev: AlgoStream, state: StateDTO): AlgoStream {
+function applyTradingState(
+  prev: AlgoStream,
+  state: StateDTO,
+  parentClosePending: Map<string, PendingParentClose>,
+): AlgoStream {
+  parentClosePending.clear();
   return {
     ...prev,
     backendReachable: true,
@@ -326,6 +339,7 @@ export function useAlgoStream(): AlgoStream {
   const startedAtRef = useRef<number | null>(null);
   const syncTradingStateRef = useRef<(() => Promise<void>) | null>(null);
   const wsResyncTimerRef = useRef<number | null>(null);
+  const parentClosePendingRef = useRef(new Map<string, PendingParentClose>());
 
   const markBackendOffline = useCallback((message?: string) => {
     setStream((prev) => applyBackendOffline(prev, message));
@@ -334,7 +348,7 @@ export function useAlgoStream(): AlgoStream {
   const syncTradingState = useCallback(async () => {
     const state = await api.state();
     startedAtRef.current = Date.now() / 1000 - state.status.uptime_sec;
-    setStream((prev) => applyTradingState(prev, state));
+    setStream((prev) => applyTradingState(prev, state, parentClosePendingRef.current));
   }, []);
 
   syncTradingStateRef.current = syncTradingState;
@@ -350,7 +364,7 @@ export function useAlgoStream(): AlgoStream {
       const settings = settingsPayload.settings;
       startedAtRef.current = Date.now() / 1000 - state.status.uptime_sec;
       setStream((prev) => ({
-        ...applyTradingState(prev, state),
+        ...applyTradingState(prev, state, parentClosePendingRef.current),
         logs,
         maxRiskPct: numSetting(settings, "max_risk_pct", 0.35),
         maxGrossNotional: numSetting(settings, "max_gross_notional", 50_000),
@@ -482,7 +496,7 @@ export function useAlgoStream(): AlgoStream {
       if (event.type === "status" && event.data.uptime_sec !== undefined) {
         startedAtRef.current = Date.now() / 1000 - event.data.uptime_sec;
       }
-      setStream((prev) => applyEvent(prev, event));
+      setStream((prev) => applyEvent(prev, event, parentClosePendingRef.current));
     };
 
     return () => {
@@ -522,7 +536,11 @@ export function useAlgoStream(): AlgoStream {
   return { ...stream, refresh, markBackendOffline };
 }
 
-function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
+function applyEvent(
+  prev: AlgoStream,
+  event: WsEvent,
+  parentClosePending: Map<string, PendingParentClose>,
+): AlgoStream {
   switch (event.type) {
     case "status": {
       const data = event.data;
@@ -670,7 +688,20 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
     }
 
     case "fill": {
-      const d = event.data;
+      const d = event.data as {
+        id?: string;
+        trade_id?: string;
+        child_id?: string;
+        parent_id?: string | null;
+        symbol: string;
+        side: "buy" | "sell";
+        qty: number;
+        price: number;
+        action?: "open" | "close";
+        entry_price?: number | null;
+        exit_price?: number | null;
+        pnl?: number | null;
+      };
       const tradeId = String(d.id ?? d.trade_id ?? d.child_id ?? "");
       if (tradeId && prev.trades.some((t) => t.id === tradeId)) {
         return prev;
@@ -689,26 +720,23 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
       });
       const isRealizedClose = trade.action === "close" && trade.pnl != null;
       const nextTrades = [trade, ...prev.trades].slice(0, PERFORMANCE_TRADE_HISTORY_CAP);
-      const nextRealized = isRealizedClose
-        ? [trade, ...prev.realizedTrades].slice(0, PERFORMANCE_TRADE_HISTORY_CAP)
-        : prev.realizedTrades;
+      const parentId = d.parent_id ? String(d.parent_id) : null;
+
+      if (isRealizedClose && parentId) {
+        accumulateParentClose(parentClosePending, parentId, trade, trade.pnl ?? 0);
+        return { ...prev, trades: nextTrades };
+      }
+
+      let nextRealized = prev.realizedTrades;
       let nextKpi = prev.kpi;
       if (isRealizedClose) {
-        nextKpi = bumpKpiOnRealizedClose(prev.kpi, trade.pnl ?? 0);
-        // Keep rolling KPI fields aligned with the realized close ring.
-        const wins = nextRealized.filter((t) => (t.pnl ?? 0) > 0).length;
-        const grossWin = nextRealized.reduce((a, t) => a + ((t.pnl ?? 0) > 0 ? (t.pnl ?? 0) : 0), 0);
-        const grossLoss = nextRealized.reduce(
-          (a, t) => a + ((t.pnl ?? 0) < 0 ? -(t.pnl ?? 0) : 0),
-          0,
+        nextRealized = appendRealizedClose(
+          prev.realizedTrades,
+          trade,
+          PERFORMANCE_TRADE_HISTORY_CAP,
         );
-        nextKpi = {
-          ...nextKpi,
-          win_rate: nextRealized.length > 0 ? (wins / nextRealized.length) * 100 : 0,
-          gross_win_pnl: grossWin,
-          gross_loss_pnl: grossLoss,
-          profit_factor: grossLoss > 0 ? grossWin / grossLoss : null,
-        };
+        nextKpi = bumpKpiOnRealizedClose(prev.kpi, trade.pnl ?? 0);
+        nextKpi = rollingKpiFromRealized(nextRealized, nextKpi);
       }
       return {
         ...prev,
@@ -737,11 +765,29 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
       const incoming = toExecutionParent(event.data);
       const working = prev.workingParents.filter((p) => p.parentId !== incoming.parentId);
       const history = [incoming, ...prev.executionHistory].slice(0, 100);
+      const aggregated = finalizeParentCloseTrade(parentClosePending, incoming.parentId);
+      if (!aggregated || aggregated.pnl == null) {
+        return {
+          ...prev,
+          workingParents: working,
+          executionHistory: history,
+          executionAggregate: aggregate(history),
+        };
+      }
+      const nextRealized = appendRealizedClose(
+        prev.realizedTrades,
+        aggregated,
+        PERFORMANCE_TRADE_HISTORY_CAP,
+      );
+      let nextKpi = bumpKpiOnRealizedClose(prev.kpi, aggregated.pnl);
+      nextKpi = rollingKpiFromRealized(nextRealized, nextKpi);
       return {
         ...prev,
         workingParents: working,
         executionHistory: history,
         executionAggregate: aggregate(history),
+        realizedTrades: nextRealized,
+        kpi: nextKpi,
       };
     }
 
@@ -752,7 +798,7 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
         msg: event.data.msg ?? (event.data as { message?: string }).message ?? "",
         logger: event.data.logger,
       };
-      return { ...prev, logs: [log, ...prev.logs].slice(0, 200) };
+      return { ...prev, logs: [log, ...prev.logs] };
     }
 
     case "breaker": {
@@ -780,25 +826,6 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
     default:
       return prev;
   }
-}
-
-function bumpKpiOnRealizedClose(kpi: KpiDTO, pnl: number): KpiDTO {
-  const wins = kpi.session_close_wins + (pnl > 0 ? 1 : 0);
-  const losses = kpi.session_close_losses + (pnl < 0 ? 1 : 0);
-  const breakevens = kpi.session_close_breakevens + (pnl === 0 ? 1 : 0);
-  const closed = wins + losses + breakevens;
-  const grossWin = kpi.gross_win_pnl_session + (pnl > 0 ? pnl : 0);
-  const grossLoss = kpi.gross_loss_pnl_session + (pnl < 0 ? -pnl : 0);
-  return {
-    ...kpi,
-    session_close_wins: wins,
-    session_close_losses: losses,
-    session_close_breakevens: breakevens,
-    win_rate_session: closed > 0 ? (wins / closed) * 100 : 0,
-    gross_win_pnl_session: grossWin,
-    gross_loss_pnl_session: grossLoss,
-    profit_factor_session: grossLoss > 0 ? grossWin / grossLoss : null,
-  };
 }
 
 function aggregate(history: ExecutionParent[]): ExecutionAggregate {

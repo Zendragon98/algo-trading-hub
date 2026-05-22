@@ -176,7 +176,10 @@ class OrderManager:
                 )
             child.status = OrderStatus.REJECTED
             if self._submit_guard is not None:
-                self._submit_guard.record_status(child.symbol, OrderStatus.REJECTED)
+                if code == -2022 and child.reduce_only:
+                    self._submit_guard.clear_reject_streak(child.symbol)
+                else:
+                    self._submit_guard.record_status(child.symbol, OrderStatus.REJECTED)
             await self._publish_order(child)
             raise
 

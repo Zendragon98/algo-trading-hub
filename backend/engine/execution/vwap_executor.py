@@ -50,6 +50,7 @@ LimitCollarCheck = Callable[[str, float, float], tuple[bool, str]]
 # ExecutionTracker close out the report so the OMS panel doesn't pile
 # up parents that the venue refused on the first slice.
 ParentDoneCallback = Callable[[str], Awaitable[None]]
+VenueFlatCallback = Callable[[str], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -70,6 +71,7 @@ class VwapExecutor:
         settings: Settings,
         config: ExecutorConfig | None = None,
         on_parent_done: ParentDoneCallback | None = None,
+        on_venue_flat_after_reduce_only: VenueFlatCallback | None = None,
     ) -> None:
         self._om = order_manager
         self._gateway = gateway
@@ -82,6 +84,7 @@ class VwapExecutor:
         )
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._on_parent_done = on_parent_done
+        self._on_venue_flat = on_venue_flat_after_reduce_only
         self._limit_collar_check: LimitCollarCheck | None = None
 
     def set_limit_collar_check(self, fn: LimitCollarCheck | None) -> None:
@@ -286,29 +289,43 @@ class VwapExecutor:
                 except Exception:  # noqa: BLE001
                     logger.exception("on_parent_done failed for %s", parent.id)
 
-    async def _try_flatten_recovery_after_reduce_only_reject(
+    async def _notify_venue_flat(self, symbol: str, parent_id: str, *, context: str) -> None:
+        if self._on_venue_flat is not None:
+            try:
+                await self._on_venue_flat(symbol)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "on_venue_flat_after_reduce_only failed symbol=%s parent=%s",
+                    symbol,
+                    parent_id,
+                )
+        logger.info(
+            "reduceOnly recovered: venue flat (%s) symbol=%s parent=%s",
+            context,
+            symbol,
+            parent_id,
+        )
+
+    async def _try_reduce_only_recovery_after_reject(
         self,
         parent: ParentOrder,
         *,
         slice_index: int,
         ref_price: float | None,
     ) -> bool:
-        """Handle Binance -2022 on flatten VWAP slices.
+        """Handle Binance -2022 on reduce-only slices.
 
-        ``positionRisk`` can briefly disagree with the live book during
-        coordinated pair unwinds; refresh once and either accept flat or
-        send a single market reduce for the residual.
+        Refresh ``positionRisk`` once. If the venue is flat, end the parent
+        early and let the engine heal local state. Flatten parents may still
+        market-claw a residual when the venue shows open size.
         """
-        if (
-            parent.notes not in ("flatten", "flatten_passive")
-            or not parent.reduce_only
-        ):
+        if not parent.reduce_only:
             return False
         try:
             rows = await self._gateway.fetch_positions()
         except Exception:  # noqa: BLE001
             logger.warning(
-                "flatten reduceOnly recovery skipped: fetch_positions failed parent=%s",
+                "reduceOnly recovery skipped: fetch_positions failed parent=%s",
                 parent.id,
                 exc_info=True,
             )
@@ -323,12 +340,12 @@ class VwapExecutor:
                 break
 
         if abs(venue_qty) <= tol:
-            logger.info(
-                "flatten reduceOnly recovered: venue already flat symbol=%s parent=%s",
-                parent.symbol,
-                parent.id,
-            )
+            await self._notify_venue_flat(parent.symbol, parent.id, context="already_flat")
             return True
+
+        is_flatten = parent.notes in ("flatten", "flatten_passive")
+        if not is_flatten:
+            return False
 
         filters = self._gateway.get_symbol_filters(parent.symbol)
         mq = venue_cap_qty(abs(venue_qty), filters)
@@ -364,11 +381,8 @@ class VwapExecutor:
             placed = await self._om.submit_child(claw)
         except Exception as exc2:  # noqa: BLE001
             if _is_reduce_only_reject(exc2):
-                logger.info(
-                    "flatten reduceOnly recovered: venue flat after race "
-                    "(symbol=%s parent=%s)",
-                    parent.symbol,
-                    parent.id,
+                await self._notify_venue_flat(
+                    parent.symbol, parent.id, context="flat_after_claw_race",
                 )
                 return True
             raise
@@ -424,7 +438,7 @@ class VwapExecutor:
         except Exception as exc:
             if (
                 _is_reduce_only_reject(exc)
-                and await self._try_flatten_recovery_after_reduce_only_reject(
+                and await self._try_reduce_only_recovery_after_reject(
                     parent,
                     slice_index=slc.index,
                     ref_price=ref_price,

@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 # position whose closing order is still in flight (or rejected) would
 # emit a fresh exit on every tick, spamming the OMS and the venue.
 _DEFAULT_COOLDOWN_SEC = 5.0
+# After the venue rejects a reduce-only exit (-2022), back off so the
+# 1 Hz clock does not keep spawning fresh parents while the book heals.
+_VENUE_REJECT_BACKOFF_SEC = 60.0
 
 
 @dataclass(slots=True)
@@ -64,6 +67,8 @@ class StopLossMonitor:
         # order (preserve the cooldown so the SL doesn't cascade fresh
         # exits every tick while the previous closer is still working).
         self._armed_qty: dict[str, float] = {}
+        # symbol -> monotonic deadline; set when venue says flat on reduce-only
+        self._venue_reject_backoff_until: dict[str, float] = {}
         self._externally_managed: frozenset[str] = frozenset(externally_managed or ())
 
     def arm(self, position: Position) -> StopBracket | None:
@@ -125,6 +130,13 @@ class StopLossMonitor:
         self._brackets.pop(symbol, None)
         self._last_trigger_ts.pop(symbol, None)
         self._armed_qty.pop(symbol, None)
+        self._venue_reject_backoff_until.pop(symbol, None)
+
+    def note_venue_rejected_exit(self, symbol: str, backoff_sec: float = _VENUE_REJECT_BACKOFF_SEC) -> None:
+        """Back off SL/TP re-triggers after Binance -2022 (no position to reduce)."""
+        until = _time.monotonic() + max(0.0, backoff_sec)
+        self._venue_reject_backoff_until[symbol] = until
+        self._last_trigger_ts[symbol] = _time.monotonic()
 
     def set_externally_managed(self, symbols: Iterable[str]) -> None:
         """Replace the externally-managed set (used on strategy hot-swap).
@@ -157,6 +169,10 @@ class StopLossMonitor:
             return None
         bracket = self._brackets.get(tick.symbol)
         if bracket is None or position.qty == 0:
+            return None
+
+        backoff_until = self._venue_reject_backoff_until.get(tick.symbol)
+        if backoff_until is not None and _time.monotonic() < backoff_until:
             return None
 
         last_ts = self._last_trigger_ts.get(tick.symbol)

@@ -359,7 +359,8 @@ export const api = {
   equity: () => request<EquityDTO>("/api/equity"),
   positions: () => request<PositionDTO[]>("/api/positions").then((rows) => rows.map(toPosition)),
   trades: (limit = 40) => request<TradeDTO[]>(`/api/trades?limit=${limit}`),
-  logs: (limit = 60) => request<LogEntry[]>(`/api/logs?limit=${limit}`),
+  /** Full session history by default; pass limit to cap newest N. */
+  logs: (limit = 0) => request<LogEntry[]>(`/api/logs?limit=${limit}`),
   orders: () => request<OrdersDTO>("/api/orders"),
   execution: () => request<ExecutionStatsDTO>("/api/execution"),
   klines: (symbol: string, interval: string, limit = 120) =>

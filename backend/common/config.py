@@ -329,9 +329,10 @@ class Settings(BaseSettings):
     sma_max_symbols: int = 10
 
     # --- Blended multi-indicator strategy (EMA + MACD + RSI + BB + micro) ---
-    blend_symbols: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["BTCUSDT", "ETHUSDT"],
-    )
+    # BLEND_SYMBOLS: CSV list or ``AUTO`` (empty = AUTO) for top-N USDT perps at boot.
+    blend_symbols: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    # Cap BLEND_SYMBOLS=AUTO to the top-N USDT perps by 24h quote volume (0 = full universe).
+    blend_max_symbols: int = 10
     blend_symbol: str = "BTCUSDT"
     blend_bar_interval_sec: float = 300.0
     blend_ema_fast: int = 9
@@ -369,19 +370,8 @@ class Settings(BaseSettings):
     blend_scan_log_interval_sec: float = 60.0
 
     # --- Market-making tilt strategy (skew + imbalance + tape) ---
-    # MM_SYMBOLS: CSV list, or ``AUTO`` to run analytics mm_universe_scanner at boot.
-    mm_symbols: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: [
-            "BTCUSDT",
-            "ETHUSDT",
-            "SOLUSDT",
-            "BNBUSDT",
-            "XRPUSDT",
-            "DOGEUSDT",
-            "ADAUSDT",
-            "AVAXUSDT",
-        ],
-    )
+    # MM_SYMBOLS: CSV list, or ``AUTO`` (empty = AUTO) to run mm_universe_scanner at boot.
+    mm_symbols: Annotated[list[str], NoDecode] = Field(default_factory=list)
     # Rolling mean of (micro_price - mid)/mid in bps over this many seconds.
     mm_skew_window_sec: float = 300.0
     mm_skew_scale: float = 1.0
@@ -431,18 +421,8 @@ class Settings(BaseSettings):
     )
 
     # --- Market-making 2.0 (fee-aware fade; skew + imbalance + tape) ---
-    mm2_symbols: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: [
-            "BTCUSDT",
-            "ETHUSDT",
-            "SOLUSDT",
-            "BNBUSDT",
-            "XRPUSDT",
-            "DOGEUSDT",
-            "ADAUSDT",
-            "AVAXUSDT",
-        ],
-    )
+    # MM2_SYMBOLS: CSV list, or ``AUTO`` (empty = AUTO); shares MM scanner when AUTO.
+    mm2_symbols: Annotated[list[str], NoDecode] = Field(default_factory=list)
     mm2_skew_window_sec: float = 300.0
     mm2_skew_scale: float = 1.0
     mm2_imbalance_scale: float = 8.0

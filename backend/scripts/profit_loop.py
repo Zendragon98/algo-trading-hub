@@ -71,7 +71,8 @@ STRATEGY_PATCHES: dict[str, dict[str, object]] = {
         "sma_min_mid_price": 0.05,
     },
     "blended_signals": {
-        "blend_symbols": ["BTCUSDT", "ETHUSDT"],
+        "blend_symbols": ["AUTO"],
+        "blend_max_symbols": 10,
         "blend_bar_interval_sec": 300.0,
         "blend_entry_threshold": 0.35,
         "blend_min_confirming_votes": 3,

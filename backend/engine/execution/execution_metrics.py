@@ -18,6 +18,7 @@ separately so the API can render both.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from time import time
 
@@ -62,11 +63,18 @@ class ExecutionTracker:
 
     _COMPLETE_EPSILON = 1e-9
 
-    def __init__(self, bus: EventBus, history_size: int = 100) -> None:
+    def __init__(
+        self,
+        bus: EventBus,
+        history_size: int = 100,
+        *,
+        on_parent_complete: Callable[[str], None] | None = None,
+    ) -> None:
         self._bus = bus
         self._open: dict[str, ExecutionReport] = {}
         self._history: list[ExecutionReport] = []
         self._history_size = history_size
+        self._on_parent_complete = on_parent_complete
 
     # --- Lifecycle ---
 
@@ -213,6 +221,13 @@ class ExecutionTracker:
         await self._bus.publish(
             Event(type=EventType.EXECUTION_REPORT, payload=asdict(report))
         )
+        if self._on_parent_complete is not None:
+            try:
+                self._on_parent_complete(report.parent_id)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "on_parent_complete failed for %s", report.parent_id,
+                )
         note_suffix = f" notes={report.notes!r}" if report.notes else ""
         logger.info(
             "parent %s done: filled=%.4f@%.4f arrival=%.4f slip=%.2fbps impact=%.2fbps "

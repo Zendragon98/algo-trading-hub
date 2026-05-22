@@ -15,6 +15,7 @@ from ..market_data.feature_store import Features
 from ..market_data.own_quote_book import OwnBookState
 from . import mm_core
 from .market_making import MarketMakingStrategy
+from .mm_calibrated import mm2_fee_round_trip_bps, mm2_spread_buffer_bps, mm_float
 from .mm_symbol_params import resolve_mm_params
 from .strategy_base import StrategyBase
 
@@ -58,7 +59,7 @@ class MarketMakingV2Strategy(StrategyBase):
         ]
         if configured:
             if len(configured) == 1 and configured[0] == "AUTO":
-                return MarketMakingStrategy._engine_symbol_universe(settings)
+                return MarketMakingStrategy._auto_universe(settings)
             return sorted(set(configured))
         return MarketMakingStrategy._engine_symbol_universe(settings)
 
@@ -104,7 +105,13 @@ class MarketMakingV2Strategy(StrategyBase):
             now = time.time()
             self._record_skew(state, feat, now)
             skew_avg = self._skew_mean(state, now)
-            if skew_avg is not None and abs(skew_avg) < float(self._settings.mm2_min_skew_bps):
+            min_skew = mm_float(
+                symbol,
+                self._settings,
+                "mm2_min_skew_bps",
+                cal_attr="min_skew_bps",
+            )
+            if skew_avg is not None and abs(skew_avg) < min_skew:
                 intents.append(
                     QuoteIntent(
                         symbol=symbol,
@@ -140,7 +147,7 @@ class MarketMakingV2Strategy(StrategyBase):
                 equity=equity,
                 skew_avg=skew_avg,
                 strategy_name=self.name,
-                fee_round_trip_bps=_fee_rt(self._settings),
+                fee_round_trip_bps=mm2_fee_round_trip_bps(symbol, self._settings),
             )
             if float(self._settings.mm2_tape_confirm) > 0:
                 tape_p = mm_core.tape_pressure(feat, s)
@@ -163,7 +170,10 @@ class MarketMakingV2Strategy(StrategyBase):
         min_edge = float(self._settings.mm2_min_edge_bps)
         if min_edge > 0:
             return spread >= min_edge
-        return spread >= _fee_rt(self._settings) + float(self._settings.mm2_spread_buffer_bps)
+        sym = feat.symbol
+        return spread >= mm2_fee_round_trip_bps(
+            sym, self._settings
+        ) + mm2_spread_buffer_bps(sym, self._settings)
 
     def _own(self, symbol: str) -> OwnBookState:
         if self._own_provider is not None:
@@ -223,18 +233,6 @@ class _Mm2SettingsAdapter:
         if alt is not None:
             return getattr(self._s, alt)
         return getattr(self._s, name)
-
-
-def _fee_rt(settings: Settings) -> float:
-    explicit = float(settings.mm2_fee_round_trip_bps or 0.0)
-    if explicit > 0:
-        return explicit
-    per_leg = (
-        float(settings.mm2_maker_fee_bps)
-        if settings.post_only_enabled
-        else float(settings.mm2_taker_fee_bps)
-    )
-    return 2.0 * per_leg
 
 
 def _tape_confirms(skew_avg: float, tape_p: float, threshold: float) -> bool:

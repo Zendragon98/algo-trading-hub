@@ -126,6 +126,54 @@ async def test_flatten_minus_2022_recover_breaks_remaining_slices_when_venue_fla
 
 
 @pytest.mark.asyncio
+async def test_risk_stop_loss_minus_2022_notifies_venue_flat() -> None:
+    """Reduce-only risk exits use the same -2022 recovery as flatten."""
+    bus = EventBus()
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        urgent_duration_sec=1,
+        urgent_num_slices=2,
+        symbols=["BTCUSDT"],
+        reconcile_qty_tolerance=1e-9,
+    )
+    gateway = _Flatten2022OnceGateway()
+    om = OrderManager(gateway, bus)
+    books = OrderBookStore(["BTCUSDT"])
+    books.get("BTCUSDT").apply_snapshot(
+        bids=[(100.0, 1.0)], asks=[(100.5, 1.0)], last_update_id=1,
+    )
+    features = FeatureStore(books, TradeTape(window_sec=10), settings)
+    notified: list[str] = []
+
+    async def _on_flat(symbol: str) -> None:
+        notified.append(symbol)
+
+    executor = VwapExecutor(
+        order_manager=om,
+        gateway=gateway,
+        features=features,
+        price_provider=lambda _sym: 100.0,
+        settings=settings,
+        config=ExecutorConfig(duration_sec=0.3, n_slices=4, slice_timeout_sec=0.1),
+        on_venue_flat_after_reduce_only=_on_flat,
+    )
+    parent = ParentOrder(
+        id="P-sl-test",
+        symbol="BTCUSDT",
+        side=Side.SELL,
+        qty=1.0,
+        algo_mode=AlgoMode.NORMAL,
+        reduce_only=True,
+        notes="risk: stop_loss",
+    )
+    await executor.execute(parent)
+    await asyncio.sleep(1.0)
+    assert notified == ["BTCUSDT"]
+    assert gateway.placed == []
+
+
+@pytest.mark.asyncio
 async def test_flatten_minus_2022_recover_markets_residual_position() -> None:
     """After -2022, recovery sees open size and claws it back once."""
     bus = EventBus()

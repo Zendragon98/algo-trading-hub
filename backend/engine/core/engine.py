@@ -225,14 +225,24 @@ class Engine:
         # close out parents when their run task ends — without that
         # callback, slice-rejected parents would leak into the OMS panel.
         self._wheel = AlgoWheel(WheelConfig.from_settings(settings))
-        self._exec_tracker = ExecutionTracker(bus=bus)
+        self._performance = PerformanceTracker(self._portfolio)
+        self._exec_tracker = ExecutionTracker(
+            bus=bus,
+            on_parent_complete=self._performance.finalize_parent_close,
+        )
+
+        async def _on_parent_done(parent_id: str) -> None:
+            self._performance.finalize_parent_close(parent_id)
+            await self._exec_tracker.close_parent(parent_id)
+
         self._executor = VwapExecutor(
             order_manager=self._oms,
             gateway=gateway,
             features=self._features,
             price_provider=self._top_of_book_for,
             settings=settings,
-            on_parent_done=self._exec_tracker.close_parent,
+            on_parent_done=_on_parent_done,
+            on_venue_flat_after_reduce_only=self._heal_symbol_after_venue_flat,
         )
         self._pretrade = PreTradeValidator(
             settings=settings,
@@ -311,7 +321,6 @@ class Engine:
             cooldown_sec=settings.breaker_minor_cooldown_sec,
         )
 
-        self._performance = PerformanceTracker(self._portfolio)
         # Portfolio-level guards: daily loss + consecutive-loss streak.
         # Wired after `_performance` so the loss tracker can read trade history.
         self._loss_tracker = LossTracker.from_settings(
@@ -371,6 +380,7 @@ class Engine:
         self._book_resync: StartupProgress | None = None
         self._last_logged_status: str | None = None
         self._last_ops_health_signature: tuple[object, ...] | None = None
+        self._last_forced_reconcile_ts: float = 0.0
 
     def _reconcile_should_skip_rest(self) -> bool:
         """True when periodic reconcile should rely on user-data WS, not REST.
@@ -1396,6 +1406,35 @@ class Engine:
         rows = await self._gateway.fetch_positions()
         return [p for p in rows if abs(p.qty) > 1e-12]
 
+    async def _venue_position_qty(self, symbol: str) -> float | None:
+        """Signed venue qty for ``symbol``, or ``None`` if the REST read failed."""
+        try:
+            rows = await self._gateway.fetch_positions()
+        except Exception:  # noqa: BLE001
+            logger.debug("fetch_positions failed for %s exit gate", symbol, exc_info=True)
+            return None
+        sym_u = symbol.upper()
+        for p in rows:
+            if str(p.symbol).upper() == sym_u:
+                return float(p.qty)
+        return 0.0
+
+    async def _heal_symbol_after_venue_flat(self, symbol: str) -> None:
+        """Sync local book to venue after reduce-only -2022 (venue flat)."""
+        try:
+            open_pos = await self._fetch_venue_open_positions()
+        except Exception:  # noqa: BLE001
+            logger.exception("heal after -2022: fetch_positions failed for %s", symbol)
+            return
+        await self._positions.sync_from_venue(open_pos)
+        self._oms.touch_venue_truth_from_rest()
+        tol = float(self._settings.reconcile_qty_tolerance)
+        local = self._positions.get(symbol)
+        if local is None or abs(local.qty) <= tol:
+            self._risk.note_venue_rejected_exit(symbol)
+            self._stop_monitor.disarm(symbol)
+            logger.info("healed flat local book for %s after venue -2022", symbol)
+
     def _flatten_close_mode(self, position: Position, *, retry: bool) -> str:
         """Pick market vs passive/aggressive VWAP for a flatten leg.
 
@@ -1495,6 +1534,7 @@ class Engine:
         except Exception as exc:  # noqa: BLE001
             if getattr(exc, "code", None) == -2022:
                 logger.info("flatten skip %s: already flat at venue", symbol)
+                await self._heal_symbol_after_venue_flat(symbol)
                 return
             logger.warning("flatten market failed %s: %s", symbol, exc)
 
@@ -2144,13 +2184,29 @@ class Engine:
             self._loss_tracker.update()
         self._exec_quality_guard.evaluate()
         has_working_orders = any(True for _ in self._oms.working_children())
+        now = time.time()
         self._connection_monitor.evaluate(
-            now=time.time(),
+            now=now,
             last_tick_ts=self._state.last_tick_ts,
             last_user_data_ts=self._oms.last_ws_user_activity_ts,
             engine_running=self._state.status is EngineStatus.RUNNING,
             check_user_data_stale=has_working_orders,
         )
+        ws_ts = self._oms.last_ws_user_activity_ts
+        user_stale_limit = float(self._settings.user_data_stale_sec)
+        if (
+            self._state.status is EngineStatus.RUNNING
+            and ws_ts > 0
+            and user_stale_limit > 0
+            and (now - ws_ts) > user_stale_limit
+            and self.snapshot().gross_notional > 1e-6
+            and (now - self._last_forced_reconcile_ts) >= 30.0
+        ):
+            self._last_forced_reconcile_ts = now
+            try:
+                await self._reconciler.reconcile_once()
+            except Exception:  # noqa: BLE001
+                logger.exception("forced reconcile on stale user-data failed")
         # Advance the circuit-breaker so cooled-down minor breaches return
         # to ARMED. Runs even when paused so the engine can auto-resume
         # on the next operator action without a stale block.
@@ -2227,11 +2283,23 @@ class Engine:
             await self._submit_exit(intent)
 
     async def _submit_exit(self, intent: ExitIntent) -> None:
-        side = Side.BUY if intent.side == "buy" else Side.SELL
+        tol = float(self._settings.reconcile_qty_tolerance)
+        venue_qty = await self._venue_position_qty(intent.symbol)
+        if venue_qty is not None:
+            if abs(venue_qty) <= tol:
+                await self._heal_symbol_after_venue_flat(intent.symbol)
+                return
+            side = Side.SELL if venue_qty > 0 else Side.BUY
+            qty = min(intent.qty, abs(venue_qty))
+        else:
+            side = Side.BUY if intent.side == "buy" else Side.SELL
+            qty = intent.qty
+        if qty <= tol:
+            return
         await self._router.submit(
             symbol=intent.symbol,
             side=side,
-            qty=intent.qty,
+            qty=qty,
             notes=f"risk: {intent.reason}",
             # Risk exits always reduce an existing position. Mark them
             # reduce-only so Binance waives MIN_NOTIONAL on tiny positions

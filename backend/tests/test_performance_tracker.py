@@ -13,10 +13,17 @@ from engine.performance.fill_classification import FillClassification
 from engine.performance.performance_tracker import PerformanceTracker
 
 
-def _fill(side: Side, qty: float, px: float, *, idx: int = 0) -> Fill:
+def _fill(
+    side: Side,
+    qty: float,
+    px: float,
+    *,
+    idx: int = 0,
+    parent_id: str | None = None,
+) -> Fill:
     return Fill(
         child_id=f"C-{idx}",
-        parent_id=None,
+        parent_id=parent_id,
         symbol="BTCUSDT",
         side=side,
         qty=qty,
@@ -107,6 +114,37 @@ def test_flatten_excluded_from_streak_still_counts_for_kpi() -> None:
     row = perf.realized_transactions()[0]
     assert row.exclude_from_streak is True
     assert row.pnl == pytest.approx(-2.0)
+
+
+def test_parent_close_slices_count_as_one_realized() -> None:
+    """VWAP exit partial fills must not inflate win-rate loss count."""
+
+    portfolio = MagicMock()
+    perf = PerformanceTracker(portfolio)
+    parent_id = "P-exit-1"
+    slices = (-0.0524, -0.0529, -0.0527)
+    for i, pnl in enumerate(slices):
+        perf.record_fill(
+            _fill(Side.SELL, 860.0, 0.005818, idx=i, parent_id=parent_id),
+            _cls(pnl, entry_price=0.005879, exit_price=0.005818),
+        )
+
+    assert len(perf.realized_transactions()) == 0
+    assert perf.session_losses == 0
+    assert len(perf.trades()) == 3
+
+    perf.finalize_parent_close(parent_id)
+    assert len(perf.realized_transactions()) == 1
+    assert perf.session_losses == 1
+    row = perf.realized_transactions()[0]
+    assert row.id == parent_id
+    assert row.pnl == pytest.approx(sum(slices))
+    assert perf.win_rate() == pytest.approx(0.0)
+
+    # Idempotent finalize (parent done + tracker complete both call this).
+    perf.finalize_parent_close(parent_id)
+    assert len(perf.realized_transactions()) == 1
+    assert perf.session_losses == 1
 
 
 def test_session_rollups_survive_rolling_trim() -> None:

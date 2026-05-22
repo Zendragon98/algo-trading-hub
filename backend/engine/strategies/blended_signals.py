@@ -26,6 +26,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from common.config import Settings
+from common.universe_bootstrap import is_auto_symbol_list
 from common.logging import signal_log_emit
 from common.types import Signal
 
@@ -86,11 +87,17 @@ class BlendedSignalsStrategy(StrategyBase):
             s.strip().upper() for s in (settings.blend_symbols or []) if s.strip()
         ]
         if configured:
+            if is_auto_symbol_list(configured):
+                logger.warning(
+                    "BLEND_SYMBOLS=AUTO not expanded yet; set BLEND_SYMBOLS or restart "
+                    "after Binance universe bootstrap"
+                )
+                return []
             return sorted(set(configured))
         legacy = (settings.blend_symbol or "").strip().upper()
         if legacy:
             return [legacy]
-        return ["BTCUSDT", "ETHUSDT"]
+        return ["BTCUSDT"]
 
     def attach_equity_provider(self, provider: EquityProvider) -> None:
         self._equity_provider = provider

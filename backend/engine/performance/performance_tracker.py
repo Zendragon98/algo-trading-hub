@@ -32,12 +32,28 @@ class TradeRecord:
     exclude_from_streak: bool = False
 
 
+@dataclass(slots=True)
+class _PendingParentClose:
+    symbol: str
+    side: str
+    total_pnl: float = 0.0
+    total_qty: float = 0.0
+    exit_notional: float = 0.0
+    entry_price: float | None = None
+    ts_first: float = 0.0
+    ts_last: float = 0.0
+    exclude_from_streak: bool = False
+
+
 class PerformanceTracker:
     """Maintains a rolling fill tape plus a win-rate window over realized PnL rows.
 
     ``_fills`` is every venue fill (open + close) for RECENT TRADES. KPIs use
     ``_realized`` only — closes with a PnL figure (venue ``rp`` or computed),
     capped separately so opens cannot evict realized history.
+
+    Multiple reducing fills from the same VWAP parent are buffered and counted
+    as **one** realized close when the parent completes (see ``finalize_parent_close``).
     """
 
     def __init__(self, portfolio: Portfolio, history_size: int = 200) -> None:
@@ -47,6 +63,7 @@ class PerformanceTracker:
         self._fills: list[TradeRecord] = []
         self._realized: list[TradeRecord] = []
         self._history_size = history_size
+        self._pending_parent_closes: dict[str, _PendingParentClose] = {}
         # Cumulative session stats (since process start); independent of the 200 cap.
         self._session_wins = 0
         self._session_losses = 0
@@ -79,20 +96,83 @@ class PerformanceTracker:
             self._fills = self._fills[-self._history_size :]
 
         if classification.action == "close" and classification.pnl is not None:
-            self._realized.append(record)
-            if len(self._realized) > self._history_size:
-                self._realized = self._realized[-self._history_size :]
-            pnl = classification.pnl
-            if pnl > 0.0:
-                self._session_wins += 1
-                self._session_gross_win += pnl
-            elif pnl < 0.0:
-                self._session_losses += 1
-                self._session_gross_loss += -pnl
+            parent_id = fill.parent_id
+            if parent_id:
+                self._accumulate_parent_close(
+                    parent_id,
+                    record,
+                    classification.pnl,
+                    exclude_from_streak=exclude_from_streak,
+                )
             else:
-                self._session_breakevens += 1
+                self._commit_realized(record)
 
         return record
+
+    def finalize_parent_close(self, parent_id: str) -> TradeRecord | None:
+        """Roll buffered slice PnL into one realized close for win-rate KPIs."""
+
+        acc = self._pending_parent_closes.pop(parent_id, None)
+        if acc is None or acc.total_qty <= 0.0:
+            return None
+        exit_vwap = acc.exit_notional / acc.total_qty if acc.total_qty > 0 else acc.exit_notional
+        record = TradeRecord(
+            id=parent_id,
+            ts=acc.ts_last,
+            symbol=acc.symbol,
+            side=acc.side,
+            qty=acc.total_qty,
+            price=exit_vwap,
+            action="close",
+            entry_price=acc.entry_price,
+            exit_price=exit_vwap,
+            pnl=acc.total_pnl,
+            exclude_from_streak=acc.exclude_from_streak,
+        )
+        self._commit_realized(record)
+        return record
+
+    def _accumulate_parent_close(
+        self,
+        parent_id: str,
+        record: TradeRecord,
+        pnl: float,
+        *,
+        exclude_from_streak: bool,
+    ) -> None:
+        acc = self._pending_parent_closes.get(parent_id)
+        if acc is None:
+            acc = _PendingParentClose(
+                symbol=record.symbol,
+                side=record.side,
+                ts_first=record.ts,
+            )
+            self._pending_parent_closes[parent_id] = acc
+        acc.total_pnl += pnl
+        acc.total_qty += record.qty
+        if record.exit_price is not None:
+            acc.exit_notional += record.exit_price * record.qty
+        if acc.entry_price is None and record.entry_price is not None:
+            acc.entry_price = record.entry_price
+        acc.ts_last = record.ts
+        if exclude_from_streak:
+            acc.exclude_from_streak = True
+
+    def _commit_realized(self, record: TradeRecord) -> None:
+        self._realized.append(record)
+        if len(self._realized) > self._history_size:
+            self._realized = self._realized[-self._history_size :]
+        pnl = record.pnl
+        if pnl is None:
+            return
+        if pnl > 0.0:
+            self._session_wins += 1
+            self._session_gross_win += pnl
+        elif pnl < 0.0:
+            self._session_losses += 1
+            self._session_gross_loss += -pnl
+        else:
+            self._session_breakevens += 1
 
     def trades(self) -> list[TradeRecord]:
         # Newest first — matches the dashboard's expectation.

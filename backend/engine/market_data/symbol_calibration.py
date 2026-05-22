@@ -214,6 +214,15 @@ def load_symbol_calibration(path: str | None = None) -> dict[str, SymbolCalibrat
         paths.append(legacy)
 
     if not paths:
+        if path_str:
+            wanted = Path(path_str)
+            if not wanted.is_absolute():
+                wanted = _backend_data_dir() / wanted
+            logger.warning(
+                "symbol calibration missing at %s — MM jump/spread/fees use Settings "
+                "defaults; run: python -m analytics.mm_spread_pipeline --from-mm-symbols",
+                wanted,
+            )
         return {}
 
     mtime = max(p.stat().st_mtime for p in paths)

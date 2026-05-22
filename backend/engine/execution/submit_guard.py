@@ -158,6 +158,10 @@ class SubmitGuard:
 
     # --- Post-submit ---
 
+    def clear_reject_streak(self, symbol: str) -> None:
+        """Reset repeat_reject counter (e.g. benign -2022 on reduce-only)."""
+        self._reject_streak.pop(symbol, None)
+
     def record_status(self, symbol: str, status: OrderStatus) -> None:
         """Update the consecutive-reject counter from a venue response."""
         if status is OrderStatus.REJECTED:

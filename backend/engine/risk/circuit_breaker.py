@@ -114,10 +114,21 @@ class CircuitBreaker:
         key = (breach.code, breach.target)
         now = _time.time()
         existing = self._active.get(key)
-        if existing is not None and existing.severity is BreakerSeverity.MAJOR:
-            existing.tripped_at = now
-            existing.detail = breach.detail or existing.detail
-            return existing
+        if existing is not None:
+            if existing.severity is BreakerSeverity.MAJOR:
+                existing.tripped_at = now
+                existing.detail = breach.detail or existing.detail
+                return existing
+            # Minor already cooling down: do not extend cooldown or spam logs
+            # (e.g. MM flow guard re-evaluates jump_active every tick).
+            if existing.state in (
+                BreakerState.COOLDOWN,
+                BreakerState.TRIPPED,
+                BreakerState.LATCHED,
+            ):
+                if breach.detail:
+                    existing.detail = breach.detail
+                return existing
 
         if breach.severity is BreakerSeverity.MAJOR:
             state = BreakerState.LATCHED

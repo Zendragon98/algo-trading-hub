@@ -5,6 +5,7 @@ from __future__ import annotations
 from common.config import Settings
 
 from ..market_data.feature_store import Features
+from ..strategies.mm_calibrated import mm_float
 from .circuit_breaker import Breach, BreakerScope, BreakerSeverity
 
 
@@ -15,7 +16,6 @@ class MmFlowGuard:
     def apply_settings(self, settings: Settings) -> None:
         self._settings = settings
         self._cooldown = float(settings.breaker_minor_cooldown_sec)
-        self._depletion_breaker = float(settings.mm_depletion_breaker_ratio)
 
     def evaluate_entry(self, feat: Features, *, reduce_only: bool) -> Breach | None:
         if reduce_only:
@@ -39,8 +39,14 @@ class MmFlowGuard:
                 cooldown_sec=self._cooldown,
                 detail=f"score={feat.toxicity_score:.2f}",
             )
-        if self._depletion_breaker > 0:
-            if feat.bid_depth_ratio < self._depletion_breaker:
+        depletion_breaker = mm_float(
+            sym,
+            self._settings,
+            "mm_depletion_breaker_ratio",
+            cal_attr="depletion_breaker_ratio",
+        )
+        if depletion_breaker > 0:
+            if feat.bid_depth_ratio < depletion_breaker:
                 return Breach(
                     code="book_depleted",
                     scope=BreakerScope.SYMBOL,
@@ -49,7 +55,7 @@ class MmFlowGuard:
                     cooldown_sec=self._cooldown,
                     detail=f"bid_depth_ratio={feat.bid_depth_ratio:.2f}",
                 )
-            if feat.ask_depth_ratio < self._depletion_breaker:
+            if feat.ask_depth_ratio < depletion_breaker:
                 return Breach(
                     code="book_depleted",
                     scope=BreakerScope.SYMBOL,

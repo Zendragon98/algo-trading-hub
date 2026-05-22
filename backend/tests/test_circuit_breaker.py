@@ -107,3 +107,17 @@ def test_parent_scope_isolation() -> None:
     assert cb.is_blocked(BreakerScope.PARENT, "P-1")
     assert not cb.is_blocked(BreakerScope.PARENT, "P-2")
     assert not cb.is_blocked(BreakerScope.SYMBOL, "BTCUSDT")
+
+
+def test_minor_retrip_while_cooling_does_not_extend_cooldown() -> None:
+    cb = CircuitBreaker()
+    first = cb.trip(
+        _minor("price_jump", BreakerScope.SYMBOL, target="BTCUSDT", cooldown_sec=60.0),
+    )
+    until_first = first.cooldown_until
+    time.sleep(0.02)
+    second = cb.trip(
+        _minor("price_jump", BreakerScope.SYMBOL, target="BTCUSDT", cooldown_sec=60.0),
+    )
+    assert second.cooldown_until == until_first
+    assert len(cb.active()) == 1

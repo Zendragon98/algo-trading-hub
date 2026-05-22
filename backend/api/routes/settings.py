@@ -8,6 +8,8 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import ValidationError
 
+from common.config import Settings
+from common.universe_bootstrap import needs_auto_universe_resolve, resolve_binance_auto_universe
 from engine.core.engine import Engine
 
 from ..dependencies import get_engine
@@ -34,7 +36,7 @@ def get_settings(engine: Engine = Depends(get_engine)) -> dict[str, Any]:
 
 
 @router.patch("")
-def patch_settings(
+async def patch_settings(
     patch: dict[str, Any] = Body(...),
     engine: Engine = Depends(get_engine),
 ) -> dict[str, Any]:
@@ -45,7 +47,23 @@ def patch_settings(
     ``api_host`` / ``api_port`` need an API restart to change bind address.
     """
     try:
+        merged = {**engine.settings.model_dump(mode="json"), **patch}
+        probe = Settings.model_validate(merged)
+        if needs_auto_universe_resolve(probe):
+            expanded = await resolve_binance_auto_universe(probe)
+            for key in (
+                "symbols",
+                "sma_symbols",
+                "blend_symbols",
+                "mm_symbols",
+                "mm2_symbols",
+                "mm_universe_auto",
+                "mm2_universe_auto",
+            ):
+                patch[key] = getattr(expanded, key)
         new_s = engine.apply_settings_patch(patch)
+        if {"symbols", "sma_symbols", "blend_symbols", "mm_symbols", "mm2_symbols"} & patch.keys():
+            await engine.refresh_market_universe()
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.errors()) from exc
     except ValueError as exc:

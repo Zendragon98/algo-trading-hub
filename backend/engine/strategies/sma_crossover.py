@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from itertools import islice
 
 from common.config import Settings
+from common.universe_bootstrap import is_auto_symbol_list
 from common.logging import signal_log_emit
 from common.types import Signal
 
@@ -88,6 +89,12 @@ class SmaCrossoverStrategy(StrategyBase):
     def _resolve_universe(settings: Settings) -> list[str]:
         configured = [s.strip().upper() for s in (settings.sma_symbols or []) if s.strip()]
         if configured:
+            if is_auto_symbol_list(configured):
+                logger.warning(
+                    "SMA_SYMBOLS=AUTO not expanded yet; set SMA_SYMBOLS or restart "
+                    "after Binance universe bootstrap"
+                )
+                return []
             return sorted(set(configured))
         legacy = (settings.sma_symbol or "").strip().upper()
         if legacy:

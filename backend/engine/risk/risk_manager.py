@@ -235,6 +235,10 @@ class RiskManager:
         except ValueError:
             self._stops.disarm(position.symbol)
 
+    def note_venue_rejected_exit(self, symbol: str) -> None:
+        """Back off SL/TP after venue -2022 (local book may lag flat)."""
+        self._stops.note_venue_rejected_exit(symbol)
+
     # --- Live monitor (called from the clock) ---
 
     def monitor_tick(

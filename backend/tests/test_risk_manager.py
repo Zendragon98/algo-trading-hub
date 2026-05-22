@@ -281,6 +281,23 @@ def test_externally_managed_symbol_skips_per_leg_bracket() -> None:
     assert monitor.evaluate(btc, Tick(symbol="BTCUSDT", bid=70_000.0, ask=70_001.0)) == "stop_loss"
 
 
+def test_stop_loss_backoff_after_venue_rejected_exit() -> None:
+    """After -2022 the monitor must not re-fire every 5s cooldown tick."""
+    monitor = StopLossMonitor(
+        Limits(
+            max_risk_pct=0.10, max_gross_notional=1000.0, max_drawdown_pct=0.05,
+            default_stop_loss_pct=0.01, default_take_profit_pct=0.02,
+        ),
+        cooldown_sec=5.0,
+    )
+    pos = Position(symbol="BTCUSDT", qty=0.001, avg_entry_price=80_000.0)
+    monitor.arm(pos)
+    deep_below = Tick(symbol="BTCUSDT", bid=70_000.0, ask=70_001.0)
+    assert monitor.evaluate(pos, deep_below) == "stop_loss"
+    monitor.note_venue_rejected_exit("BTCUSDT", backoff_sec=60.0)
+    assert monitor.evaluate(pos, deep_below) is None
+
+
 def test_stop_loss_cooldown_cleared_on_flip() -> None:
     """A direction flip (e.g. SL closes long and reverses to short) is
     a brand-new bracket and must be allowed to fire immediately."""

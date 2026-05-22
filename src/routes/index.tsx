@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -1001,7 +1001,7 @@ function WinRateKpiCard({
                 ).{" "}
               </>
             ) : null}
-            Win rate counts per-leg exits (venue rp or entry→exit), not open entries or mark-to-market
+            Win rate counts one realized close per parent order (slice fills roll up on parent done)
             open P&L
             {openPositionCount > 0
               ? ` (${openPositionCount} leg${openPositionCount === 1 ? "" : "s"} still open).`
@@ -1855,7 +1855,38 @@ function TradesTable({ trades }: { trades: Trade[] }) {
   );
 }
 
+/** Newest log lines sit at the top; follow keeps scroll pinned there. */
+const LOG_FOLLOW_TOP_PX = 16;
+
 function LogStream({ logs, className }: { logs: LogEntry[]; className?: string }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const followRef = useRef(true);
+  const [follow, setFollow] = useState(true);
+
+  const setFollowEnabled = (enabled: boolean) => {
+    followRef.current = enabled;
+    setFollow(enabled);
+  };
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setFollowEnabled(el.scrollTop <= LOG_FOLLOW_TOP_PX);
+  };
+
+  const resumeFollow = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setFollowEnabled(true);
+    el.scrollTop = 0;
+  };
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !followRef.current) return;
+    el.scrollTop = 0;
+  }, [logs]);
+
   const color: Record<LogEntry["level"], string> = {
     debug: "text-muted-foreground/60",
     info: "text-muted-foreground",
@@ -1871,22 +1902,46 @@ function LogStream({ logs, className }: { logs: LogEntry[]; className?: string }
     signal: "SIG ",
   };
   return (
-    <ScrollArea className={cn("h-[320px]", className)}>
-      <div className="space-y-1 px-3 py-2 font-mono text-[12px] leading-relaxed">
-        {logs.map((l, i) => (
-          <div key={i} className="flex gap-2">
-            <span className="shrink-0 text-muted-foreground/70 tabular-nums">{l.ts}</span>
-            <span className={cn("shrink-0 font-semibold", color[l.level])}>{tag[l.level]}</span>
-            {l.logger ? (
-              <span className="shrink-0 max-w-[10rem] truncate text-[10px] text-muted-foreground/60">
-                {l.logger.split(".").slice(-1)[0]}
-              </span>
-            ) : null}
-            <span className="min-w-0 break-words text-foreground/90">{l.msg}</span>
-          </div>
-        ))}
+    <div className="relative">
+      {!follow ? (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center pt-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="pointer-events-auto h-7 gap-1.5 border border-border/80 bg-card/95 px-2.5 text-[11px] shadow-sm backdrop-blur-sm"
+            onClick={resumeFollow}
+          >
+            <ChevronDown className="size-3 rotate-180" />
+            Resume follow
+          </Button>
+        </div>
+      ) : null}
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className={cn(
+          "scrollbar-themed overflow-y-auto overflow-x-hidden",
+          "h-[320px]",
+          className,
+        )}
+      >
+        <div className="space-y-1 px-3 py-2 font-mono text-[12px] leading-relaxed">
+          {logs.map((l, i) => (
+            <div key={i} className="flex gap-2">
+              <span className="shrink-0 text-muted-foreground/70 tabular-nums">{l.ts}</span>
+              <span className={cn("shrink-0 font-semibold", color[l.level])}>{tag[l.level]}</span>
+              {l.logger ? (
+                <span className="shrink-0 max-w-[10rem] truncate text-[10px] text-muted-foreground/60">
+                  {l.logger.split(".").slice(-1)[0]}
+                </span>
+              ) : null}
+              <span className="min-w-0 break-words text-foreground/90">{l.msg}</span>
+            </div>
+          ))}
+        </div>
       </div>
-    </ScrollArea>
+    </div>
   );
 }
 

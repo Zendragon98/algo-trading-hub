@@ -307,7 +307,7 @@ backend/
 
 PnL and TCA use **exchange-reported** fill prices (including partial fills). Post-trade quality uses arrival mid vs VWAP of venue fills (`slippage_bps`).
 
-**Dashboard win rate / profit factor** roll up *closed-leg* P&amp;L on each reducing fill: for Binance USD-M this is `ORDER_TRADE_UPDATE.rp` when non‑zero (see `fill_classification.classify_fill`); otherwise **(exit − entry) × closed qty** from the engine’s avg entry. That is **not** the same as wallet/equity change (commissions, funding, transfers, and non-close activity are excluded). **Profit factor** is “sum of dollar wins on closes ÷ sum of dollar losses on closes,” not a ratio to net account P&amp;L.
+**Dashboard win rate / profit factor** roll up *realized closes*: slice P&amp;L from each reducing fill (Binance `ORDER_TRADE_UPDATE.rp` when authoritative — see `fill_classification.classify_fill`; otherwise **(exit − entry) × closed qty**). Fills tied to the same **parent order** are buffered and counted as **one** close when that parent completes, so VWAP partial exits do not inflate loss counts. **RECENT TRADES** still lists every venue fill. Win-rate KPIs are **not** wallet/equity change (commissions, funding, transfers excluded). **Profit factor** = sum of dollar wins on closes ÷ sum of dollar losses on closes.
 
 When you flip to LIVE you also need to point the gateway at its live endpoints:
 
@@ -512,6 +512,7 @@ Multi-indicator ensemble for single-leg crypto: **EMA trend**, **MACD momentum**
 - **Entries:** edge-triggered threshold cross (`BLEND_ENTRY_THRESHOLD`) plus `BLEND_MIN_CONFIRMING_VOTES` (default 3 of 5 families must agree). Trend (EMA/MACD) and mean-reversion (BB) can disagree by design — the vote gate keeps signals sparse.
 - **Exits:** blend weakens below `BLEND_EXIT_THRESHOLD` while positioned, or opposing cross via `plan_directional_signal`.
 - **Samples:** `BLEND_BAR_INTERVAL_SEC` (default 300s closed bars) or tick mode when `0`.
+- **Universe:** `BLEND_SYMBOLS` (CSV or `AUTO` / empty for top-N USDT perps by 24h volume, capped by `BLEND_MAX_SYMBOLS`, default 10).
 - **Sizing / risk:** same equity-budget pattern as SMA (`BLEND_RISK_PER_TRADE_PCT` split across `BLEND_SYMBOLS`); engine per-leg SL/TP stays armed (`manages_own_risk()` is False).
 
 ### Strategy — `engine/strategies/market_making.py` (+ `market_making_v2.py`)
@@ -715,7 +716,9 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `BALANCE_RESYNC_SEC`         | `0`                                  | Extra GET `/account` cadence (0 = off; balances still refresh on `RECONCILE_INTERVAL_SEC` + WS) |
 | `SMA_SYMBOLS`                | `AUTO`                               | Universe for the SMA scanner. CSV or `AUTO` to pull every USDT perp; empty falls back to `SMA_SYMBOL` |
 | `SMA_MAX_SYMBOLS`            | `20`                                 | Cap when `SMA_SYMBOLS=AUTO` (top N by 24h volume) |
-| `MM_SYMBOLS`                 | `AUTO`                               | MM universe (CSV or `AUTO` → `mm_universe_scanner` analytics) |
+| `BLEND_SYMBOLS`              | `AUTO`                               | Universe for blended signals. CSV or `AUTO` / empty (top N by 24h volume) |
+| `BLEND_MAX_SYMBOLS`          | `10`                                 | Cap when `BLEND_SYMBOLS=AUTO` |
+| `MM_SYMBOLS`                 | `AUTO`                               | MM universe (CSV or `AUTO` / empty → `mm_universe_scanner` analytics) |
 | `MM_AUTO_MAX_SYMBOLS`        | `12`                                 | Top-N symbols from scan when `MM_SYMBOLS=AUTO` |
 | `MM_AUTO_MIN_QUOTE_VOLUME`   | `5000000`                            | Min 24h USDT quote volume for scan candidates |
 | `MM_AUTO_STABILITY_PERCENTILE` | `75`                               | P75 of spread CV / mid-vol among candidates sets caps |
@@ -868,7 +871,7 @@ All payloads use the same field names as `src/components/algo/types.ts` so the f
 | GET    | `/api/orders`              |                                                 | `{working: ChildOrderDTO[]}` for the OMS panel |
 | GET    | `/api/execution`           |                                                 | `{working[], history[], aggregate}` for execution quality |
 | GET    | `/api/klines`              | `?symbol=&interval=&limit=`                     | `KlineDTO[]` OHLCV bars (for the position chart) |
-| GET    | `/api/logs`                | `?limit=60`                                     | `LogEntry[]`                         |
+| GET    | `/api/logs`                | `?limit=0` (full session from `logs.jsonl`; cap with `limit=N`) | `LogEntry[]` (newest first) |
 | POST   | `/api/control/start`       |                     | new `StatusDTO`                      |
 | POST   | `/api/control/pause`       |                     | new `StatusDTO`                      |
 | POST   | `/api/control/resume`      |                     | new `StatusDTO` (REST-syncs wallet, positions, open orders, then RUNNING) |

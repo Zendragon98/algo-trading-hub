@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 from common.config import Settings
 
+from ..strategies.mm_calibrated import mm_float
+
 
 @dataclass(slots=True)
 class MidStats:
@@ -25,8 +27,7 @@ class MidReturnTracker:
         self._pause_until: dict[str, float] = {}
 
     def apply_settings(self, settings: Settings) -> None:
-        self._jump_bps = float(settings.mm_jump_return_bps)
-        self._jump_vol_mult = float(settings.mm_jump_vol_mult)
+        self._settings = settings
         self._pause_sec = float(settings.mm_jump_pause_sec)
         self._vol_alpha = max(1e-6, min(1.0, float(settings.mm_jump_vol_ewma_alpha)))
 
@@ -47,8 +48,22 @@ class MidReturnTracker:
         prev_vol = self._vol_ewma.get(symbol, abs(ret_bps))
         self._vol_ewma[symbol] = self._vol_alpha * abs(ret_bps) + (1.0 - self._vol_alpha) * prev_vol
         vol = self._vol_ewma[symbol]
-        jump = abs(ret_bps) > self._jump_bps or (
-            self._jump_vol_mult > 0 and abs(ret_bps) > self._jump_vol_mult * max(vol, 1e-6)
+        jump_bps = mm_float(
+            symbol,
+            self._settings,
+            "mm_jump_return_bps",
+            cal_attr="jump_return_bps",
+        )
+        jump_vol_mult = mm_float(
+            symbol,
+            self._settings,
+            "mm_jump_vol_mult",
+            cal_attr="jump_vol_mult",
+        )
+        # Floor EWMA so vol-relative jumps do not fire on sub-bps noise at boot.
+        vol_for_jump = max(vol, 5.0)
+        jump = abs(ret_bps) > jump_bps or (
+            jump_vol_mult > 0 and abs(ret_bps) > jump_vol_mult * vol_for_jump
         )
         if jump:
             self._pause_until[symbol] = ts + self._pause_sec
