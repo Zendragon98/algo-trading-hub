@@ -13,19 +13,19 @@ import logging
 import signal as os_signal
 from pathlib import Path
 
-from common.config import get_settings
+from common.config import get_settings, normalize_strategy_name
 from common.enums import TradingMode
 from common.events import EventBus
 from common.logging import configure_logging, resolve_log_level
 from gateways.factory import create_gateway
 
-from .core.engine import Engine
+from .core.engine import ALL_STRATEGIES_MODE, Engine
 from .persistence.market_capture import create_capturer
 from .persistence.run_bootstrap import bootstrap_run, shutdown_bootstrap
+from .strategies.blended_signals import BlendedSignalsStrategy
 from .strategies.market_making import MarketMakingStrategy
 from .strategies.market_making_v2 import MarketMakingV2Strategy
 from .strategies.pairs_trading import PairsTradingStrategy
-from .strategies.blended_signals import BlendedSignalsStrategy
 from .strategies.sma_crossover import SmaCrossoverStrategy
 
 logger = logging.getLogger(__name__)
@@ -59,33 +59,25 @@ async def run() -> None:
         logger.info("run archive: %s", bootstrap.run_dir)
 
     gateway = create_gateway(settings)
-    strategy_name = (settings.strategy or "pairs").strip().lower()
-    aliases = {
-        "pairs": PairsTradingStrategy.name,
-        "pairs_trading": PairsTradingStrategy.name,
-        "sma": SmaCrossoverStrategy.name,
-        "blend": BlendedSignalsStrategy.name,
-        "blended": BlendedSignalsStrategy.name,
-        "mm": MarketMakingStrategy.name,
-        "market_making": MarketMakingStrategy.name,
-        "mm2": MarketMakingV2Strategy.name,
-        "market_making_v2": MarketMakingV2Strategy.name,
-    }
-    boot = aliases.get(strategy_name, strategy_name)
-    all_strategies = [
+    strategies = [
         PairsTradingStrategy(settings),
         SmaCrossoverStrategy(settings),
         BlendedSignalsStrategy(settings),
         MarketMakingStrategy(settings),
         MarketMakingV2Strategy(settings),
     ]
-    by_name = {s.name: s for s in all_strategies}
-    if boot in by_name:
-        strategies = [by_name[boot]]
-    else:
-        strategies = [all_strategies[0]]
-        boot = strategies[0].name
-    settings = settings.model_copy(update={"strategy": boot})
+    known_names = {s.name for s in strategies} | {ALL_STRATEGIES_MODE}
+    boot_default = normalize_strategy_name(settings.strategy or "pairs")
+    if boot_default not in known_names:
+        logger.warning(
+            "settings.strategy=%r not in %s; falling back to %s",
+            settings.strategy,
+            sorted(known_names),
+            strategies[0].name,
+        )
+        boot_default = strategies[0].name
+    settings = settings.model_copy(update={"strategy": boot_default})
+
     engine = Engine(
         settings=settings,
         bus=bus,
@@ -105,9 +97,14 @@ async def run() -> None:
             engine.attach_market_capturer(capturer)
             bootstrap.market_capturer = capturer
 
-    def _position_qty(symbol: str) -> float:
-        pos = engine._positions.get(symbol)  # noqa: SLF001
-        return pos.qty if pos is not None else 0.0
+    def _position_qty_for(strat_name: str):
+        def provider(symbol: str) -> float:
+            if engine.is_multi_strategy_mode():  # noqa: SLF001
+                return engine.strategy_ledger.qty(strat_name, symbol)  # noqa: SLF001
+            pos = engine._positions.get(symbol)  # noqa: SLF001
+            return pos.qty if pos is not None else 0.0
+
+        return provider
 
     for strat in strategies:
         if isinstance(strat, PairsTradingStrategy):
@@ -115,10 +112,10 @@ async def run() -> None:
             strat.attach_weight_provider(lambda: engine.volume_weights)
         if isinstance(strat, (SmaCrossoverStrategy, BlendedSignalsStrategy)):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
-            strat.attach_position_provider(_position_qty)
+            strat.attach_position_provider(_position_qty_for(strat.name))
         if isinstance(strat, (MarketMakingStrategy, MarketMakingV2Strategy)):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
-            strat.attach_position_provider(_position_qty)
+            strat.attach_position_provider(_position_qty_for(strat.name))
 
     await engine.start()
 
@@ -146,7 +143,7 @@ async def run() -> None:
         logger.info("shutdown: keyboard interrupt")
     finally:
         await engine.stop()
-        await shutdown_bootstrap(bootstrap)
+        await shutdown_bootstrap(bootstrap, bus=bus)
 
 
 def main() -> None:

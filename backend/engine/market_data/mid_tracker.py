@@ -28,7 +28,7 @@ class MidReturnTracker:
         self._jump_bps = float(settings.mm_jump_return_bps)
         self._jump_vol_mult = float(settings.mm_jump_vol_mult)
         self._pause_sec = float(settings.mm_jump_pause_sec)
-        self._vol_alpha = 0.08
+        self._vol_alpha = max(1e-6, min(1.0, float(settings.mm_jump_vol_ewma_alpha)))
 
     def on_mid(self, symbol: str, mid: float, ts: float) -> None:
         if mid <= 0:

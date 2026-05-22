@@ -32,6 +32,7 @@ import time as _time
 
 from common.config import Settings
 
+from ..strategies.mm_calibrated import get_symbol_calibration
 from .circuit_breaker import Breach, BreakerScope, BreakerSeverity
 
 logger = logging.getLogger(__name__)
@@ -63,8 +64,10 @@ class MarketDataGuard:
         self._spread_ceiling = max(0.0, spread_wide_ceiling_bps)
 
         self._spread_ewma: dict[str, float] = {}
+        self._settings: Settings | None = None
 
     def apply_settings(self, settings: Settings) -> None:
+        self._settings = settings
         """Update thresholds without clearing per-symbol spread EWMA memory."""
         self._max_tick_age = max(0.0, settings.max_tick_age_sec)
         self._max_spread_bps = max(0.0, settings.max_entry_spread_bps)
@@ -145,7 +148,7 @@ class MarketDataGuard:
         prev = self._spread_ewma.get(symbol)
         # Threshold uses EWMA *before* blending in this tick so a lone toxic print trips.
         baseline = prev if prev is not None else spread_bps
-        allowed = self._allowed_spread_bps(baseline)
+        allowed = self._allowed_spread_bps(symbol, baseline)
 
         prev_val = prev if prev is not None else spread_bps
         self._spread_ewma[symbol] = (
@@ -169,7 +172,16 @@ class MarketDataGuard:
             return breach
         return None
 
-    def _allowed_spread_bps(self, baseline_ewma: float) -> float:
+    def _allowed_spread_bps(self, symbol: str, baseline_ewma: float) -> float:
         """Upper spread (bps) we still accept for this symbol."""
+        floor = self._spread_floor
+        ceiling = self._spread_ceiling
+        if self._settings is not None:
+            cal = get_symbol_calibration(symbol, self._settings)
+            if cal is not None:
+                if cal.spread_wide_floor_bps is not None:
+                    floor = float(cal.spread_wide_floor_bps)
+                if cal.spread_wide_ceiling_bps is not None:
+                    ceiling = float(cal.spread_wide_ceiling_bps)
         dynamic = self._spread_mult * baseline_ewma
-        return min(self._spread_ceiling, max(self._spread_floor, dynamic))
+        return min(ceiling, max(floor, dynamic))

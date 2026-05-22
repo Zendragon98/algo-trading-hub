@@ -9,12 +9,22 @@ from common.types import QuoteIntent
 
 from ..market_data.feature_store import Features, unrealized_pnl_bps
 from ..market_data.own_quote_book import EntryLedger, OwnBookState
+from .mm_calibrated import mm_float
+from .mm_symbol_params import MmSymbolQuoteParams, resolve_mm_params
 
 MM_STRATEGY_NAMES = frozenset({"market_making", "market_making_v2"})
 
 
 def is_mm_strategy(name: str) -> bool:
     return name in MM_STRATEGY_NAMES
+
+
+def exit_pegged_price(mid: float, *, scratch_bps: float, reduce_long: bool) -> float:
+    """Limit peg for inventory-reducing exit quotes (scratch inside the spread)."""
+    if mid <= 0:
+        return 0.0
+    bps = max(0.0, scratch_bps) / 10_000.0
+    return mid * (1.0 - bps) if reduce_long else mid * (1.0 + bps)
 
 
 @dataclass(slots=True)
@@ -79,12 +89,16 @@ def build_microstructure_bias(
     skew_avg: float | None,
 ) -> float:
     """Microstructure tilt only (skew, imbalance, tape, depletion) — no inventory."""
+    sym = feat.symbol
     skew = float(skew_avg or 0.0)
     return (
-        float(settings.mm_skew_scale) * skew
-        + float(settings.mm_imbalance_scale) * float(feat.imbalance_topn)
-        + float(settings.mm_tape_scale) * tape_pressure(feat, settings)
-        + float(settings.mm_depletion_scale) * float(feat.depth_depletion_asym)
+        mm_float(sym, settings, "mm_skew_scale", cal_attr="skew_scale") * skew
+        + mm_float(sym, settings, "mm_imbalance_scale", cal_attr="imbalance_scale")
+        * float(feat.imbalance_topn)
+        + mm_float(sym, settings, "mm_tape_scale", cal_attr="tape_scale")
+        * tape_pressure(feat, settings)
+        + mm_float(sym, settings, "mm_depletion_scale", cal_attr="depletion_scale")
+        * float(feat.depth_depletion_asym)
     )
 
 
@@ -95,6 +109,7 @@ def compute_reservation_mid(
     settings: Settings,
     skew_avg: float | None,
     inv_ratio: float,
+    params: MmSymbolQuoteParams | None = None,
 ) -> tuple[float, float, float]:
     """MM fair mid from venue mid + micro shift + inventory skew.
 
@@ -103,12 +118,15 @@ def compute_reservation_mid(
     """
     if venue_mid <= 0:
         return 0.0, 0.0, 0.0
+    sym = feat.symbol
     micro = build_microstructure_bias(feat, settings, skew_avg)
+    micro_w = mm_float(sym, settings, "mm_reservation_micro_weight", cal_attr="reservation_micro_weight")
     micro_bps = (
-        micro * float(settings.mm_reservation_micro_weight)
+        micro * micro_w
         + float(settings.mm_depletion_shift_bps) * float(feat.depth_depletion_asym)
     )
-    inv_bps = -inv_ratio * float(settings.mm_reservation_inventory_bps)
+    p = params or resolve_mm_params(feat.symbol, settings, feat)
+    inv_bps = -inv_ratio * p.reservation_inventory_bps
     total_bps = micro_bps + inv_bps
     reservation = venue_mid * (1.0 + total_bps / 10_000.0)
     return reservation, micro_bps, inv_bps
@@ -118,13 +136,15 @@ def compute_half_spreads_bps(
     feat: Features,
     settings: Settings,
     inv_ratio: float,
+    params: MmSymbolQuoteParams | None = None,
 ) -> tuple[float, float]:
     """Half-spreads around reservation mid; widen the side that adds exposure."""
-    base = float(settings.mm_quote_half_spread_bps)
-    toxic_w = float(settings.mm_quote_toxic_widen_bps) * float(feat.toxicity_score)
-    bid_half = base + toxic_w + float(settings.mm_depletion_widen_bps) * feat.bid_depletion_score
-    ask_half = base + toxic_w + float(settings.mm_depletion_widen_bps) * feat.ask_depletion_score
-    skew = float(settings.mm_inventory_spread_skew_bps)
+    p = params or resolve_mm_params(feat.symbol, settings, feat)
+    base = p.half_spread_bps
+    toxic_w = p.toxic_widen_bps * float(feat.toxicity_score)
+    bid_half = base + toxic_w + p.depletion_widen_bps * feat.bid_depletion_score
+    ask_half = base + toxic_w + p.depletion_widen_bps * feat.ask_depletion_score
+    skew = p.inventory_spread_skew_bps
     min_half = max(0.5, base * 0.25)
     if inv_ratio > 0:
         bid_half += skew * inv_ratio
@@ -153,7 +173,9 @@ def compute_quote_pricing(
     settings: Settings,
     skew_avg: float | None,
     inv_ratio: float,
+    params: MmSymbolQuoteParams | None = None,
 ) -> MmQuotePricing:
+    p = params or resolve_mm_params(feat.symbol, settings, feat)
     venue_mid = float(feat.mid or 0.0)
     reservation, micro_bps, inv_bps = compute_reservation_mid(
         venue_mid,
@@ -161,8 +183,9 @@ def compute_quote_pricing(
         settings=settings,
         skew_avg=skew_avg,
         inv_ratio=inv_ratio,
+        params=p,
     )
-    bid_half, ask_half = compute_half_spreads_bps(feat, settings, inv_ratio)
+    bid_half, ask_half = compute_half_spreads_bps(feat, settings, inv_ratio, params=p)
     bid_price, ask_price = quote_prices_from_reservation(reservation, bid_half, ask_half)
     return MmQuotePricing(
         venue_mid=venue_mid,
@@ -186,7 +209,10 @@ def entry_blocked(feat: Features, settings: Settings, *, want_long: bool) -> str
             return "toxic"
         if not want_long and flow < -0.2:
             return "toxic"
-    if feat.markout_adverse_ewma_bps > float(settings.mm_max_adverse_markout_bps):
+    markout_cap = mm_float(
+        feat.symbol, settings, "mm_max_adverse_markout_bps", cal_attr="max_adverse_markout_bps"
+    )
+    if feat.markout_adverse_ewma_bps > markout_cap:
         return "markout"
     hard = float(settings.mm_inventory_hard_ratio)
     if hard > 0:
@@ -216,7 +242,9 @@ def plan_exit_reason(
         if _time.time() - own.ledger.opened_ts >= max_hold:
             return f"mm_time_exit pnl_bps={pnl_bps:.2f}"
 
-    min_profit = float(settings.mm_min_exit_profit_bps)
+    min_profit = mm_float(
+        feat.symbol, settings, "mm_min_exit_profit_bps", cal_attr="min_exit_profit_bps"
+    )
     if min_profit > 0 and pnl_bps >= min_profit:
         return f"mm_profit_exit pnl_bps={pnl_bps:.2f}"
 
@@ -227,7 +255,8 @@ def plan_exit_reason(
     if feat.jump_active and settings.mm_jump_flatten:
         return "mm_jump_flatten"
 
-    if own.last_fill_adverse_bps >= float(settings.mm_scratch_loss_bps):
+    scratch = mm_float(feat.symbol, settings, "mm_scratch_loss_bps", cal_attr="scratch_loss_bps")
+    if own.last_fill_adverse_bps >= scratch:
         return f"mm_adverse_level_fill bps={own.last_fill_adverse_bps:.2f}"
 
     return None
@@ -257,16 +286,20 @@ def compute_quote_intent(
         own_bid_qty=own.own_bid_qty,
         own_ask_qty=own.own_ask_qty,
     )
+    params = resolve_mm_params(feat.symbol, settings, feat)
     pricing = compute_quote_pricing(
         feat=feat,
         settings=settings,
         skew_avg=skew_avg,
         inv_ratio=inv,
+        params=params,
     )
     bid_price = pricing.bid_price
     ask_price = pricing.ask_price
 
-    pull = float(settings.mm_depletion_pull_ratio)
+    pull = mm_float(
+        feat.symbol, settings, "mm_depletion_pull_ratio", cal_attr="depletion_pull_ratio"
+    )
     if feat.bid_depth_ratio < pull or feat.jump_active:
         bid_price = None
     if feat.ask_depth_ratio < pull or feat.jump_active:
@@ -291,7 +324,8 @@ def compute_quote_intent(
     if entry_blocked(feat, settings, want_long=False):
         ask_price = None
 
-    size_notional = equity * float(settings.mm_quote_size_pct) if equity > 0 else 0.0
+    size_pct = params.size_pct if params.size_pct is not None else float(settings.mm_quote_size_pct)
+    size_notional = equity * size_pct if equity > 0 else 0.0
     if size_notional <= 0:
         size_notional = float(settings.mm_qty) * venue_mid
     base_qty = size_notional / venue_mid if venue_mid > 0 else float(settings.mm_qty)
@@ -308,9 +342,11 @@ def compute_quote_intent(
     pnl_bps = unrealized_pnl_bps(own.ledger.entry_mid, venue_mid, position_qty)
 
     reason = (
-        f"mm_quote venue_mid={pricing.venue_mid:.4f} res_mid={pricing.reservation_mid:.4f} "
-        f"inv={inv:.3f} micro_bps={pricing.micro_shift_bps:.2f} "
-        f"inv_bps={pricing.inventory_shift_bps:.2f} "
+        f"mm_quote {params.symbol} venue_mid={pricing.venue_mid:.4f} "
+        f"res_mid={pricing.reservation_mid:.4f} inv={inv:.3f} "
+        f"half_spread={params.half_spread_bps:.2f} "
+        f"venue_floor={params.venue_half_floor_bps:.2f} "
+        f"micro_bps={pricing.micro_shift_bps:.2f} inv_bps={pricing.inventory_shift_bps:.2f} "
         f"bid_half={pricing.bid_half_bps:.2f} ask_half={pricing.ask_half_bps:.2f} "
         f"pnl_bps={pnl_bps:.2f} fee_rt={fee_round_trip_bps:.1f}"
     )

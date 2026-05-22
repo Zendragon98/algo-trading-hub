@@ -36,6 +36,8 @@ from common.events import EventBus
 from common.logging import configure_logging, resolve_log_level
 from engine.core.engine import ALL_STRATEGIES_MODE, Engine
 from engine.persistence.market_capture import create_capturer
+from analytics.jobs import resolve_jobs_dir
+from analytics.worker_supervisor import AnalyticsWorkerSupervisor
 from engine.persistence.run_bootstrap import bootstrap_run, shutdown_bootstrap
 from engine.strategies.blended_signals import BlendedSignalsStrategy
 from engine.strategies.market_making import MarketMakingStrategy
@@ -250,7 +252,7 @@ async def _run() -> None:
             await engine.start()
         except Exception:
             logger.exception("engine failed to start; exiting")
-            await shutdown_bootstrap(bootstrap)
+            await shutdown_bootstrap(bootstrap, bus=bus)
             return
 
     stop_event = asyncio.Event()
@@ -259,7 +261,13 @@ async def _run() -> None:
         logger.info("shutdown signal received")
         stop_event.set()
 
+    jobs_dir = resolve_jobs_dir(settings.analytics_jobs_dir)
+    worker_supervisor = AnalyticsWorkerSupervisor()
+    worker_supervisor.start(settings, jobs_dir=jobs_dir)
+
     app = create_app(engine, bus, settings, request_shutdown=_request_shutdown)
+    app.state.analytics_jobs_dir = jobs_dir
+    app.state.analytics_worker_supervisor = worker_supervisor
 
     config = uvicorn.Config(
         app=app,
@@ -310,7 +318,8 @@ async def _run() -> None:
         with suppress(asyncio.CancelledError, Exception):
             await server_task
         await engine.stop()
-        await shutdown_bootstrap(bootstrap)
+        worker_supervisor.stop()
+        await shutdown_bootstrap(bootstrap, bus=bus)
 
 
 def main() -> None:

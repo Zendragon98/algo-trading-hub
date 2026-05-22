@@ -45,6 +45,7 @@ class PairReport:
     coint_pvalue: float | None
     suggested_entry_z: float
     suggested_exit_z: float
+    suggested_stop_z: float
 
 
 def _load_close(symbol: str, interval: str) -> pd.Series:
@@ -104,6 +105,8 @@ def analyze_pair(
     except Exception:  # noqa: BLE001
         p_value = None
 
+    entry_z = float(entry_k)
+    stop_z = max(entry_z * 1.25, entry_z + 1.5)
     return PairReport(
         base=base.upper(),
         usdt_symbol=usdt_symbol,
@@ -113,8 +116,9 @@ def analyze_pair(
         spread_std=float(std),
         half_life_min=half_life,
         coint_pvalue=p_value,
-        suggested_entry_z=float(entry_k),
+        suggested_entry_z=entry_z,
         suggested_exit_z=float(exit_k),
+        suggested_stop_z=float(stop_z),
     )
 
 

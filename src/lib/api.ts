@@ -407,11 +407,12 @@ export const api = {
 
   backtestDatasets: () => request<BacktestDatasetDTO[]>("/api/backtest/datasets"),
   backtestSessions: () => request<BacktestSessionDTO[]>("/api/backtest/sessions"),
+  backtestJob: (jobId: string) => request<AnalyticsJobDTO>(`/api/backtest/jobs/${jobId}`),
   backtestDownload: (body: { symbols: string[]; interval?: string; days?: number }) =>
-    request<{ ok: boolean; downloaded: { symbol: string; interval: string; rows: number; path: string }[] }>(
-      "/api/backtest/download",
-      { method: "POST", body: JSON.stringify(body) },
-    ),
+    request<BacktestJobAcceptedDTO>("/api/backtest/download", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   backtestRun: (body: {
     strategy: string;
     dataset?: string;
@@ -419,7 +420,7 @@ export const api = {
     end?: string;
     settings_overrides?: Record<string, unknown>;
   }) =>
-    request<BacktestResultDTO>("/api/backtest/run", {
+    request<BacktestJobAcceptedDTO>("/api/backtest/run", {
       method: "POST",
       body: JSON.stringify(body),
     }),
@@ -677,6 +678,42 @@ export type BacktestResultSummaryDTO = {
   total_return_pct: number;
   saved_at: string | null;
 };
+
+export type BacktestJobAcceptedDTO = {
+  job_id: string;
+  status: string;
+};
+
+export type AnalyticsJobDTO = {
+  id: string;
+  type: string;
+  status: string;
+  progress: number;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+const JOB_POLL_MS = 500;
+const JOB_MAX_WAIT_MS = 600_000;
+
+export async function pollAnalyticsJob(
+  jobId: string,
+  opts?: { intervalMs?: number; maxWaitMs?: number },
+): Promise<AnalyticsJobDTO> {
+  const intervalMs = opts?.intervalMs ?? JOB_POLL_MS;
+  const maxWaitMs = opts?.maxWaitMs ?? JOB_MAX_WAIT_MS;
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    const job = await api.backtestJob(jobId);
+    if (job.status === "done" || job.status === "failed") {
+      return job;
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error(`job ${jobId} timed out after ${maxWaitMs}ms`);
+}
 
 export function toBacktestDataset(d: BacktestDatasetDTO): import("@/components/algo/types").BacktestDataset {
   return {

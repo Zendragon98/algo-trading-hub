@@ -110,6 +110,7 @@ class MicrostructureHub:
             depletion=self._depletion.stats(symbol),
             markout=self._markout.stats(symbol),
             toxicity=self._toxicity.score(
+                symbol=symbol,
                 tape=tape,
                 depletion=self._depletion.stats(symbol),
                 markout=self._markout.stats(symbol),

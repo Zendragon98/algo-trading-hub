@@ -39,7 +39,7 @@ from common.types import (
 )
 from gateways.gateway_interface import DepthDiff, GatewayInterface
 
-from ..execution.algo_wheel import AlgoWheel
+from ..execution.algo_wheel import AlgoWheel, WheelConfig
 from ..execution.execution_metrics import ExecutionTracker
 from ..execution.execution_router import ExecutionRouter, ParentSubmissionRejected
 from ..execution.quality_guard import ExecutionQualityGuard
@@ -52,6 +52,7 @@ from ..market_data.feature_store import FeatureStore
 from ..market_data.microstructure_hub import MicrostructureHub
 from ..market_data.orderbook import OrderBookStore
 from ..market_data.own_quote_book import OwnBookState, OwnQuoteBook
+from ..market_data.symbol_calibration import invalidate_cache
 from ..market_data.trade_tape import TradeTape
 from ..observability.alert_manager import AlertManager
 from ..observability.latency_tracker import LatencyTracker
@@ -223,7 +224,7 @@ class Engine:
         # Execution. The tracker is built first so the executor can
         # close out parents when their run task ends — without that
         # callback, slice-rejected parents would leak into the OMS panel.
-        self._wheel = AlgoWheel()
+        self._wheel = AlgoWheel(WheelConfig.from_settings(settings))
         self._exec_tracker = ExecutionTracker(bus=bus)
         self._executor = VwapExecutor(
             order_manager=self._oms,
@@ -262,6 +263,10 @@ class Engine:
         self._reconnect_resync_debounce_task: asyncio.Task[None] | None = None
         self._bulk_resync_symbols: set[str] = set()
         self._resnapshot_inflight: set[str] = set()
+        self._gap_resync_pending: set[str] = set()
+        self._gap_resync_lock = asyncio.Lock()
+        self._gap_resync_task: asyncio.Task[None] | None = None
+        self._capture_flush_task: asyncio.Task[None] | None = None
         self._clock_skew_ms: float = 0.0
         self._clock_skew_synced: bool = False
         self._clock_skew_sync_tick: int = 0
@@ -279,6 +284,7 @@ class Engine:
             settings=settings,
         )
         self._wire_mm_strategies()
+        self._warn_multi_strategy_symbol_overlap()
         self._order_reconciler = OrderReconciler(
             gateway=gateway,
             oms=self._oms,
@@ -397,6 +403,15 @@ class Engine:
     def attach_market_capturer(self, capturer) -> None:
         """Wire live 1m bar capture (flush on stop via ``stop()``)."""
         self._market_capturer = capturer
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if self._capture_flush_task is None or self._capture_flush_task.done():
+            self._capture_flush_task = loop.create_task(
+                self._capture_flush_loop(),
+                name="engine-market-capture-flush",
+            )
 
     @property
     def risk(self) -> RiskManager:
@@ -592,6 +607,8 @@ class Engine:
         self._settings = s
         if s.leverage != prev_leverage:
             self._leverage_applied_symbols.clear()
+        invalidate_cache()
+        self._wheel.apply_settings(s)
         self._risk.apply_settings(s)
         self._stop_monitor.replace_limits(Limits.from_settings(s))
         self._features.apply_settings(s)
@@ -620,6 +637,25 @@ class Engine:
             strat.refresh_settings(s)
         apply_log_level(resolve_log_level(s.log_level))
         logger.info("log level applied: %s", s.log_level.lower())
+
+    def _warn_multi_strategy_symbol_overlap(self) -> None:
+        """Log when STRATEGY=all runs multiple alpha strategies on the same symbol."""
+        if not self.is_multi_strategy_mode():
+            return
+        by_symbol: dict[str, list[str]] = defaultdict(list)
+        for strat in self._strategies:
+            if mm_core.is_mm_strategy(strat.name):
+                continue
+            for sym in strat.symbols():
+                by_symbol[sym.upper()].append(strat.name)
+        overlaps = {sym: names for sym, names in by_symbol.items() if len(names) > 1}
+        if overlaps:
+            logger.warning(
+                "STRATEGY=all: %d symbol(s) subscribed by multiple alpha strategies — "
+                "signal_netter may cancel opposing intents: %s",
+                len(overlaps),
+                overlaps,
+            )
 
     def _wire_mm_strategies(self) -> None:
         def own_provider(sym: str) -> OwnBookState:
@@ -1003,6 +1039,8 @@ class Engine:
         await self._order_reconciler.stop()
         await self._cancel_refresh_loops()
         await self._cancel_reconnect_resync_task()
+        await self._cancel_background_task("_gap_resync_task")
+        await self._cancel_background_task("_capture_flush_task")
         await self._router.shutdown()
         try:
             await self._gateway.cancel_all_open_orders()
@@ -1072,6 +1110,19 @@ class Engine:
             except Exception:  # noqa: BLE001
                 logger.exception("%s shutdown raised", slot_name)
             setattr(self, slot_name, None)
+
+    async def _cancel_background_task(self, slot_name: str) -> None:
+        task: asyncio.Task[None] | None = getattr(self, slot_name, None)
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001
+            logger.exception("%s shutdown raised", slot_name)
+        setattr(self, slot_name, None)
 
     async def _balance_resync_loop(self) -> None:
         """Periodically pull wallet balances from REST as a safety net.
@@ -1432,16 +1483,9 @@ class Engine:
             if gap > 0:
                 self._md_quality.record_gap(sym, gap)
             if sym not in self._resnapshot_inflight:
-                self._resnapshot_inflight.add(sym)
-                try:
-                    await self._snapshot_book(sym)
-                finally:
-                    self._resnapshot_inflight.discard(sym)
-            action, gap = self._md_quality.assess(
-                diff,
-                book_ready=book.ready(),
-                book_last_update_id=book.last_update_id,
-            )
+                self._gap_resync_pending.add(sym)
+                self._schedule_gap_resync()
+            return
         if action is DiffAction.DROP_STALE:
             return
         if action is DiffAction.RESNAPSHOT:
@@ -1461,6 +1505,52 @@ class Engine:
                 own_bid_qty=st.own_bid_qty,
                 own_ask_qty=st.own_ask_qty,
             )
+
+    def _schedule_gap_resync(self) -> None:
+        task = self._gap_resync_task
+        if task is not None and not task.done():
+            return
+        self._gap_resync_task = asyncio.create_task(
+            self._drain_gap_resync(),
+            name="engine-gap-resync",
+        )
+
+    async def _drain_gap_resync(self) -> None:
+        await asyncio.sleep(0)
+        async with self._gap_resync_lock:
+            if not self._gap_resync_pending:
+                return
+            batch = sorted(self._gap_resync_pending)
+            self._gap_resync_pending.clear()
+        concurrency = self._book_resync_concurrency("gap")
+
+        async def _one(symbol: str) -> None:
+            if symbol in self._bulk_resync_symbols:
+                return
+            self._resnapshot_inflight.add(symbol)
+            try:
+                await self._snapshot_book(symbol)
+            finally:
+                self._resnapshot_inflight.discard(symbol)
+
+        await self._run_book_resync_workers(
+            batch,
+            concurrency=concurrency,
+            worker=_one,
+        )
+
+    async def _capture_flush_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(1.0)
+                capturer = self._market_capturer
+                if capturer is not None and capturer.flush_requested():
+                    await asyncio.to_thread(capturer.flush)
+        except asyncio.CancelledError:
+            capturer = self._market_capturer
+            if capturer is not None:
+                await asyncio.to_thread(capturer.flush)
+            raise
 
     async def _on_market_ws_reconnect(self, symbols: list[str]) -> None:
         """REST-resync L2 books after a public market WebSocket reconnect.
@@ -2027,12 +2117,20 @@ class Engine:
 
     async def _evaluate_all_strategies_netted(self) -> None:
         tagged: list[tuple[str, Signal]] = []
+        symbol_union: set[str] = set()
+        alpha_strategies: list[StrategyBase] = []
         for strat in self._strategies:
             if mm_core.is_mm_strategy(strat.name):
                 await self._evaluate_mm_quotes(strat)
-                continue
+            else:
+                alpha_strategies.append(strat)
+                symbol_union.update(strat.symbols())
+        feats_cache = {
+            sym: self._features.snapshot(sym) for sym in symbol_union
+        }
+        for strat in alpha_strategies:
             try:
-                feats = {sym: self._features.snapshot(sym) for sym in strat.symbols()}
+                feats = {sym: feats_cache[sym] for sym in strat.symbols() if sym in feats_cache}
                 for sig in strat.on_tick(feats):
                     tagged.append((strat.name, sig))
             except Exception:  # noqa: BLE001
@@ -2170,34 +2268,44 @@ class Engine:
 
         strategy_qty = max((leg.qty for leg in legs if leg.qty > 0), default=0.0)
         pair_qty = max(strategy_qty, max(floors.values()))
-        # Apply per-leg risk caps at the proposed pair size so validate_group
-        # does not veto with risk_scale when one leg notional exceeds max_risk_pct.
-        min_allowed = pair_qty
-        for leg in legs:
-            probe = Signal(
-                symbol=leg.symbol,
-                side=leg.side,
-                qty=pair_qty,
-                reason=leg.reason,
-                score=leg.score,
-                group_id=leg.group_id,
-            )
-            decision = self._risk.check(
-                probe,
-                mids[leg.symbol],
-                tick_ts=tick_ts[leg.symbol],
-                spread_bps=spread_bps[leg.symbol],
-            )
-            if not decision.approved:
-                group_signal_log(
-                    logger,
-                    group_id,
-                    f"aborted: {decision.reason} for {leg.symbol}",
-                    legs,
-                )
+        group_reduce_only = all(leg.reduce_only for leg in legs)
+        if group_reduce_only:
+            for leg in legs:
+                pos = self._positions.get(leg.symbol)
+                if pos is not None and abs(pos.qty) > 1e-12:
+                    pair_qty = min(pair_qty, abs(pos.qty))
+            if pair_qty <= 0:
+                group_signal_log(logger, group_id, "aborted: no position to close", legs)
                 return
-            min_allowed = min(min_allowed, decision.qty)
-        pair_qty = min_allowed
+        else:
+            # Apply per-leg risk caps at the proposed pair size so validate_group
+            # does not veto with risk_scale when one leg notional exceeds max_risk_pct.
+            min_allowed = pair_qty
+            for leg in legs:
+                probe = Signal(
+                    symbol=leg.symbol,
+                    side=leg.side,
+                    qty=pair_qty,
+                    reason=leg.reason,
+                    score=leg.score,
+                    group_id=leg.group_id,
+                )
+                decision = self._risk.check(
+                    probe,
+                    mids[leg.symbol],
+                    tick_ts=tick_ts[leg.symbol],
+                    spread_bps=spread_bps[leg.symbol],
+                )
+                if not decision.approved:
+                    group_signal_log(
+                        logger,
+                        group_id,
+                        f"aborted: {decision.reason} for {leg.symbol}",
+                        legs,
+                    )
+                    return
+                min_allowed = min(min_allowed, decision.qty)
+            pair_qty = min_allowed
         for leg in legs:
             filt = self._gateway.get_symbol_filters(leg.symbol)
             pair_qty = min(pair_qty, venue_cap_qty(pair_qty, filt))
@@ -2207,7 +2315,9 @@ class Engine:
         for leg in legs:
             filt = self._gateway.get_symbol_filters(leg.symbol)
             mid = mids[leg.symbol]
-            if not venue_qty_in_bounds(pair_qty, filt, mid, reduce_only=False):
+            if not venue_qty_in_bounds(
+                pair_qty, filt, mid, reduce_only=group_reduce_only,
+            ):
                 group_signal_log(
                     logger,
                     group_id,
@@ -2241,7 +2351,8 @@ class Engine:
         submitted: list[tuple[Signal, ParentOrder]] = []
         for leg in legs:
             try:
-                await self._ensure_leverage_before_entry(leg.symbol)
+                if not group_reduce_only:
+                    await self._ensure_leverage_before_entry(leg.symbol)
                 self._latency.on_risk_passed(leg.symbol)
                 parent = await self._router.submit(
                     symbol=leg.symbol,
@@ -2251,6 +2362,7 @@ class Engine:
                     signal_score=leg.score,
                     group_id=group_id,
                     strategy_name=leg.strategy_name,
+                    reduce_only=group_reduce_only,
                 )
                 self._latency.on_child_submitted(leg.symbol)
                 submitted.append((leg, parent))

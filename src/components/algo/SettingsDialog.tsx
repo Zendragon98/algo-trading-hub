@@ -334,6 +334,42 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
       );
     }
 
+    if (key === "mm_symbol_half_spread_bps" || key === "mm_symbol_quote_overrides") {
+      const text =
+        typeof val === "object" && val !== null
+          ? JSON.stringify(val, null, 0)
+          : String(val ?? "");
+      return (
+        <div key={key} className="space-y-1.5">
+          <Label htmlFor={key} className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            {label}
+          </Label>
+          <Input
+            id={key}
+            value={text}
+            onChange={(e) => {
+              const raw = e.target.value.trim();
+              if (!raw) {
+                updateField(key, key === "mm_symbol_half_spread_bps" ? {} : {});
+                return;
+              }
+              try {
+                updateField(key, JSON.parse(raw) as Record<string, unknown>);
+              } catch {
+                updateField(key, raw);
+              }
+            }}
+            className="font-mono text-xs"
+          />
+          <p className="text-[10px] text-muted-foreground">
+            {key === "mm_symbol_half_spread_bps"
+              ? 'Per-symbol half-spread bps, e.g. {"BTCUSDT":2,"DOGEUSDT":12} or BTCUSDT:2,DOGEUSDT:12'
+              : "Per-symbol overrides: half_spread_bps, min_spread_bps, reservation_inventory_bps, …"}
+          </p>
+        </div>
+      );
+    }
+
     const isSecret = key === "binance_api_key" || key === "binance_api_secret";
     const inputType =
       typeof val === "number" ? "number" : isSecret ? "password" : "text";
@@ -386,6 +422,9 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
       "mm_max_inventory",
       "mm_inventory",
       "mm_reservation",
+      "mm_symbol",
+      "mm_quote_use_venue",
+      "mm_quote_venue",
       "mm_jump",
       "mm_max_adverse",
       "mm_markout",

@@ -6,12 +6,15 @@ backtest runner can consume either source interchangeably.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
+import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
 
 import pandas as pd
 
@@ -222,6 +225,42 @@ def upsert_manifest_entry(
     return info
 
 
+@contextlib.contextmanager
+def kline_merge_lock(
+    symbol: str,
+    interval: str,
+    *,
+    timeout_sec: float = 300.0,
+) -> Iterator[None]:
+    """Cross-process exclusive lock for library parquet merges."""
+    lock_dir = library_dir() / ".locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{symbol.upper()}_{interval}.lock"
+    deadline = time.time() + max(1.0, timeout_sec)
+    fd: int | None = None
+    while time.time() < deadline:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            break
+        except FileExistsError:
+            time.sleep(0.05)
+    else:
+        raise TimeoutError(f"kline merge lock timeout for {symbol} {interval}")
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("failed to release kline lock %s", lock_path)
+
+
 def merge_into_library(
     df_new: pd.DataFrame,
     symbol: str,
@@ -232,19 +271,22 @@ def merge_into_library(
 ) -> Path:
     """Append bars into the shared library file, deduping by ``open_time``."""
     path = kline_parquet_path(symbol, interval)
-    legacy = legacy_parquet_path(symbol, interval)
-    if not path.is_file() and legacy.is_file():
-        legacy.rename(path)
-    frames: list[pd.DataFrame] = []
-    if path.is_file():
-        frames.append(pd.read_parquet(path))
-    if not df_new.empty:
-        frames.append(_normalize_df(df_new))
-    if frames:
-        merged = _normalize_df(pd.concat(frames, ignore_index=True))
-    else:
-        merged = pd.DataFrame(columns=KLINE_COLS)
-    merged.to_parquet(path, index=False)
+    with kline_merge_lock(symbol, interval):
+        legacy = legacy_parquet_path(symbol, interval)
+        if not path.is_file() and legacy.is_file():
+            legacy.rename(path)
+        frames: list[pd.DataFrame] = []
+        if path.is_file():
+            frames.append(pd.read_parquet(path))
+        if not df_new.empty:
+            frames.append(_normalize_df(df_new))
+        if frames:
+            merged = _normalize_df(pd.concat(frames, ignore_index=True))
+        else:
+            merged = pd.DataFrame(columns=KLINE_COLS)
+        tmp = path.with_suffix(".parquet.tmp")
+        merged.to_parquet(tmp, index=False)
+        tmp.replace(path)
     upsert_manifest_entry(symbol, interval, source=source, path=path, run_id=run_id)
     return path
 

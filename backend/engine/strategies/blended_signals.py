@@ -105,14 +105,9 @@ class BlendedSignalsStrategy(StrategyBase):
         self._validate_windows(settings)
 
     def on_fill(self, symbol: str, qty: float, side: str) -> None:
-        state = self._state.get(symbol)
-        if state is not None:
-            logger.debug(
-                "blend on_fill %s %s qty=%.8f (state retained)",
-                symbol,
-                side,
-                qty,
-            )
+        # Position for entries/exits comes from attach_position_provider each tick;
+        # log fills for audit only (no local open_side — unlike SMA).
+        logger.debug("blend on_fill %s %s qty=%.8f", symbol, side, qty)
 
     def on_tick(self, features: dict[str, Features]) -> Iterable[Signal]:
         now = time.time()

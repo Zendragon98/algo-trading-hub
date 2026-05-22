@@ -4,7 +4,7 @@ Python backend for the React console at the repo root. Connects to **Binance USD
 
 | Capability | Detail |
 |------------|--------|
-| **Process model** | Single asyncio loop: `Engine` + FastAPI + `EventBus` in `main.py` |
+| **Process model** | Trading: one asyncio loop (`Engine` + FastAPI + `EventBus` in `main.py`). Analytics: supervised worker subprocess for backtest/download (`analytics.worker_main`) |
 | **Venue seam** | `GatewayInterface` — Binance production; IBKR skeleton |
 | **Strategies** | Pairs (basis z), SMA crossover, institutional market making (quote + microstructure); hot-swap at runtime |
 | **Multi-strategy** | `STRATEGY=all` nets signals via `signal_netter` before execution |
@@ -373,9 +373,16 @@ python -m analytics.data_loader --symbols BTCUSDT,BTCUSDC --interval 1m --days 7
 python -m analytics.data_loader --symbols AUTO --interval 1m --days 7
 python -m analytics.pair_analyzer --base BTC --interval 1m --window 60
 python -m analytics.orderbook_analyzer --symbol BTCUSDT --window-sec 300
+# MM: ingest L2 → calibrate starting half-spreads per symbol (then engine loads JSON at boot)
+python -m analytics.mm_spread_pipeline --from-mm-symbols --minutes 15 --interval-sec 1
+# Or step-by-step:
+python -m analytics.l2_loader --symbols BTCUSDT,ETHUSDT,DOGEUSDT --minutes 15
+python -m analytics.spread_calibrator --symbols BTCUSDT,ETHUSDT,DOGEUSDT
 ```
 
 `pair_analyzer` writes `data/pair_<base>.json` (spread mean / std, half-life, Engle-Granger p-value, suggested entry/exit z). `orderbook_analyzer` writes `data/orderbook_<symbol>.json` (taker-buy-share percentiles used to set the wheel's `hit_ratio_threshold`).
+
+**MM spread calibration:** `l2_loader` samples REST depth into `data/l2/{SYMBOL}_l2.parquet`. `spread_calibrator` computes per-symbol `suggested_half_spread_bps` from observed L2 spreads and writes `data/mm_spread_calibration.json`. At runtime, `MM_SPREAD_CALIBRATION_PATH` seeds starting quotes (unless overridden by `MM_SYMBOL_HALF_SPREAD_BPS`); live `MM_QUOTE_USE_VENUE_SPREAD_FLOOR` and inventory skew continue adjusting from there.
 
 ### Execution module — `engine/execution/`
 
@@ -498,6 +505,17 @@ Sizing is equity-budgeted: each entry risks `SMA_RISK_PER_TRADE_PCT` of equity, 
 
 Unlike pairs trading, the SMA strategy does **not** manage its own SL/TP — `manages_own_risk()` returns False so the engine's per-leg `StopLossMonitor` stays armed for every coin it trades. Strategy hot-swap (`POST /api/control/strategy { name: "sma_crossover" }`) atomically rotates the externally-managed set: pairs symbols stop bypassing the bracket and SMA symbols pick up a fresh per-leg stop on the next tick.
 
+With `SMA_BAR_INTERVAL_SEC=0` (default), windows count **engine ticks** (~1 Hz), not minutes — set e.g. `300` for 5-minute bars if you want intraday-style SMAs.
+
+### Strategy — `engine/strategies/blended_signals.py`
+
+Multi-indicator ensemble for single-leg crypto: **EMA trend**, **MACD momentum**, **RSI zone vote** (with overbought/oversold entry blocks), **Bollinger %B** mean-reversion at band extremes, and **microstructure** (imbalance + tape). Component votes in `{-1,0,+1}` are weighted into a blend score in `[-1,+1]`.
+
+- **Entries:** edge-triggered threshold cross (`BLEND_ENTRY_THRESHOLD`) plus `BLEND_MIN_CONFIRMING_VOTES` (default 3 of 5 families must agree). Trend (EMA/MACD) and mean-reversion (BB) can disagree by design — the vote gate keeps signals sparse.
+- **Exits:** blend weakens below `BLEND_EXIT_THRESHOLD` while positioned, or opposing cross via `plan_directional_signal`.
+- **Samples:** `BLEND_BAR_INTERVAL_SEC` (default 300s closed bars) or tick mode when `0`.
+- **Sizing / risk:** same equity-budget pattern as SMA (`BLEND_RISK_PER_TRADE_PCT` split across `BLEND_SYMBOLS`); engine per-leg SL/TP stays armed (`manages_own_risk()` is False).
+
 ### Strategy — `engine/strategies/market_making.py` (+ `market_making_v2.py`)
 
 Institutional **two-sided market making** posts standing post-only bid/ask quotes via `QuoteExecutor` — **not** the VWAP wheel. Alpha strategies (`pairs_trading`, `sma_crossover`, `blended_signals`) still route `Signal` → `ExecutionRouter` → `VwapExecutor`.
@@ -523,13 +541,19 @@ Institutional **two-sided market making** posts standing post-only bid/ask quote
 
 Live logs emit `venue=`, `res=`, `inv=`, `pnl_bps=` on each quote refresh (SIG level).
 
-**Key settings:** `MM_QUOTE_*`, `MM_RESERVATION_INVENTORY_BPS`, `MM_INVENTORY_SPREAD_SKEW_BPS`, `MM_INVENTORY_*`, `MM_JUMP_*`, `MM_DEPLETION_*`, `MM_TOXICITY_THRESHOLD`. Legacy `MM_SKEW_*` / `MM_TAPE_*` feed the micro shift into reservation mid only.
+**Per-symbol spreads:** Run `python -m analytics.mm_spread_pipeline` to ingest L2 and write `data/mm_spread_calibration.json` (loaded via `MM_SPREAD_CALIBRATION_PATH`). Manual `MM_SYMBOL_HALF_SPREAD_BPS` overrides win over calibration. Live `MM_QUOTE_USE_VENUE_SPREAD_FLOOR` + inventory skew adjust from that baseline.
 
-`market_making_v2` adds fee-aware spread floor (`MM2_MIN_SPREAD_BPS`) before posting. Hot-swap: `POST /api/control/strategy { "name": "market_making" }`.
+**Key settings:** `MM_QUOTE_*`, `MM_RESERVATION_INVENTORY_BPS`, `MM_INVENTORY_SPREAD_SKEW_BPS`, `MM_INVENTORY_*`, `MM_JUMP_*`, `MM_DEPLETION_*`, `MM_TOXICITY_THRESHOLD`. `MM_SKEW_*` / `MM_TAPE_*` feed the micro shift into reservation mid. (`MM_ENTRY_TILT` / `MM_EXIT_TILT` are legacy and unused by quote MM.)
+
+`market_making_v2` adds fee-aware spread floor (`MM2_MIN_SPREAD_BPS`) and cancels quotes when skew is below `MM2_MIN_SKEW_BPS` (same pull pattern as the spread gate). Hot-swap: `POST /api/control/strategy { "name": "market_making" }`.
+
+Pair **exits** (`pairs_close` / `pairs_stop`) emit `reduce_only=True` on both legs so kill-switch / entry breakers do not block basis unwinds.
 
 ### Multi-strategy mode — `all`
 
 Set boot default `STRATEGY=all` or hot-swap to `all`. Every registered strategy ticks each heartbeat; `engine/strategies/signal_netter.py` nets opposing signals per symbol before the shared risk + execution path. Per-strategy positions are tracked in `engine/position/strategy_ledger.py` when netting is active.
+
+**Caution:** If pairs, SMA, and blend subscribe to the same symbol (e.g. `BTCUSDT`), opposing intents may net to zero or leave unintended exposure. Prefer disjoint symbol universes per alpha strategy, or run MM on a separate symbol set. The engine logs a warning at boot listing overlapping symbols.
 
 ### Operator flatten — `POST /api/control/flatten`
 

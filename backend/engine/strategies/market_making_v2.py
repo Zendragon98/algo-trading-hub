@@ -15,6 +15,7 @@ from ..market_data.feature_store import Features
 from ..market_data.own_quote_book import OwnBookState
 from . import mm_core
 from .market_making import MarketMakingStrategy
+from .mm_symbol_params import resolve_mm_params
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,17 @@ class MarketMakingV2Strategy(StrategyBase):
             self._record_skew(state, feat, now)
             skew_avg = self._skew_mean(state, now)
             if skew_avg is not None and abs(skew_avg) < float(self._settings.mm2_min_skew_bps):
+                intents.append(
+                    QuoteIntent(
+                        symbol=symbol,
+                        bid_price=None,
+                        ask_price=None,
+                        bid_qty=0.0,
+                        ask_qty=0.0,
+                        reason="mm2_skew_gate",
+                        strategy_name=self.name,
+                    )
+                )
                 continue
             own = self._own(symbol)
             pos_qty = self._position_qty(symbol)
@@ -116,7 +128,7 @@ class MarketMakingV2Strategy(StrategyBase):
                 mid=float(feat.mid),
             )
             if exit_reason:
-                intent = _exit_intent(feat, pos_qty, exit_reason, self.name)
+                intent = _exit_intent(feat, pos_qty, exit_reason, self.name, self._settings)
                 if intent is not None:
                     intents.append(intent)
                     continue
@@ -142,7 +154,10 @@ class MarketMakingV2Strategy(StrategyBase):
         spread = feat.spread_bps
         if spread is None:
             return False
-        floor = float(self._settings.mm2_min_spread_bps)
+        params = resolve_mm_params(feat.symbol, self._settings, feat)
+        floor = params.min_spread_bps
+        if floor is None:
+            floor = float(self._settings.mm2_min_spread_bps)
         if floor > 0:
             return spread >= floor
         min_edge = float(self._settings.mm2_min_edge_bps)
@@ -231,17 +246,22 @@ def _tape_confirms(skew_avg: float, tape_p: float, threshold: float) -> bool:
 
 
 def _exit_intent(
-    feat: Features, pos_qty: float, reason: str, strategy_name: str,
+    feat: Features,
+    pos_qty: float,
+    reason: str,
+    strategy_name: str,
+    settings: Settings,
 ) -> QuoteIntent | None:
     mid = feat.mid or 0.0
     qty = abs(pos_qty)
     if mid <= 0 or qty <= 0:
         return None
+    scratch_bps = mm_core.mm_float(feat.symbol, settings, "mm_exit_scratch_bps")
     if pos_qty > 0:
         return QuoteIntent(
             symbol=feat.symbol,
             bid_price=None,
-            ask_price=mid * 0.9995,
+            ask_price=mm_core.exit_pegged_price(mid, scratch_bps=scratch_bps, reduce_long=True),
             bid_qty=0.0,
             ask_qty=qty,
             reason=reason,
@@ -250,7 +270,7 @@ def _exit_intent(
         )
     return QuoteIntent(
         symbol=feat.symbol,
-        bid_price=mid * 1.0005,
+        bid_price=mm_core.exit_pegged_price(mid, scratch_bps=scratch_bps, reduce_long=False),
         ask_price=None,
         bid_qty=qty,
         ask_qty=0.0,

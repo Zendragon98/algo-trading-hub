@@ -14,6 +14,8 @@ Implementation notes:
       only carries notifications.
     - Subscribers receive a context-managed iterator so cancellation and
       cleanup are explicit.
+    - Optional WAL journal writes are drained on a dedicated task so
+      ``publish()`` never blocks on disk I/O.
 """
 
 from __future__ import annotations
@@ -61,10 +63,94 @@ class EventBus:
         self._lock = asyncio.Lock()
         self._next_seq = 0
         self._journal: Any | None = None
+        self._journal_queue: asyncio.Queue[Event] | None = None
+        self._journal_task: asyncio.Task[None] | None = None
+        self._journal_flush_sec: float = 1.0
 
     def attach_journal(self, journal: Any) -> None:
         """Optional WAL sink; receives events after seq assignment."""
         self._journal = journal
+
+    async def start_journal_writer(self, *, flush_every_sec: float = 1.0) -> None:
+        """Drain journal writes off the hot ``publish()`` path."""
+        if self._journal is None:
+            return
+        if self._journal_task is not None and not self._journal_task.done():
+            return
+        self._journal_flush_sec = max(0.1, float(flush_every_sec))
+        self._journal_queue = asyncio.Queue(maxsize=20_000)
+        self._journal_task = asyncio.create_task(
+            self._journal_writer_loop(),
+            name="event-bus-journal-writer",
+        )
+
+    async def stop_journal_writer(self) -> None:
+        task = self._journal_task
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:  # noqa: BLE001
+            logger.exception("journal writer shutdown raised")
+        self._journal_task = None
+        self._journal_queue = None
+
+    async def _journal_writer_loop(self) -> None:
+        journal = self._journal
+        queue = self._journal_queue
+        if journal is None or queue is None:
+            return
+        last_flush = asyncio.get_running_loop().time()
+        try:
+            while True:
+                event = await queue.get()
+                try:
+                    await asyncio.to_thread(journal.append, event)
+                except Exception:  # noqa: BLE001
+                    logger.exception("journal append failed seq=%s", event.seq)
+                now = asyncio.get_running_loop().time()
+                if now - last_flush >= self._journal_flush_sec:
+                    try:
+                        await asyncio.to_thread(journal.flush)
+                    except Exception:  # noqa: BLE001
+                        logger.exception("journal flush failed")
+                    last_flush = now
+        except asyncio.CancelledError:
+            while True:
+                try:
+                    event = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                try:
+                    await asyncio.to_thread(journal.append, event)
+                except Exception:  # noqa: BLE001
+                    logger.exception("journal append failed on shutdown")
+            try:
+                await asyncio.to_thread(journal.flush)
+            except Exception:  # noqa: BLE001
+                logger.exception("journal flush failed on shutdown")
+            raise
+
+    def _enqueue_journal(self, event: Event) -> None:
+        queue = self._journal_queue
+        if queue is None:
+            try:
+                self._journal.append(event)
+            except Exception:  # noqa: BLE001
+                logger.exception("sync journal append failed")
+            return
+        try:
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            logger.warning("journal queue full; dropped oldest event")
+            queue.put_nowait(event)
 
     async def publish(self, event: Event) -> None:
         """Push `event` to every interested subscriber.
@@ -76,7 +162,7 @@ class EventBus:
             self._next_seq += 1
             event = replace(event, seq=self._next_seq)
         if self._journal is not None:
-            self._journal.append(event)
+            self._enqueue_journal(event)
 
         async with self._lock:
             subs = list(self._subscribers)

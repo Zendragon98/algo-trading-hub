@@ -112,6 +112,7 @@ async def bootstrap_run(
     journal = open_journal(settings, bus, run_dir)
     if journal is not None:
         logger.info("event journal enabled")
+        await bus.start_journal_writer(flush_every_sec=1.0)
     recorder = await start_recorder(settings, bus, run_dir)
     if recorder is not None:
         logger.info("event recorder enabled (dir=%s)", recorder.run_dir)
@@ -126,7 +127,7 @@ async def bootstrap_run(
     )
 
 
-async def shutdown_bootstrap(bootstrap: RunBootstrap) -> None:
+async def shutdown_bootstrap(bootstrap: RunBootstrap, *, bus: EventBus | None = None) -> None:
     if bootstrap.market_capturer is not None:
         try:
             bootstrap.market_capturer.flush()
@@ -134,5 +135,7 @@ async def shutdown_bootstrap(bootstrap: RunBootstrap) -> None:
             logger.exception("market capture flush failed during shutdown")
     if bootstrap.recorder is not None:
         await bootstrap.recorder.stop()
+    if bus is not None:
+        await bus.stop_journal_writer()
     if bootstrap.journal is not None:
         bootstrap.journal.close()

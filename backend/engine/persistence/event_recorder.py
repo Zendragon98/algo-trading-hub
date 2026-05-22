@@ -77,6 +77,7 @@ class EventRecorder:
         self._task: asyncio.Task[None] | None = None
         self._files: dict[EventType, IO[str]] = {}
         self._subscribed = asyncio.Event()
+        self._flush_pending = False
 
         types = list(_DEFAULT_TYPES)
         if config.record_ticks:
@@ -124,14 +125,17 @@ class EventRecorder:
                     self._write_event(event)
                     now = asyncio.get_event_loop().time()
                     if now - last_flush >= self._cfg.flush_every_sec:
-                        self._flush_all()
+                        self._flush_pending = True
                         last_flush = now
+                    if self._flush_pending:
+                        self._flush_pending = False
+                        await asyncio.to_thread(self._flush_all)
         except asyncio.CancelledError:
-            self._flush_all()
+            await asyncio.to_thread(self._flush_all)
             raise
         except Exception:  # noqa: BLE001
             logger.exception("event recorder crashed")
-            self._flush_all()
+            await asyncio.to_thread(self._flush_all)
         finally:
             # Unblock callers waiting on start() even on early failure.
             self._subscribed.set()

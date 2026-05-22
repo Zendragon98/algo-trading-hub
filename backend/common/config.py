@@ -12,9 +12,10 @@ Nothing else in the codebase should call `os.getenv` directly; depend on
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -197,6 +198,11 @@ class Settings(BaseSettings):
     reconcile_cancel_orphans: bool = True   # auto-cancel venue orders unknown to OMS
     order_reconcile_on_startup: bool = True
 
+    # --- Execution (AlgoWheel + calibration) ---
+    imbalance_threshold: float = 0.20
+    hit_ratio_threshold: float = 0.60
+    symbol_calibration_path: str = ""
+
     # --- Execution urgency ---
     urgent_score_threshold: float = 0.85    # Signal.score at/above → AGGRESSIVE
     urgent_duration_sec: int = 10
@@ -205,6 +211,10 @@ class Settings(BaseSettings):
 
     # --- Journal / observability ---
     journal_enabled: bool = True
+    # Analytics worker: separate process for backtest/download (multicore isolation).
+    analytics_worker_enabled: bool = True
+    analytics_worker_mode: str = "embedded"  # embedded | external | disabled
+    analytics_jobs_dir: str = "data/jobs"
     recover_on_start: bool = False
     latency_metrics_interval_sec: float = 5.0
     alert_webhook_url: str = ""
@@ -301,8 +311,9 @@ class Settings(BaseSettings):
     sma_slow_window: int = 24
     # When >0, each SMA sample is one *closed bar* of this length (seconds),
     # using the last mid seen in that bar as the close — windows are then in
-    # bar count (intraday-style). When 0, one sample per engine heartbeat (~1Hz).
-    sma_bar_interval_sec: float = 0.0
+    # bar count (intraday-style). When 0, one sample per engine heartbeat (~1Hz),
+    # so SMA_FAST_WINDOW/SMA_SLOW_WINDOW count ticks (e.g. 8/24 ≈ 8–24s), not minutes.
+    sma_bar_interval_sec: float = Field(default=0.0)
     # Skip symbols below this mid (stops cannot resolve on sub-tick alts).
     sma_min_mid_price: float = 0.01
     # Portfolio risk budget per round-trip (split evenly across ``sma_symbols``).
@@ -380,11 +391,9 @@ class Settings(BaseSettings):
     # (ask_hit_count - bid_hit_count) / total_trades when total >= mm_min_tape_trades.
     mm_tape_scale: float = 12.0
     mm_min_tape_trades: int = 3
-    # Composite = skew + imbalance + tape terms; act when |composite| >= this.
+    # Deprecated: legacy tilt MM (unused). Quote MM uses MM_SKEW_* / MM_QUOTE_* only.
     mm_entry_tilt: float = 7.0
-    # Mean-reversion exit when |composite| falls below this (0 = 35% of mm_entry_tilt).
     mm_exit_tilt: float = 0.0
-    # "fade" = buy on very negative composite / sell on very positive; "follow" = opposite mapping.
     mm_signal_mode: str = "fade"
     mm_min_samples: int = 5
     mm_risk_per_trade_pct: float = 0.002
@@ -411,6 +420,7 @@ class Settings(BaseSettings):
     mm2_imbalance_scale: float = 8.0
     mm2_tape_scale: float = 12.0
     mm2_min_tape_trades: int = 5
+    # Deprecated: legacy tilt MM2 (unused). Quote MM2 uses MM2_* + mm_core via adapter.
     mm2_entry_tilt: float = 8.0
     mm2_exit_tilt: float = 0.0
     mm2_min_skew_bps: float = 1.0
@@ -452,11 +462,13 @@ class Settings(BaseSettings):
     mm_inventory_include_working: bool = False
     mm_jump_return_bps: float = 25.0
     mm_jump_vol_mult: float = 3.0
+    mm_jump_vol_ewma_alpha: float = 0.08
     mm_jump_pause_sec: float = 30.0
     mm_jump_flatten: bool = False
     mm_max_adverse_markout_bps: float = 8.0
     mm_markout_cooldown_sec: float = 15.0
     mm_scratch_loss_bps: float = 15.0
+    mm_exit_scratch_bps: float = 5.0
     mm_min_exit_profit_bps: float = 5.0
     mm_max_hold_sec: float = 150.0
     mm_catastrophe_stop_pct: float = 0.0
@@ -472,7 +484,38 @@ class Settings(BaseSettings):
     mm_depletion_scale: float = 6.0
     mm_large_trade_mult: float = 3.0
     mm_toxicity_threshold: float = 0.65
+    mm_toxicity_vpin_weight: float = 0.2
+    mm_toxicity_large_weight: float = 0.15
+    mm_toxicity_depletion_weight: float = 0.2
+    mm_toxicity_markout_weight: float = 0.2
+    mm_toxicity_jump_weight: float = 0.15
+    mm_toxicity_tape_vel_weight: float = 0.05
+    mm_toxicity_informed_weight: float = 0.25
+    mm_toxicity_markout_norm_bps: float = 20.0
+    mm_toxicity_tape_vel_norm: float = 50.0
+    mm_toxicity_vpin_informed_high: float = 0.55
+    mm_toxicity_vpin_informed_low: float = 0.45
+    mm_toxicity_depletion_informed_min: float = 0.5
     mm_quote_half_spread_bps: float = 3.0
+    # Per-symbol half-spread (bps). Env: JSON or ``BTCUSDT:2,ETHUSDT:3,DOGEUSDT:12``.
+    mm_symbol_half_spread_bps: Annotated[dict[str, float], NoDecode] = Field(
+        default_factory=dict,
+    )
+    # Per-symbol full overrides, e.g. ``{"DOGEUSDT":{"half_spread_bps":15,"min_spread_bps":8}}``.
+    mm_symbol_quote_overrides: Annotated[dict[str, dict[str, float]], NoDecode] = Field(
+        default_factory=dict,
+    )
+    # When true, half-spread is at least ``mm_quote_venue_spread_mult * venue_spread_bps / 2``.
+    mm_quote_use_venue_spread_floor: bool = True
+    mm_quote_venue_spread_mult: float = 1.0
+    # L2 calibration artefact from analytics.spread_calibrator (after l2_loader ingest).
+    mm_spread_calibration_path: str = "data/mm_spread_calibration.json"
+    mm_spread_calib_percentile: float = 50.0
+    mm_spread_calib_half_mult: float = 0.55
+    mm_spread_calib_buffer_bps: float = 0.5
+    mm_spread_calib_min_half_bps: float = 1.0
+    mm_spread_calib_max_half_bps: float = 50.0
+    mm_spread_calib_min_samples: int = 30
     mm_quote_refresh_bps: float = 1.0
     mm_quote_min_rest_sec: float = 0.5
     mm_quote_size_pct: float = 0.002
@@ -504,6 +547,54 @@ class Settings(BaseSettings):
     log_file_enabled: bool = True
     log_file_max_bytes: int = 10_000_000  # 10 MB before rotation
     log_file_backup_count: int = 5
+
+    @field_validator("mm_symbol_half_spread_bps", mode="before")
+    @classmethod
+    def _parse_mm_symbol_half_spread(cls, value: object) -> object:
+        return cls._parse_symbol_float_map(value)
+
+    @field_validator("mm_symbol_quote_overrides", mode="before")
+    @classmethod
+    def _parse_mm_symbol_overrides(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return {}
+            value = json.loads(text)
+        if not isinstance(value, dict):
+            return {}
+        out: dict[str, dict[str, float]] = {}
+        for sym_key, fields in value.items():
+            sym = str(sym_key).strip().upper()
+            if not sym or not isinstance(fields, dict):
+                continue
+            out[sym] = {str(k): float(v) for k, v in fields.items()}
+        return out
+
+    @staticmethod
+    def _parse_symbol_float_map(value: object) -> dict[str, float]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return {str(k).strip().upper(): float(v) for k, v in value.items() if str(k).strip()}
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return {}
+            if text.startswith("{"):
+                raw: Any = json.loads(text)
+                return {str(k).strip().upper(): float(v) for k, v in raw.items() if str(k).strip()}
+            out: dict[str, float] = {}
+            for part in text.split(","):
+                part = part.strip()
+                if not part or ":" not in part:
+                    continue
+                sym, val = part.split(":", 1)
+                out[sym.strip().upper()] = float(val.strip())
+            return out
+        return {}
 
     @field_validator(
         "symbols",

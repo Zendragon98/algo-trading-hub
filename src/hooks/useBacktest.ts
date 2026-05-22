@@ -5,7 +5,7 @@ import type {
   BacktestResult,
   BacktestSession,
 } from "@/components/algo/types";
-import { api, toBacktestDataset, toBacktestResult } from "@/lib/api";
+import { api, pollAnalyticsJob, toBacktestDataset, toBacktestResult } from "@/lib/api";
 
 export function useBacktest() {
   const [datasets, setDatasets] = useState<BacktestDataset[]>([]);
@@ -39,7 +39,11 @@ export function useBacktest() {
       setLoading(true);
       setError(null);
       try {
-        await api.backtestDownload({ symbols, interval: "1m", days });
+        const accepted = await api.backtestDownload({ symbols, interval: "1m", days });
+        const job = await pollAnalyticsJob(accepted.job_id);
+        if (job.status === "failed") {
+          throw new Error(job.error ?? "Download failed");
+        }
         await refresh();
       } catch (e) {
         setError(e instanceof Error ? e.message : "Download failed");
@@ -59,11 +63,20 @@ export function useBacktest() {
       setLoading(true);
       setError(null);
       try {
-        const raw = await api.backtestRun({
+        const accepted = await api.backtestRun({
           strategy: params.strategy,
           dataset: params.dataset,
           settings_overrides: params.settingsOverrides,
         });
+        const job = await pollAnalyticsJob(accepted.job_id);
+        if (job.status === "failed") {
+          throw new Error(job.error ?? "Backtest failed");
+        }
+        const runId = job.result?.run_id;
+        if (typeof runId !== "string" || !runId) {
+          throw new Error("Backtest finished without run_id");
+        }
+        const raw = await api.backtestRunById(runId);
         setResult(toBacktestResult(raw));
       } catch (e) {
         setError(e instanceof Error ? e.message : "Backtest failed");

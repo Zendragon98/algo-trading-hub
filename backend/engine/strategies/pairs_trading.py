@@ -248,9 +248,10 @@ class PairsTradingStrategy(StrategyBase):
         self._load_calibration(settings)
 
     def _load_calibration(self, settings: Settings) -> None:
-        """Apply per-base entry/exit z from ``analytics.pair_analyzer`` JSON."""
+        """Apply per-base entry/exit/stop z from pair JSON and symbol_calibration."""
         path_str = (settings.pair_calibration_path or "").strip()
         if not path_str:
+            self._load_symbol_calibration_pairs(settings)
             return
         path = Path(path_str)
         if not path.is_absolute():
@@ -262,9 +263,10 @@ class PairsTradingStrategy(StrategyBase):
             files = sorted(path.glob("pair_*.json"))
         else:
             logger.warning("pair_calibration_path not found: %s", path)
+            self._load_symbol_calibration_pairs(settings)
             return
 
-        cal: dict[str, tuple[float, float]] = {}
+        cal: dict[str, tuple[float, float, float | None]] = {}
         for fpath in files:
             try:
                 data = json.loads(fpath.read_text(encoding="utf-8"))
@@ -275,23 +277,61 @@ class PairsTradingStrategy(StrategyBase):
             if not base:
                 continue
             try:
+                stop_raw = data.get("suggested_stop_z")
+                stop_z = float(stop_raw) if stop_raw is not None else None
                 cal[base] = (
                     float(data["suggested_entry_z"]),
                     float(data["suggested_exit_z"]),
+                    stop_z,
                 )
             except (KeyError, TypeError, ValueError):
                 logger.warning("invalid pair calibration payload in %s", fpath)
                 continue
 
+        if cal:
+            self._apply_pair_calibration_map(cal)
+        self._load_symbol_calibration_pairs(settings)
+
+    def _load_symbol_calibration_pairs(self, settings: Settings) -> None:
+        from .mm_calibrated import calibration_path
+        from ..market_data.symbol_calibration import load_symbol_calibration
+
+        path = calibration_path(settings)
+        if not path:
+            return
+        unified = load_symbol_calibration(path)
+        if not unified:
+            return
+        cal: dict[str, tuple[float, float, float | None]] = {}
+        for pair in self._pairs:
+            sym_cal = unified.get(pair.usdt_symbol.upper())
+            if sym_cal is None:
+                continue
+            if sym_cal.pair_entry_z is None and sym_cal.pair_exit_z is None:
+                continue
+            base = pair.usdt_symbol.removesuffix("USDT").upper()
+            cal[base] = (
+                sym_cal.pair_entry_z if sym_cal.pair_entry_z is not None else pair.entry_z,
+                sym_cal.pair_exit_z if sym_cal.pair_exit_z is not None else pair.exit_z,
+                sym_cal.pair_stop_z,
+            )
+        if cal:
+            self._apply_pair_calibration_map(cal)
+
+    def _apply_pair_calibration_map(
+        self, cal: dict[str, tuple[float, float, float | None]],
+    ) -> None:
         for pair in self._pairs:
             base = pair.usdt_symbol.removesuffix("USDT").upper()
             thresholds = cal.get(base)
             if thresholds is None:
                 continue
-            pair.entry_z, pair.exit_z = thresholds
+            pair.entry_z, pair.exit_z = thresholds[0], thresholds[1]
+            if thresholds[2] is not None:
+                pair.stop_z = thresholds[2]
             logger.info(
-                "pairs calibration %s: entry_z=%.2f exit_z=%.2f",
-                base, pair.entry_z, pair.exit_z,
+                "pairs calibration %s: entry_z=%.2f exit_z=%.2f stop_z=%.2f",
+                base, pair.entry_z, pair.exit_z, pair.stop_z,
             )
 
     def attach_equity_provider(self, provider: EquityProvider) -> None:
@@ -687,10 +727,22 @@ class PairsTradingStrategy(StrategyBase):
             reason=reason_text,
         )
         return [
-            Signal(symbol=pair.usdc_symbol, side=unwind_usdc, qty=qty,
-                   reason=reason_text, group_id=gid),
-            Signal(symbol=pair.usdt_symbol, side=unwind_usdt, qty=qty,
-                   reason=reason_text, group_id=gid),
+            Signal(
+                symbol=pair.usdc_symbol,
+                side=unwind_usdc,
+                qty=qty,
+                reason=reason_text,
+                group_id=gid,
+                reduce_only=True,
+            ),
+            Signal(
+                symbol=pair.usdt_symbol,
+                side=unwind_usdt,
+                qty=qty,
+                reason=reason_text,
+                group_id=gid,
+                reduce_only=True,
+            ),
         ]
 
     def _size_pair(
@@ -780,5 +832,5 @@ class PairsTradingStrategy(StrategyBase):
 
 
 def _basis(usdc_mid: float, usdt_mid: float) -> float:
-    """Per-coin implied log(USDT/USDC). Positive => USDT richer than USDC."""
+    """Per-coin implied log(USDC/USDT). Positive => USDC leg richer than USDT."""
     return math.log(usdc_mid) - math.log(usdt_mid)

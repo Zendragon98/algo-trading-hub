@@ -114,7 +114,7 @@ class ExecutionRouter:
             strategy_name=strategy_name,
         )
         feat = self._features.snapshot(symbol)
-        parent.algo_mode = self._wheel.choose(parent, feat)
+        parent.algo_mode = self._wheel.choose(parent, feat, self._settings)
         # Arrival = mid at the moment we decided to trade. Falls back to 0
         # if the book hasn't warmed up; the tracker treats 0 as "unknown"
         # and emits a 0 slippage rather than a divide-by-zero spike.

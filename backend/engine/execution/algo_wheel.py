@@ -3,29 +3,24 @@
 Decision rule (mirrors the README):
 
     For a BUY parent:
-        bid imbalance > +T  AND  ask-hit ratio > 0.6  -> FRONTLOAD
-            (book leaning long, buyers aggressive, expect price to grind up;
-             grab fills early before the rally extends)
-        ask imbalance > +T  AND  bid-hit ratio > 0.6  -> BACKLOAD
-            (sellers stacked but bids are getting hit;
-             let the price bleed lower into our buys)
-        else -> NORMAL
-
+        bid imbalance > +T  AND  ask-hit ratio > H  -> FRONTLOAD
+        ask imbalance > +T  AND  bid-hit ratio > H  -> BACKLOAD
     For a SELL parent: symmetric mirror.
 
-`T` is configurable via `Settings.imbalance_threshold` (added below if
-not present). The default of 0.20 is calibrated by `analytics/orderbook_analyzer`.
+``T`` / ``H`` come from ``Settings`` and per-symbol ``symbol_calibration.json``.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from common.config import Settings
 from common.enums import AlgoMode, Side
 from common.types import ParentOrder
 
 from ..market_data.feature_store import Features
+from ..strategies.mm_calibrated import get_symbol_calibration
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +29,43 @@ logger = logging.getLogger(__name__)
 class WheelConfig:
     """Knobs for the wheel decision rule."""
 
-    imbalance_threshold: float = 0.20    # |imbalance| above this is "stacked"
-    hit_ratio_threshold: float = 0.60    # >60% of one side is "aggressive"
+    imbalance_threshold: float = 0.20
+    hit_ratio_threshold: float = 0.60
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "WheelConfig":
+        return cls(
+            imbalance_threshold=float(settings.imbalance_threshold),
+            hit_ratio_threshold=float(settings.hit_ratio_threshold),
+        )
 
 
 class AlgoWheel:
     def __init__(self, config: WheelConfig | None = None) -> None:
         self._config = config or WheelConfig()
 
-    def choose(self, parent: ParentOrder, features: Features) -> AlgoMode:
+    def apply_settings(self, settings: Settings) -> None:
+        self._config = WheelConfig.from_settings(settings)
+
+    def config_for(self, symbol: str, settings: Settings) -> WheelConfig:
         cfg = self._config
+        cal = get_symbol_calibration(symbol, settings)
+        if cal is None:
+            return cfg
+        updates: dict[str, float] = {}
+        if cal.imbalance_threshold is not None:
+            updates["imbalance_threshold"] = cal.imbalance_threshold
+        if cal.hit_ratio_threshold is not None:
+            updates["hit_ratio_threshold"] = cal.hit_ratio_threshold
+        return replace(cfg, **updates) if updates else cfg
+
+    def choose(
+        self,
+        parent: ParentOrder,
+        features: Features,
+        settings: Settings | None = None,
+    ) -> AlgoMode:
+        cfg = self.config_for(parent.symbol, settings) if settings is not None else self._config
         imb = features.imbalance_topn
         bid_hit = features.bid_hit_ratio
         ask_hit = features.ask_hit_ratio
@@ -55,7 +77,7 @@ class AlgoWheel:
                 mode = AlgoMode.BACKLOAD
             else:
                 mode = AlgoMode.NORMAL
-        else:  # SELL
+        else:
             if imb < -cfg.imbalance_threshold and bid_hit > cfg.hit_ratio_threshold:
                 mode = AlgoMode.FRONTLOAD
             elif imb > cfg.imbalance_threshold and ask_hit > cfg.hit_ratio_threshold:
@@ -64,7 +86,14 @@ class AlgoWheel:
                 mode = AlgoMode.NORMAL
 
         logger.info(
-            "wheel %s %s -> %s (imb=%.3f bid_hit=%.2f ask_hit=%.2f)",
-            parent.symbol, parent.side.value, mode.value, imb, bid_hit, ask_hit,
+            "wheel %s %s -> %s (imb=%.3f bid_hit=%.2f ask_hit=%.2f T=%.2f H=%.2f)",
+            parent.symbol,
+            parent.side.value,
+            mode.value,
+            imb,
+            bid_hit,
+            ask_hit,
+            cfg.imbalance_threshold,
+            cfg.hit_ratio_threshold,
         )
         return mode

@@ -8,14 +8,21 @@ This runbook describes how to operate **Algo Trading Hub** in a production-like 
 
 ### 1.1 Process model (authoritative)
 
-A **single Python process** (`backend/main.py`) runs:
+**Trading process** (`backend/main.py`):
 
 - The trading **Engine** (asyncio).
 - **Uvicorn** serving FastAPI on the same event loop.
 
+**Analytics worker** (optional second process, spawned by default):
+
+- `python -m analytics.worker_main` — runs backtest and kline download jobs from `data/jobs/`.
+- Settings: `ANALYTICS_WORKER_ENABLED`, `ANALYTICS_WORKER_MODE` (`embedded` \| `external` \| `disabled`).
+- API: `POST /api/backtest/run` and `/download` return `202` + `job_id`; poll `GET /api/backtest/jobs/{id}`.
+- CLI calibrators (`mm_spread_pipeline`, `symbol_calibrator`) remain separate manual processes; avoid heavy disk writes on `data/klines/` during live capture if possible.
+
 Implications:
 
-- **Vertical scaling** only for that process (CPU, network, kernel file descriptors).
+- **Vertical scaling** for the trading process (CPU, network, kernel file descriptors); worker uses additional cores for pandas/backtest.
 - **No horizontal replica** of the live engine state without external redesign (single-writer to the venue per API key is typical for this pattern).
 - A process crash clears **in-memory** circuit-breaker state; persisted audit lives via [`Run archive`](../backend/README.md#run-archive).
 

@@ -139,11 +139,12 @@ class MarketMakingStrategy(StrategyBase):
         qty = abs(pos_qty)
         if qty <= 0:
             return None
+        scratch_bps = mm_core.mm_float(feat.symbol, self._settings, "mm_exit_scratch_bps")
         if pos_qty > 0:
             return QuoteIntent(
                 symbol=feat.symbol,
                 bid_price=None,
-                ask_price=mid * 0.9995,
+                ask_price=mm_core.exit_pegged_price(mid, scratch_bps=scratch_bps, reduce_long=True),
                 bid_qty=0.0,
                 ask_qty=qty,
                 reason=reason,
@@ -152,7 +153,7 @@ class MarketMakingStrategy(StrategyBase):
             )
         return QuoteIntent(
             symbol=feat.symbol,
-            bid_price=mid * 1.0005,
+            bid_price=mm_core.exit_pegged_price(mid, scratch_bps=scratch_bps, reduce_long=False),
             ask_price=None,
             bid_qty=qty,
             ask_qty=0.0,

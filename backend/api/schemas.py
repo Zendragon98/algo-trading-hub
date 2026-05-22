@@ -319,6 +319,22 @@ class BacktestRunRequestDTO(BaseModel):
     settings_overrides: dict[str, object] = Field(default_factory=dict)
 
 
+class BacktestJobAcceptedDTO(BaseModel):
+    job_id: str
+    status: str = "pending"
+
+
+class AnalyticsJobDTO(BaseModel):
+    id: str
+    type: str
+    status: str
+    progress: float = 0.0
+    result: dict[str, object] | None = None
+    error: str | None = None
+    created_at: str = ""
+    updated_at: str = ""
+
+
 class BacktestMetricsDTO(BaseModel):
     total_return_pct: float
     max_drawdown_pct: float

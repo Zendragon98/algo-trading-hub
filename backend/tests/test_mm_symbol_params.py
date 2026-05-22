@@ -1,0 +1,49 @@
+"""Per-symbol MM spread resolution."""
+
+from common.config import Settings
+from engine.market_data.feature_store import Features
+from engine.strategies.mm_core import compute_quote_pricing
+from engine.strategies.mm_symbol_params import resolve_mm_params
+
+
+def test_per_symbol_half_spread_from_map() -> None:
+    s = Settings(
+        mm_quote_half_spread_bps=3.0,
+        mm_symbol_half_spread_bps={"BTCUSDT": 2.0, "DOGEUSDT": 18.0},
+        mm_quote_use_venue_spread_floor=False,
+    )
+    btc = resolve_mm_params("BTCUSDT", s)
+    doge = resolve_mm_params("DOGEUSDT", s)
+    assert btc.half_spread_bps == 2.0
+    assert doge.half_spread_bps == 18.0
+
+
+def test_csv_env_style_half_spread() -> None:
+    s = Settings.model_validate(
+        {"mm_symbol_half_spread_bps": "BTCUSDT:2.5,ETHUSDT:3.5"},
+    )
+    assert resolve_mm_params("ETHUSDT", s).half_spread_bps == 3.5
+
+
+def test_venue_spread_floor_widens_illiquid_symbol() -> None:
+    s = Settings(
+        mm_quote_half_spread_bps=2.0,
+        mm_quote_use_venue_spread_floor=True,
+        mm_quote_venue_spread_mult=1.0,
+    )
+    feat = Features(symbol="DOGEUSDT", mid=0.1, spread_bps=40.0)
+    p = resolve_mm_params("DOGEUSDT", s, feat)
+    assert p.half_spread_bps >= 20.0
+    assert p.venue_half_floor_bps >= 20.0
+
+
+def test_quote_pricing_uses_different_half_per_symbol() -> None:
+    s = Settings(
+        mm_quote_use_venue_spread_floor=False,
+        mm_symbol_half_spread_bps={"BTCUSDT": 2.0, "DOGEUSDT": 20.0},
+    )
+    feat_btc = Features(symbol="BTCUSDT", mid=100.0, spread_bps=1.0)
+    feat_doge = Features(symbol="DOGEUSDT", mid=0.1, spread_bps=30.0)
+    btc = compute_quote_pricing(feat=feat_btc, settings=s, skew_avg=0.0, inv_ratio=0.0)
+    doge = compute_quote_pricing(feat=feat_doge, settings=s, skew_avg=0.0, inv_ratio=0.0)
+    assert doge.bid_half_bps > btc.bid_half_bps * 3

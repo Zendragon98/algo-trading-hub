@@ -227,6 +227,7 @@ def test_pair_unwinds_when_basis_diverges_past_stop_z() -> None:
     assert by_sym["BTCUSDC"].side is Side.BUY
     assert by_sym["BTCUSDT"].side is Side.SELL
     assert all(s.reason.startswith("pairs_stop") for s in stop_signals)
+    assert all(s.reduce_only for s in stop_signals)
     assert all(s.qty == stats.open_qty or s.qty == 0.05 or s.qty > 0 for s in stop_signals)
     # Strategy waits for both legs to fill before resetting its internal state.
     assert stats.open_side == +1
@@ -259,6 +260,7 @@ def test_pair_take_profit_on_convergence_uses_pairs_close_reason() -> None:
     ))
     assert len(converged) == 2
     assert all(s.reason.startswith("pairs_close") for s in converged)
+    assert all(s.reduce_only for s in converged)
 
 
 def test_pair_strategy_manages_own_risk() -> None:

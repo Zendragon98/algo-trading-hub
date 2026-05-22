@@ -1,22 +1,19 @@
-"""Backtest datasets, download, and offline strategy runs."""
+"""Backtest datasets, download, and offline strategy runs (async job queue)."""
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-logger = logging.getLogger(__name__)
-
-from analytics.backtest.runner import (
-    BacktestResult,
-    list_saved_results,
-    load_saved_result,
-    run_backtest,
+from analytics.backtest.runner import list_saved_results, load_saved_result
+from analytics.jobs import (
+    enqueue_job,
+    list_jobs,
+    load_job,
+    resolve_jobs_dir,
 )
-from analytics.data_loader import download_klines
 from analytics.kline_store import (
     backend_data_root,
     list_run_ids_with_bars,
@@ -25,15 +22,19 @@ from analytics.kline_store import (
 from common.config import Settings, get_settings
 
 from ..schemas import (
+    AnalyticsJobDTO,
     BacktestDatasetDTO,
     BacktestDownloadRequestDTO,
     BacktestFillDTO,
+    BacktestJobAcceptedDTO,
     BacktestMetricsDTO,
     BacktestResultDTO,
     BacktestResultSummaryDTO,
     BacktestRunRequestDTO,
     BacktestRunSessionDTO,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
 
@@ -45,43 +46,34 @@ def _persist_base(settings: Settings) -> Path:
     return base
 
 
-def _parse_dt(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+def _jobs_dir(request: Request, settings: Settings) -> Path:
+    raw = getattr(request.app.state, "analytics_jobs_dir", None)
+    if raw is not None:
+        return Path(raw)
+    return resolve_jobs_dir(settings.analytics_jobs_dir)
 
 
-def _result_to_dto(result: BacktestResult) -> BacktestResultDTO:
-    return BacktestResultDTO(
-        run_id=result.run_id,
-        strategy=result.strategy,
-        dataset=result.dataset,
-        bar_count=result.bar_count,
-        symbols=result.symbols,
-        metrics=BacktestMetricsDTO(
-            total_return_pct=result.metrics.total_return_pct,
-            max_drawdown_pct=result.metrics.max_drawdown_pct,
-            trade_count=result.metrics.trade_count,
-            win_rate=result.metrics.win_rate,
-            realized_pnl=result.metrics.realized_pnl,
-            final_equity=result.metrics.final_equity,
-        ),
-        equity_curve=result.equity_curve,
-        fills=[
-            BacktestFillDTO(
-                symbol=f.symbol,
-                side=f.side,
-                qty=f.qty,
-                price=f.price,
-                ts=f.ts,
-                reason=f.reason,
-                pnl=f.pnl,
-                action=f.action,
-            )
-            for f in result.fills
-        ],
-        notes=result.notes,
+def _job_to_dto(record) -> AnalyticsJobDTO:
+    return AnalyticsJobDTO(
+        id=record.id,
+        type=record.type,
+        status=record.status,
+        progress=record.progress,
+        result=record.result,
+        error=record.error,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
     )
+
+
+def _ensure_worker(settings: Settings) -> None:
+    if not settings.analytics_worker_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="analytics worker disabled; set ANALYTICS_WORKER_ENABLED=true",
+        )
+    if (settings.analytics_worker_mode or "embedded").strip().lower() == "disabled":
+        raise HTTPException(status_code=503, detail="analytics worker mode is disabled")
 
 
 @router.get("/datasets", response_model=list[BacktestDatasetDTO])
@@ -112,64 +104,78 @@ async def list_capture_sessions(
     return [BacktestRunSessionDTO(run_id=rid, label=rid) for rid in ids]
 
 
-@router.post("/download")
+@router.get("/jobs", response_model=list[AnalyticsJobDTO])
+async def list_analytics_jobs(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    limit: int = 50,
+) -> list[AnalyticsJobDTO]:
+    jobs = list_jobs(_jobs_dir(request, settings), limit=limit)
+    return [_job_to_dto(j) for j in jobs]
+
+
+@router.get("/jobs/{job_id}", response_model=AnalyticsJobDTO)
+async def get_analytics_job(
+    job_id: str,
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> AnalyticsJobDTO:
+    record = load_job(_jobs_dir(request, settings), job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return _job_to_dto(record)
+
+
+@router.post("/download", status_code=202, response_model=BacktestJobAcceptedDTO)
 async def download_dataset(
     body: BacktestDownloadRequestDTO,
+    request: Request,
     settings: Settings = Depends(get_settings),
-) -> dict:
+) -> BacktestJobAcceptedDTO:
+    _ensure_worker(settings)
     logger.info(
-        "backtest download requested symbols=%s interval=%s days=%d",
+        "backtest download enqueued symbols=%s interval=%s days=%d",
         body.symbols,
         body.interval,
         body.days,
     )
-    try:
-        results = await download_klines(
-            body.symbols,
-            interval=body.interval,
-            days=body.days,
-            settings=settings,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("backtest download failed")
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {
-        "ok": True,
-        "downloaded": [
-            {"symbol": r.symbol, "interval": r.interval, "rows": r.rows, "path": r.path}
-            for r in results
-        ],
-    }
+    record = enqueue_job(
+        "kline_download",
+        {
+            "symbols": body.symbols,
+            "interval": body.interval,
+            "days": body.days,
+        },
+        jobs_dir=_jobs_dir(request, settings),
+    )
+    return BacktestJobAcceptedDTO(job_id=record.id, status=record.status)
 
 
-@router.post("/run", response_model=BacktestResultDTO)
+@router.post("/run", status_code=202, response_model=BacktestJobAcceptedDTO)
 async def run_backtest_endpoint(
     body: BacktestRunRequestDTO,
+    request: Request,
     settings: Settings = Depends(get_settings),
-) -> BacktestResultDTO:
-    merged = settings.model_copy(
-        update={"strategy": body.strategy, **(body.settings_overrides or {})},
-    )
+) -> BacktestJobAcceptedDTO:
+    _ensure_worker(settings)
     logger.info(
-        "backtest run requested strategy=%s dataset=%s",
+        "backtest run enqueued strategy=%s dataset=%s",
         body.strategy,
         body.dataset,
     )
-    try:
-        result = run_backtest(
-            merged,
-            dataset=body.dataset,
-            start=_parse_dt(body.start),
-            end=_parse_dt(body.end),
-            persist_dir=_persist_base(settings),
-        )
-    except ValueError as exc:
-        logger.warning("backtest run rejected: %s", exc)
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("backtest run failed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return _result_to_dto(result)
+    record = enqueue_job(
+        "backtest_run",
+        {
+            "strategy": body.strategy,
+            "dataset": body.dataset,
+            "start": body.start,
+            "end": body.end,
+            "settings_overrides": body.settings_overrides,
+            "persist_dir": str(_persist_base(settings)),
+        },
+        jobs_dir=_jobs_dir(request, settings),
+    )
+    return BacktestJobAcceptedDTO(job_id=record.id, status=record.status)
 
 
 @router.get("/runs", response_model=list[BacktestResultSummaryDTO])

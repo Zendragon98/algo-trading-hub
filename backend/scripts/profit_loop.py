@@ -43,6 +43,7 @@ CYCLE_BASE_PATCH: dict[str, object] = {
     "reconcile_heal_on_mismatch": True,
     # .env often sets PAIR_CALIBRATION_PATH=data (entry_z=2); disable for soak tuning.
     "pair_calibration_path": "",
+    "symbol_calibration_path": "data/symbol_calibration.json",
 }
 
 STRATEGY_PATCHES: dict[str, dict[str, object]] = {
@@ -79,8 +80,10 @@ STRATEGY_PATCHES: dict[str, dict[str, object]] = {
     },
     "market_making": {
         "mm_symbols": LIQUID_SYMBOLS,
-        "mm_entry_tilt": 10.0,
-        "mm_exit_tilt": 3.0,
+        "mm_quote_half_spread_bps": 4.0,
+        "mm_symbol_half_spread_bps": {},
+        "mm_quote_use_venue_spread_floor": True,
+        "mm_skew_window_sec": 300.0,
         "mm_cooldown_sec": 60.0,
         "mm_max_entries_per_tick": 1,
         "mm_risk_per_trade_pct": 0.0008,
@@ -89,7 +92,7 @@ STRATEGY_PATCHES: dict[str, dict[str, object]] = {
     },
     "market_making_v2": {
         "mm2_symbols": ["BTCUSDT", "ETHUSDT"],
-        "mm2_entry_tilt": 6.25,
+        "mm2_min_spread_bps": 6.0,
         "mm2_min_skew_bps": 0.5,
         "mm2_tape_confirm": 0.0,
         "mm2_min_exit_profit_bps": 10.0,
@@ -105,8 +108,8 @@ _MARKER_COUNTS: dict[str, re.Pattern[str]] = {
     "pairs_trading_usdt_usdc": re.compile(r"PAIRS (entry|exit)", re.I),
     "sma_crossover": re.compile(r"SMA (open|close)", re.I),
     "blended_signals": re.compile(r"BLEND (open|close)", re.I),
-    "market_making": re.compile(r"MM (tilt|open|close)", re.I),
-    "market_making_v2": re.compile(r"MM2 (entry|exit)", re.I),
+    "market_making": re.compile(r"MM .* venue=", re.I),
+    "market_making_v2": re.compile(r"mm2_|MM .* venue=", re.I),
 }
 
 # MM2 + MM + SMA only — pairs (74 symbols) dominates flatten slippage in soak cycles.
@@ -238,17 +241,19 @@ def _tune_from_cycle(
             patch["sma_cooldown_sec"] = sp["sma_cooldown_sec"]
             patch["sma_risk_per_trade_pct"] = sp["sma_risk_per_trade_pct"]
         elif name == "market_making":
-            sp["mm_entry_tilt"] = min(12.0, float(sp.get("mm_entry_tilt", 10.0)) + 0.5)
+            sp["mm_quote_half_spread_bps"] = min(
+                8.0, float(sp.get("mm_quote_half_spread_bps", 4.0)) + 0.25,
+            )
             sp["mm_cooldown_sec"] = min(120.0, float(sp.get("mm_cooldown_sec", 60.0)) + 10.0)
             sp["mm_risk_per_trade_pct"] = max(0.0004, float(sp.get("mm_risk_per_trade_pct", 0.0008)) - 0.0001)
-            patch["mm_entry_tilt"] = sp["mm_entry_tilt"]
+            patch["mm_quote_half_spread_bps"] = sp["mm_quote_half_spread_bps"]
             patch["mm_cooldown_sec"] = sp["mm_cooldown_sec"]
             patch["mm_risk_per_trade_pct"] = sp["mm_risk_per_trade_pct"]
         elif name == "market_making_v2":
-            sp["mm2_entry_tilt"] = min(12.0, float(sp.get("mm2_entry_tilt", 7.5)) + 0.25)
+            sp["mm2_min_spread_bps"] = min(12.0, float(sp.get("mm2_min_spread_bps", 6.0)) + 0.5)
             sp["mm2_min_exit_profit_bps"] = min(12.0, float(sp.get("mm2_min_exit_profit_bps", 10.0)) + 0.5)
             sp["mm2_risk_per_trade_pct"] = max(0.0004, float(sp.get("mm2_risk_per_trade_pct", 0.0004)) - 0.0001)
-            patch["mm2_entry_tilt"] = sp["mm2_entry_tilt"]
+            patch["mm2_min_spread_bps"] = sp["mm2_min_spread_bps"]
             patch["mm2_min_exit_profit_bps"] = sp["mm2_min_exit_profit_bps"]
             patch["mm2_risk_per_trade_pct"] = sp["mm2_risk_per_trade_pct"]
 

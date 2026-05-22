@@ -87,6 +87,7 @@ class MarketBarCapturer:
         self._building: dict[str, _BuildingBar] = {}
         self._pending: dict[str, list[dict]] = {s: [] for s in self._symbols}
         self._last_flush_at = time.time()
+        self._flush_requested = False
 
     def _bucket_start(self, ts: float) -> int:
         t = int(ts)
@@ -114,8 +115,13 @@ class MarketBarCapturer:
             else:
                 current.update(mid, feat)
         if ts - self._last_flush_at >= self._flush_interval:
-            self.flush()
-            self._last_flush_at = ts
+            self._flush_requested = True
+
+    def flush_requested(self) -> bool:
+        if not self._flush_requested:
+            return False
+        self._flush_requested = False
+        return True
 
     def flush(self) -> None:
         """Write pending closed bars to per-run files and merge into library."""
