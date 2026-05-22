@@ -21,7 +21,7 @@ from ..schemas import LogDTO
 
 router = APIRouter(prefix="/api", tags=["logs"])
 
-_BUFFER: deque[LogDTO] = deque(maxlen=200)
+_BUFFER: deque[LogDTO] = deque(maxlen=300)
 _BUFFER_TASK: asyncio.Task | None = None
 
 
@@ -38,7 +38,8 @@ async def _populate_from_bus(bus: EventBus) -> None:
                 LogDTO(
                     ts=_fmt(event.ts),
                     level=payload.get("level", "info"),  # type: ignore[arg-type]
-                    msg=payload.get("msg", ""),
+                    msg=payload.get("msg", "") or payload.get("message", ""),
+                    logger=payload.get("logger"),
                 )
             )
 

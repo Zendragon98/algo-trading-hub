@@ -46,6 +46,10 @@ def _breaker_dto(status: BreakerStatus) -> BreakerStatusDTO:
     return BreakerStatusDTO(**status.to_dict())
 
 
+def _log_control_ok(action: str, engine: Engine) -> None:
+    logger.info("control %s ok status=%s", action, engine.status.value)
+
+
 async def _run_or_500(action: str, fn: Callable[[], Awaitable[T]]) -> T:
     """Surface engine errors to the dashboard with the underlying message.
 
@@ -75,24 +79,28 @@ async def start(engine: Engine = Depends(get_engine)) -> StatusDTO:
             await engine.resume()
 
     await _run_or_500("start", _go)
+    _log_control_ok("start", engine)
     return _status(engine)
 
 
 @router.post("/pause", response_model=StatusDTO)
 async def pause(engine: Engine = Depends(get_engine)) -> StatusDTO:
     await _run_or_500("pause", engine.pause)
+    _log_control_ok("pause", engine)
     return _status(engine)
 
 
 @router.post("/resume", response_model=StatusDTO)
 async def resume(engine: Engine = Depends(get_engine)) -> StatusDTO:
     await _run_or_500("resume", engine.resume)
+    _log_control_ok("resume", engine)
     return _status(engine)
 
 
 @router.post("/stop", response_model=StatusDTO)
 async def stop(engine: Engine = Depends(get_engine)) -> StatusDTO:
     await _run_or_500("stop", engine.stop)
+    _log_control_ok("stop", engine)
     return _status(engine)
 
 
@@ -122,6 +130,7 @@ async def shutdown(
             await engine.stop(force_flatten=True)
 
     await _run_or_500("shutdown", _kill)
+    _log_control_ok("shutdown", engine)
 
     async def _after_response() -> None:
         logger.info("shutdown requested via API (process exit scheduled)")
@@ -134,6 +143,7 @@ async def shutdown(
 @router.post("/flatten", response_model=StatusDTO)
 async def flatten(engine: Engine = Depends(get_engine)) -> StatusDTO:
     await _run_or_500("flatten", engine._flatten_and_wait_for_flat)
+    _log_control_ok("flatten", engine)
     return _status(engine)
 
 
@@ -143,6 +153,7 @@ async def update_risk(
     engine: Engine = Depends(get_engine),
 ) -> StatusDTO:
     engine.risk.update_max_risk_pct(body.max_risk_pct)
+    logger.info("control risk updated max_risk_pct=%.4f", body.max_risk_pct)
     return _status(engine)
 
 
@@ -163,6 +174,7 @@ async def set_strategy(
     if changed and engine.status is EngineStatus.RUNNING:
         await _run_or_500("strategy/market", engine.refresh_market_universe)
         await _run_or_500("strategy/sync", engine.sync_trading_book_from_rest)
+    logger.info("control strategy set name=%s changed=%s", body.name, changed)
     return _status(engine)
 
 
@@ -199,6 +211,12 @@ async def rearm_breakers(
     cleared = before - {s.code for s in breaker.active()}
     if cleared:
         engine.apply_breaker_rearm_side_effects(cleared)
+    logger.info(
+        "control breakers rearm code=%s target=%s cleared=%s",
+        body.code,
+        body.target,
+        sorted(cleared) if cleared else "none",
+    )
     return BreakerListDTO(
         active=[_breaker_dto(s) for s in breaker.active()],
         history=[_breaker_dto(s) for s in breaker.history()],
@@ -218,6 +236,12 @@ async def trip_breakers(
             flatten=body.flatten,
             pause=body.pause,
         ),
+    )
+    logger.info(
+        "control breakers trip flatten=%s pause=%s detail=%s",
+        body.flatten,
+        body.pause,
+        body.detail or "-",
     )
     breaker = engine.risk.breaker
     return BreakerListDTO(

@@ -749,9 +749,10 @@ function applyEvent(prev: AlgoStream, event: WsEvent): AlgoStream {
       const log: LogEntry = {
         ts: fmtTime(event.ts),
         level: event.data.level,
-        msg: event.data.msg,
+        msg: event.data.msg ?? (event.data as { message?: string }).message ?? "",
+        logger: event.data.logger,
       };
-      return { ...prev, logs: [log, ...prev.logs].slice(0, 80) };
+      return { ...prev, logs: [log, ...prev.logs].slice(0, 200) };
     }
 
     case "breaker": {

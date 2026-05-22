@@ -237,6 +237,7 @@ class OrderConnection:
             try:
                 event = json.loads(raw)
             except json.JSONDecodeError:
+                logger.debug("user_ws non-json frame (len=%d)", len(raw))
                 continue
 
             try:

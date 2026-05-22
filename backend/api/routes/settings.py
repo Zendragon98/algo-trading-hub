@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -10,6 +11,8 @@ from pydantic import ValidationError
 from engine.core.engine import Engine
 
 from ..dependencies import get_engine
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -47,5 +50,9 @@ def patch_settings(
         raise HTTPException(status_code=400, detail=exc.errors()) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("settings patch failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    logger.info("settings patched keys=%s", sorted(patch.keys()))
     raw = new_s.model_dump(mode="json")
     return {"ok": True, "settings": _mask_secrets(raw)}

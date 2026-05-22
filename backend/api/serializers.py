@@ -121,6 +121,9 @@ def execution_report_to_parent_dto(report: ExecutionReport) -> ParentOrderDTO:
         impact_bps=report.impact_bps,
         duration_sec=report.duration_sec,
         algo_mode=report.algo_mode,
+        notes=report.notes,
+        signal_score=report.signal_score,
+        strategy_name=report.strategy_name,
         started_at=report.started_at,
     )
 
@@ -140,6 +143,9 @@ def execution_report_to_dto(report: ExecutionReport) -> ExecutionReportDTO:
         impact_bps=report.impact_bps,
         duration_sec=report.duration_sec,
         algo_mode=report.algo_mode,
+        notes=report.notes,
+        signal_score=report.signal_score,
+        strategy_name=report.strategy_name,
         started_at=report.started_at,
         completed_at=report.completed_at,
     )

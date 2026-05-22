@@ -1,0 +1,75 @@
+"""QuoteExecutor posts/cancels post-only quotes."""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+
+os.environ.setdefault("BINANCE_API_KEY", "test")
+os.environ.setdefault("BINANCE_API_SECRET", "test")
+
+from common.config import Settings  # noqa: E402
+from common.enums import OrderStatus, Side  # noqa: E402
+from common.events import EventBus  # noqa: E402
+from common.types import ChildOrder, QuoteIntent  # noqa: E402
+from engine.execution.quote_executor import QuoteExecutor  # noqa: E402
+from engine.market_data.own_quote_book import OwnQuoteBook  # noqa: E402
+from engine.orders.order_manager import OrderManager  # noqa: E402
+from gateways.gateway_interface import GatewayInterface, SymbolFilters  # noqa: E402
+
+
+class _MockGateway(GatewayInterface):
+    def __init__(self) -> None:
+        self.placed: list[ChildOrder] = []
+
+    async def connect(self) -> None: ...
+    async def disconnect(self) -> None: ...
+    async def subscribe_market_data(self, *a, **kw) -> None: ...
+    async def subscribe_user_data(self, *a, **kw) -> None: ...
+
+    async def place_order(self, order: ChildOrder) -> ChildOrder:
+        order.venue_order_id = "V1"
+        order.status = OrderStatus.ACK
+        self.placed.append(order)
+        return order
+
+    async def cancel_order(self, symbol: str, client_order_id: str) -> None:
+        return
+
+    def get_symbol_filters(self, symbol: str) -> SymbolFilters | None:
+        return None
+
+    async def fetch_positions(self):
+        return []
+
+    async def fetch_balance(self) -> float:
+        return 10_000.0
+
+    async def book_snapshot(self, symbol: str, depth: int = 100) -> dict:
+        return {"lastUpdateId": 0, "bids": [], "asks": []}
+
+    async def klines(self, *a, **kw):
+        return []
+
+
+@pytest.mark.asyncio
+async def test_refresh_submits_bid_and_ask() -> None:
+    bus = EventBus()
+    gw = _MockGateway()
+    om = OrderManager(gw, bus)
+    own = OwnQuoteBook()
+    ex = QuoteExecutor(om, own, Settings(mm_quote_enabled=True))
+    intent = QuoteIntent(
+        symbol="BTCUSDT",
+        strategy_name="market_making",
+        bid_price=99.0,
+        bid_qty=0.01,
+        ask_price=101.0,
+        ask_qty=0.01,
+        reason="test",
+    )
+    await ex.refresh([intent])
+    assert len(gw.placed) == 2
+    sides = {o.side for o in gw.placed}
+    assert Side.BUY in sides and Side.SELL in sides

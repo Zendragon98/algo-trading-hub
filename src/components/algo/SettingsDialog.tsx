@@ -71,7 +71,8 @@ function isStrategyParamKey(key: string): boolean {
     key.startsWith("pair_") ||
     key.startsWith("sma_") ||
     key.startsWith("mm_") ||
-    key.startsWith("mm2_")
+    key.startsWith("mm2_") ||
+    key.startsWith("blend_")
   );
 }
 
@@ -87,6 +88,7 @@ function isSystemKey(key: string): boolean {
     key === "cors_origins" ||
     key.startsWith("persist_") ||
     key.startsWith("log_file_") ||
+    key === "log_level" ||
     key === "engine_autostart"
   );
 }
@@ -96,6 +98,7 @@ const BOOT_STRATEGY_OPTIONS: { value: string; label: string }[] = [
   { value: "all", label: "All strategies (netted)" },
   { value: "pairs_trading_usdt_usdc", label: "Pairs trading (USDT/USDC)" },
   { value: "sma_crossover", label: "SMA crossover" },
+  { value: "blended_signals", label: "Blended signals (EMA/MACD/RSI/BB)" },
   { value: "market_making", label: "Market making (skew + tape)" },
   { value: "market_making_v2", label: "Market making 2.0 (fee-aware fade)" },
 ];
@@ -282,6 +285,35 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
       );
     }
 
+    if (key === "log_level") {
+      const v = String(val ?? "").toLowerCase();
+      const logLevelOptions = [
+        { value: "debug", label: "debug (verbose — WS, MD, reconciliation)" },
+        { value: "info", label: "info (default)" },
+        { value: "warning", label: "warning" },
+        { value: "error", label: "error" },
+      ];
+      const known = logLevelOptions.some((o) => o.value === v);
+      const options = known ? logLevelOptions : [{ value: v, label: `${v} (current)` }, ...logLevelOptions];
+      return (
+        <div key={key} className="space-y-1.5">
+          <Label htmlFor={key} className="text-[11px] uppercase tracking-wider text-muted-foreground">
+            {label}
+          </Label>
+          <SettingsSelect
+            id={key}
+            value={v || "info"}
+            onChange={(next) => updateField(key, next)}
+            options={options}
+          />
+          <p className="text-[10px] text-muted-foreground">
+            Applies immediately to the running engine. Debug lines appear in the terminal,{" "}
+            <code className="font-mono">app.log</code>, and LIVE LOG (tagged DBG).
+          </p>
+        </div>
+      );
+    }
+
     if (key === "mm_signal_mode") {
       const v = String(val ?? "").toLowerCase();
       const known = v === "fade" || v === "follow";
@@ -343,10 +375,34 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
     const common = ["strategy", "symbols", "base_currency"].filter((k) => strategyKeys.includes(k));
     const pair = strategyKeys.filter((k) => k.startsWith("pair_"));
     const sma = strategyKeys.filter((k) => k.startsWith("sma_"));
-    const mm = strategyKeys.filter(
+    const mmAll = strategyKeys.filter(
       (k) => k.startsWith("mm_") && !k.startsWith("mm2_"),
     );
+    const mmInstPrefixes = [
+      "mm_institutional",
+      "mm_quote",
+      "mm_urgent",
+      "mm_tape_pressure",
+      "mm_max_inventory",
+      "mm_inventory",
+      "mm_reservation",
+      "mm_jump",
+      "mm_max_adverse",
+      "mm_markout",
+      "mm_scratch",
+      "mm_min_exit",
+      "mm_max_hold",
+      "mm_catastrophe",
+      "mm_depletion",
+      "mm_large_trade",
+      "mm_toxicity",
+    ];
+    const mmInst = mmAll.filter((k) =>
+      mmInstPrefixes.some((p) => k === p || k.startsWith(`${p}_`)),
+    );
+    const mmLegacy = mmAll.filter((k) => !mmInst.includes(k));
     const mm2 = strategyKeys.filter((k) => k.startsWith("mm2_"));
+    const blend = strategyKeys.filter((k) => k.startsWith("blend_"));
 
     return (
       <div className="space-y-4">
@@ -381,10 +437,17 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
           </div>
         )}
 
-        {mm.length > 0 && (
+        {mmInst.length > 0 && (
           <div className="space-y-3">
-            <SectionTitle>Market making (skew + imbalance + tape)</SectionTitle>
-            {mm.map((k) => renderField(k))}
+            <SectionTitle>Market making — institutional (quotes, inventory, toxicity)</SectionTitle>
+            {mmInst.map((k) => renderField(k))}
+          </div>
+        )}
+
+        {mmLegacy.length > 0 && (
+          <div className="space-y-3">
+            <SectionTitle>Market making — skew, tape, sizing</SectionTitle>
+            {mmLegacy.map((k) => renderField(k))}
           </div>
         )}
 
@@ -392,6 +455,13 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
           <div className="space-y-3">
             <SectionTitle>Market making 2.0 (fee-aware fade)</SectionTitle>
             {mm2.map((k) => renderField(k))}
+          </div>
+        )}
+
+        {blend.length > 0 && (
+          <div className="space-y-3">
+            <SectionTitle>Blended signals (EMA / MACD / RSI / BB)</SectionTitle>
+            {blend.map((k) => renderField(k))}
           </div>
         )}
       </div>

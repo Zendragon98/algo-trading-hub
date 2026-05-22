@@ -66,4 +66,4 @@ async def stream(websocket: WebSocket) -> None:
         try:
             await websocket.close()
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug("ws close after error raised (ignored)")

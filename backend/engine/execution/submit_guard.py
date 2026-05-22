@@ -117,13 +117,16 @@ class SubmitGuard:
     def can_submit_parent(self, symbol: str) -> tuple[bool, str]:
         """Pre-router check used by ExecutionRouter.submit."""
         if self._breaker.is_engine_halted():
+            logger.debug("submit blocked %s: engine_breaker", symbol)
             return False, "engine_breaker"
         if self._breaker.is_blocked(BreakerScope.SYMBOL, symbol):
+            logger.debug("submit blocked %s: symbol_breaker", symbol)
             return False, "symbol_breaker"
         if (
             self._max_open_parents > 0
             and self._open_parent_count() >= self._max_open_parents
         ):
+            logger.debug("submit blocked %s: max_open_parents", symbol)
             return False, "max_open_parents"
         return True, ""
 
@@ -139,8 +142,10 @@ class SubmitGuard:
         """
         if not reduce_only:
             if self._breaker.is_engine_halted():
+                logger.debug("child gate blocked %s: engine_breaker", symbol)
                 return False, "engine_breaker"
             if self._breaker.is_blocked(BreakerScope.SYMBOL, symbol):
+                logger.debug("child gate blocked %s: symbol_breaker", symbol)
                 return False, "symbol_breaker"
         await self._bucket.acquire()
         if float(self._symbol_rate) > 0:
@@ -158,6 +163,12 @@ class SubmitGuard:
         if status is OrderStatus.REJECTED:
             self._reject_streak[symbol] += 1
             if self._reject_streak[symbol] >= self._max_rejects:
+                streak = self._reject_streak[symbol]
+                logger.warning(
+                    "repeat_reject streak=%d on %s — tripping symbol breaker",
+                    streak,
+                    symbol,
+                )
                 self._breaker.trip(
                     Breach(
                         code="repeat_reject",
@@ -165,7 +176,7 @@ class SubmitGuard:
                         severity=BreakerSeverity.MINOR,
                         target=symbol,
                         cooldown_sec=self._reject_cooldown_sec,
-                        detail=f"streak={self._reject_streak[symbol]}",
+                        detail=f"streak={streak}",
                     )
                 )
                 # Reset so a single trip per cooldown is enough; the

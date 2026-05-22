@@ -38,8 +38,9 @@ export type Trade = {
 
 export type LogEntry = {
   ts: string;
-  level: "info" | "warn" | "error" | "signal";
+  level: "debug" | "info" | "warn" | "error" | "signal";
   msg: string;
+  logger?: string;
 };
 
 // Live working child order tracked by the OMS panel.
@@ -74,6 +75,9 @@ export type ExecutionParent = {
   impactBps: number;
   durationSec: number;
   algoMode: string | null;
+  notes: string;
+  signalScore: number;
+  strategyName: string;
   startedAt: number;
   completedAt: number | null;
 };
@@ -144,6 +148,64 @@ export type BreakerStatus = {
 export type BreakerList = {
   active: BreakerStatus[];
   history: BreakerStatus[];
+};
+
+export type BacktestDataset = {
+  symbol: string;
+  interval: string;
+  source: "live" | "download" | "mixed";
+  rows: number;
+  start: string | null;
+  end: string | null;
+  path: string;
+  runIds: string[];
+  updatedAt: string;
+};
+
+export type BacktestSession = {
+  runId: string;
+  label: string;
+};
+
+export type BacktestMetrics = {
+  totalReturnPct: number;
+  maxDrawdownPct: number;
+  tradeCount: number;
+  winRate: number;
+  realizedPnl: number;
+  finalEquity: number;
+};
+
+export type BacktestFill = {
+  symbol: string;
+  side: string;
+  qty: number;
+  price: number;
+  ts: number;
+  reason: string;
+  pnl: number;
+  action: string;
+};
+
+export type BacktestResult = {
+  runId: string;
+  strategy: string;
+  dataset: string;
+  barCount: number;
+  symbols: string[];
+  metrics: BacktestMetrics;
+  equityCurve: number[];
+  fills: BacktestFill[];
+  notes: string[];
+};
+
+export type BacktestResultSummary = {
+  runId: string;
+  strategy: string;
+  dataset: string;
+  barCount: number;
+  totalReturnPct: number;
+  savedAt: string | null;
 };
 
 export type DailyReport = {

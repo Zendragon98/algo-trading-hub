@@ -208,6 +208,9 @@ class OrderReconciler:
                 )
             )
         if ok:
+            logger.debug(
+                "order reconcile ok (venue_only=0 local_only=0)",
+            )
             self._breaker.rearm(code="order_reconcile_mismatch")
         elif self._on_mismatch is not None:
             await self._on_mismatch(self.last_result)

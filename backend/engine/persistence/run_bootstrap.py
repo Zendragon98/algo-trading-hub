@@ -16,6 +16,7 @@ from common.config import Settings
 from common.events import EventBus
 from engine.persistence.event_recorder import EventRecorder, RecorderConfig, make_run_dir
 from engine.persistence.journal import EventJournal, find_previous_wal
+from engine.persistence.market_capture import MarketBarCapturer
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class RunBootstrap:
     log_file: Path | None
     journal: EventJournal | None
     recorder: EventRecorder | None
+    market_capturer: MarketBarCapturer | None
     recovery_wal: Path | None
 
 
@@ -98,24 +100,38 @@ async def bootstrap_run(
 ) -> RunBootstrap:
     """Resolve run dir, journal, recorder, and optional WAL recovery path."""
     run_dir = resolve_run_dir(settings, backend_root)
+    if run_dir is not None:
+        logger.info("run directory: %s", run_dir)
     log_file = (
         run_dir / "app.log"
         if (run_dir is not None and settings.log_file_enabled)
         else None
     )
+    if log_file is not None:
+        logger.info("app log file: %s", log_file)
     journal = open_journal(settings, bus, run_dir)
+    if journal is not None:
+        logger.info("event journal enabled")
     recorder = await start_recorder(settings, bus, run_dir)
+    if recorder is not None:
+        logger.info("event recorder enabled (dir=%s)", recorder.run_dir)
     recovery_wal = resolve_recovery_wal(settings, backend_root, run_dir=run_dir)
     return RunBootstrap(
         run_dir=run_dir,
         log_file=log_file,
         journal=journal,
         recorder=recorder,
+        market_capturer=None,
         recovery_wal=recovery_wal,
     )
 
 
 async def shutdown_bootstrap(bootstrap: RunBootstrap) -> None:
+    if bootstrap.market_capturer is not None:
+        try:
+            bootstrap.market_capturer.flush()
+        except Exception:  # noqa: BLE001
+            logger.exception("market capture flush failed during shutdown")
     if bootstrap.recorder is not None:
         await bootstrap.recorder.stop()
     if bootstrap.journal is not None:

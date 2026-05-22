@@ -71,6 +71,13 @@ class SlippageGuard:
             return
 
         self._aborted.add(parent_id)
+        logger.warning(
+            "slippage breach parent=%s slip=%.1fbps cap=%.1fbps symbol=%s — cancel + trip",
+            parent_id,
+            report.slippage_bps,
+            max_slippage_bps,
+            report.symbol,
+        )
         self._breaker.trip(
             Breach(
                 code="slippage_breach",

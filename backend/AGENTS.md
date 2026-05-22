@@ -27,6 +27,8 @@ ruff check .
 - **`TRADING_MODE=live`** must align with **live** venue hosts; the gateway fails closed on sandbox mismatch.
 - **Reduce-only** exits bypass entry breakers by design — preserve this when changing risk code.
 - **Venue truth:** position and wallet reconciliation beats UI/WebSocket convenience.
+- **Execution routing:** Never route `market_making` / `market_making_v2` through `ExecutionRouter` / `VwapExecutor`. MM uses `QuoteIntent` + `QuoteExecutor` only; alpha strategies use VWAP.
+- **MM risk:** When `mm_institutional_risk_enabled` is on, MM symbols are externally managed — do not re-arm fixed-% brackets for them without an explicit product change.
 
 ## API / schemas
 

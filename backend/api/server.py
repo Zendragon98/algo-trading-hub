@@ -20,8 +20,22 @@ from fastapi.responses import JSONResponse
 from common.config import Settings, get_settings
 from common.enums import EventType
 from common.events import EventBus
+from common.logging import flush_pending_bus_logs
 
-from .routes import control, execution, health, klines, logs, orders, positions, reports, settings, status, trades
+from .routes import (
+    backtest,
+    control,
+    execution,
+    health,
+    klines,
+    logs,
+    orders,
+    positions,
+    reports,
+    settings,
+    status,
+    trades,
+)
 from .schemas import LogDTO
 from .ws import router as ws_router
 
@@ -42,7 +56,8 @@ async def _log_buffer_pump(bus: EventBus) -> None:
                 LogDTO(
                     ts=_fmt(event.ts),
                     level=payload.get("level", "info"),  # type: ignore[arg-type]
-                    msg=payload.get("msg", ""),
+                    msg=payload.get("msg", "") or payload.get("message", ""),
+                    logger=payload.get("logger"),
                 )
             )
 
@@ -61,6 +76,7 @@ def create_app(
         # Engine is started by `backend/main.py` *before* uvicorn boots so
         # that any startup failure surfaces immediately. The pump is the
         # only background task we own here.
+        await flush_pending_bus_logs(bus)
         pump = asyncio.create_task(_log_buffer_pump(bus), name="log-buffer-pump")
         try:
             yield
@@ -68,8 +84,10 @@ def create_app(
             pump.cancel()
             try:
                 await pump
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+            except asyncio.CancelledError:
+                logger.debug("log buffer pump cancelled")
+            except Exception:  # noqa: BLE001
+                logger.exception("log buffer pump shutdown raised")
 
     app = FastAPI(
         title="Algo Trading API",
@@ -105,6 +123,7 @@ def create_app(
     app.include_router(health.router)
     app.include_router(status.router)
     app.include_router(reports.router)
+    app.include_router(backtest.router)
     app.include_router(positions.router)
     app.include_router(trades.router)
     app.include_router(orders.router)

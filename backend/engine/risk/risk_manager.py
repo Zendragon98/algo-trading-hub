@@ -144,11 +144,14 @@ class RiskManager:
     ) -> RiskDecision:
         # Engine- or symbol-scope breach blocks every entry path.
         if self._breaker.is_engine_halted():
+            logger.warning("risk veto kill_switch %s", signal.symbol)
             return RiskDecision(False, reason="kill_switch active")
         if self._breaker.is_blocked(BreakerScope.SYMBOL, signal.symbol):
+            logger.warning("risk veto symbol_breaker %s", signal.symbol)
             return RiskDecision(False, reason="symbol breaker active")
 
         if mid_price <= 0:
+            logger.warning("risk veto no_mid %s", signal.symbol)
             return RiskDecision(False, reason="no mid price for symbol")
 
         # Market-data freshness + spread blowout (minor symbol-scope trips).
@@ -186,16 +189,33 @@ class RiskManager:
 
         # Per-symbol exposure cap (in addition to the global gross cap below).
         if not self._exposure.symbol_ok(signal.symbol, notional):
+            logger.warning(
+                "risk veto symbol_exposure_cap %s notional=%.2f",
+                signal.symbol,
+                notional,
+            )
             return RiskDecision(False, reason="symbol_exposure_cap")
 
         # Free-margin floor: refuse to open new exposure if equity headroom
         # is already thin.
         if not self._exposure.margin_ok(notional):
+            logger.warning(
+                "risk veto free_margin_floor %s notional=%.2f equity=%.2f",
+                signal.symbol,
+                notional,
+                equity,
+            )
             return RiskDecision(False, reason="free_margin_floor")
 
         # Reject if the post-trade gross would exceed the hard ceiling.
         projected_gross = snap.gross_notional + notional
         if projected_gross > self._limits.max_gross_notional:
+            logger.warning(
+                "risk veto max_gross_notional %s projected=%.2f cap=%.2f",
+                signal.symbol,
+                projected_gross,
+                self._limits.max_gross_notional,
+            )
             return RiskDecision(False, reason="max_gross_notional breach")
 
         if qty <= 0:

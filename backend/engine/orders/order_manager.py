@@ -186,6 +186,16 @@ class OrderManager:
 
         if self._submit_guard is not None:
             self._submit_guard.record_status(placed.symbol, placed.status)
+        logger.info(
+            "order placed %s %s %s qty=%.8f type=%s status=%s venue_id=%s",
+            placed.id,
+            placed.symbol,
+            placed.side.value,
+            placed.qty,
+            placed.order_type.value,
+            placed.status.value,
+            placed.venue_order_id or "-",
+        )
         await self._publish_order(placed)
         return placed
 

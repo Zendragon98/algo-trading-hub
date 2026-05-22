@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
 from fastapi import APIRouter, Depends
+
+logger = logging.getLogger(__name__)
 
 from common.enums import EngineStatus
 
@@ -32,6 +35,13 @@ async def ready(engine: Engine = Depends(get_engine)) -> dict[str, object]:
         and (now - engine.oms.last_venue_truth_ts) < 120.0
     )
     ok = running and tick_fresh and user_fresh
+    if running and not ok:
+        logger.warning(
+            "readiness check failed engine=%s tick_fresh=%s user_data_fresh=%s",
+            engine.status.value,
+            tick_fresh,
+            user_fresh,
+        )
     return {
         "ready": ok,
         "engine": engine.status.value,

@@ -36,8 +36,9 @@ class TradeDTO(BaseModel):
 
 class LogDTO(BaseModel):
     ts: str
-    level: Literal["info", "warn", "error", "signal"]
+    level: Literal["debug", "info", "warn", "error", "signal"]
     msg: str
+    logger: str | None = None
 
 
 class StartupProgressDTO(BaseModel):
@@ -134,6 +135,9 @@ class ParentOrderDTO(BaseModel):
     impact_bps: float
     duration_sec: float
     algo_mode: str | None
+    notes: str = ""
+    signal_score: float = 0.0
+    strategy_name: str = ""
     started_at: float
 
 
@@ -153,6 +157,9 @@ class ExecutionReportDTO(BaseModel):
     impact_bps: float
     duration_sec: float
     algo_mode: str | None
+    notes: str = ""
+    signal_score: float = 0.0
+    strategy_name: str = ""
     started_at: float
     completed_at: float | None
 
@@ -279,3 +286,75 @@ class BreakerTripDTO(BaseModel):
     detail: str = ""
     flatten: bool = True
     pause: bool = True
+
+
+class BacktestDatasetDTO(BaseModel):
+    symbol: str
+    interval: str
+    source: Literal["live", "download", "mixed"]
+    rows: int
+    start: str | None = None
+    end: str | None = None
+    path: str
+    run_ids: list[str] = Field(default_factory=list)
+    updated_at: str = ""
+
+
+class BacktestRunSessionDTO(BaseModel):
+    run_id: str
+    label: str
+
+
+class BacktestDownloadRequestDTO(BaseModel):
+    symbols: list[str]
+    interval: str = "1m"
+    days: int = 7
+
+
+class BacktestRunRequestDTO(BaseModel):
+    strategy: str
+    dataset: str = "library"
+    start: str | None = None
+    end: str | None = None
+    settings_overrides: dict[str, object] = Field(default_factory=dict)
+
+
+class BacktestMetricsDTO(BaseModel):
+    total_return_pct: float
+    max_drawdown_pct: float
+    trade_count: int
+    win_rate: float
+    realized_pnl: float
+    final_equity: float
+
+
+class BacktestFillDTO(BaseModel):
+    symbol: str
+    side: str
+    qty: float
+    price: float
+    ts: float
+    reason: str
+    pnl: float = 0.0
+    action: str = "open"
+
+
+class BacktestResultDTO(BaseModel):
+    run_id: str
+    strategy: str
+    dataset: str
+    bar_count: int
+    symbols: list[str]
+    metrics: BacktestMetricsDTO
+    equity_curve: list[float]
+    fills: list[BacktestFillDTO]
+    notes: list[str] = Field(default_factory=list)
+
+
+class BacktestResultSummaryDTO(BaseModel):
+    run_id: str
+    strategy: str
+    dataset: str
+    bar_count: int
+    total_return_pct: float
+    saved_at: str | None = None

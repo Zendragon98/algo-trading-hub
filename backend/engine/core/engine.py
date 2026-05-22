@@ -19,30 +19,46 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from collections.abc import Awaitable, Callable
-from typing import Any, Iterable
+from typing import Any
 
 from common.config import Settings, normalize_strategy_name
-from common.enums import EngineStatus, EventType, LogLevel, OrderStatus, OrderType, Side, Urgency
+from common.enums import EngineStatus, EventType, OrderStatus, OrderType, Side, Urgency
 from common.events import Event, EventBus
-from common.types import ChildOrder, Fill, ParentOrder, Position, Signal, TapeTrade, Tick
+from common.logging import apply_log_level, group_signal_log, resolve_log_level, signal_log_emit
+from common.types import (
+    ChildOrder,
+    Fill,
+    ParentOrder,
+    Position,
+    Signal,
+    TapeTrade,
+    Tick,
+)
 from gateways.gateway_interface import DepthDiff, GatewayInterface
 
 from ..execution.algo_wheel import AlgoWheel
 from ..execution.execution_metrics import ExecutionTracker
 from ..execution.execution_router import ExecutionRouter, ParentSubmissionRejected
 from ..execution.quality_guard import ExecutionQualityGuard
+from ..execution.quote_executor import QuoteExecutor
 from ..execution.slippage_guard import SlippageGuard
 from ..execution.submit_guard import SubmitGuard
 from ..execution.vwap_executor import VwapExecutor
+from ..market_data.data_quality import DataQualityMonitor, DiffAction
 from ..market_data.feature_store import FeatureStore
+from ..market_data.microstructure_hub import MicrostructureHub
 from ..market_data.orderbook import OrderBookStore
+from ..market_data.own_quote_book import OwnBookState, OwnQuoteBook
 from ..market_data.trade_tape import TradeTape
-from ..orders.order_manager import OrderManager, new_client_order_id, _fill_to_dict
+from ..observability.alert_manager import AlertManager
+from ..observability.latency_tracker import LatencyTracker
+from ..orders.order_manager import OrderManager, _fill_to_dict, new_client_order_id
 from ..performance.fill_classification import classify_fill, position_before_fill
 from ..performance.performance_tracker import PerformanceTracker
+from ..persistence.journal import replay_wal_async
 from ..portfolio.portfolio import Portfolio
 from ..position.position_tracker import PositionTracker
 from ..position.strategy_ledger import StrategyPositionLedger
@@ -56,17 +72,17 @@ from ..risk.exposure_tracker import ExposureTracker
 from ..risk.limits import Limits
 from ..risk.loss_tracker import LossTracker
 from ..risk.market_data_guard import MarketDataGuard
+from ..risk.mm_flow_guard import MmFlowGuard
 from ..risk.pnl_tracker import PnLTracker
-from ..market_data.data_quality import DataQualityMonitor, DiffAction
-from ..observability.alert_manager import AlertManager
-from ..observability.latency_tracker import LatencyTracker
 from ..risk.pretrade_validator import PreTradeValidator
 from ..risk.risk_manager import ExitIntent, RiskManager
 from ..risk.stop_loss import StopLossMonitor
 from ..risk.venue_sizing import venue_cap_qty, venue_min_qty, venue_qty_in_bounds
+from ..strategies import mm_core
+from ..strategies.market_making import MarketMakingStrategy
+from ..strategies.market_making_v2 import MarketMakingV2Strategy
 from ..strategies.signal_netter import NettedSignal, net_strategy_signals
 from ..strategies.strategy_base import StrategyBase
-from ..persistence.journal import replay_wal_async
 from .clock import Clock
 from .connection_monitor import ConnectionMonitor
 from .order_reconciliation import OrderReconciler
@@ -165,8 +181,13 @@ class Engine:
 
         # Market data layer
         self._books = OrderBookStore(self._symbols)
-        self._tape = TradeTape(window_sec=settings.trade_tape_window_sec)
-        self._features = FeatureStore(self._books, self._tape, settings)
+        self._tape = TradeTape(
+            window_sec=settings.trade_tape_window_sec,
+            large_trade_mult=settings.mm_large_trade_mult,
+        )
+        self._micro = MicrostructureHub(self._books, self._tape, settings)
+        self._features = FeatureStore(self._books, self._tape, settings, hub=self._micro)
+        self._own_book = OwnQuoteBook(markout_cooldown_sec=settings.mm_markout_cooldown_sec)
         self._latest_tick: dict[str, Tick] = {}
 
         # OMS + tracker stack
@@ -244,6 +265,12 @@ class Engine:
         self._clock_skew_ms: float = 0.0
         self._clock_skew_synced: bool = False
         self._clock_skew_sync_tick: int = 0
+        self._quote_executor = QuoteExecutor(
+            order_manager=self._oms,
+            own_book=self._own_book,
+            settings=settings,
+        )
+        self._mm_flow = MmFlowGuard(settings)
         self._router = ExecutionRouter(
             wheel=self._wheel,
             executor=self._executor,
@@ -251,6 +278,7 @@ class Engine:
             tracker=self._exec_tracker,
             settings=settings,
         )
+        self._wire_mm_strategies()
         self._order_reconciler = OrderReconciler(
             gateway=gateway,
             oms=self._oms,
@@ -306,6 +334,7 @@ class Engine:
             on_authoritative_snap=self._oms.touch_venue_truth_from_rest,
         )
         self._clock = Clock(interval_sec=1.0, tick=self._on_clock_tick)
+        self._market_capturer = None
 
         # Background refresh loops spawned on start(), cancelled on stop().
         # Kept as plain tasks rather than wrapping each in a Clock because
@@ -329,6 +358,8 @@ class Engine:
         self._alert_task: asyncio.Task[None] | None = None
         self._startup: StartupProgress | None = None
         self._book_resync: StartupProgress | None = None
+        self._last_logged_status: str | None = None
+        self._last_ops_health_signature: tuple[object, ...] | None = None
 
     def _reconcile_should_skip_rest(self) -> bool:
         """True when periodic reconcile should rely on user-data WS, not REST.
@@ -362,6 +393,10 @@ class Engine:
     @property
     def settings(self) -> Settings:
         return self._settings
+
+    def attach_market_capturer(self, capturer) -> None:
+        """Wire live 1m bar capture (flush on stop via ``stop()``)."""
+        self._market_capturer = capturer
 
     @property
     def risk(self) -> RiskManager:
@@ -439,6 +474,8 @@ class Engine:
         added = sorted(new_set - old_set)
         removed = old_set - new_set
         self._symbols = new_syms
+        if self._market_capturer is not None:
+            self._market_capturer.refresh_symbols(new_syms)
         for sym in removed:
             self._latest_tick.pop(sym, None)
         logger.info(
@@ -545,6 +582,8 @@ class Engine:
             clean["strategy"] = normalize_strategy_name(clean["strategy"])
         merged = {**cur, **clean}
         new_settings = Settings.model_validate(merged)
+        if clean:
+            logger.info("settings patched: %s", ", ".join(sorted(clean.keys())))
         self._apply_runtime_settings(new_settings)
         return new_settings
 
@@ -556,8 +595,16 @@ class Engine:
         self._risk.apply_settings(s)
         self._stop_monitor.replace_limits(Limits.from_settings(s))
         self._features.apply_settings(s)
-        self._tape.set_window_sec(s.trade_tape_window_sec)
+        self._micro.apply_settings(s)
+        self._tape.set_window_sec(
+            s.trade_tape_window_sec,
+            large_trade_mult=s.mm_large_trade_mult,
+        )
+        self._quote_executor.apply_settings(s)
+        self._mm_flow.apply_settings(s)
+        self._own_book.set_markout_cooldown_sec(s.mm_markout_cooldown_sec)
         self._executor.apply_settings(s)
+        self._stop_monitor.set_externally_managed(self._compute_externally_managed())
         self._submit_guard.apply_settings(s)
         self._slippage_guard.set_cooldown_sec(s.breaker_minor_cooldown_sec)
         self._loss_tracker.apply_settings(s)
@@ -571,6 +618,30 @@ class Engine:
         self._order_reconciler.apply_settings(s)
         for strat in self._strategies:
             strat.refresh_settings(s)
+        apply_log_level(resolve_log_level(s.log_level))
+        logger.info("log level applied: %s", s.log_level.lower())
+
+    def _wire_mm_strategies(self) -> None:
+        def own_provider(sym: str) -> OwnBookState:
+            sym_u = sym.upper()
+            children = [
+                c for c in self._oms.working_children() if c.symbol.upper() == sym_u
+            ]
+            return self._own_book.sync_working(sym_u, list(children))
+
+        for strat in self._strategies:
+            if isinstance(strat, MarketMakingStrategy | MarketMakingV2Strategy):
+                strat.attach_position_provider(
+                    lambda s, pos=self._positions: (
+                        pos.get(s).qty if pos.get(s) is not None else 0.0
+                    ),
+                )
+                strat.attach_own_book_provider(own_provider)
+
+    def _sync_own_book(self, symbol: str) -> OwnBookState:
+        sym = symbol.upper()
+        children = [c for c in self._oms.working_children() if c.symbol.upper() == sym]
+        return self._own_book.sync_working(sym, list(children))
 
     def _compute_externally_managed(self) -> set[str]:
         """Return symbols whose per-leg SL/TP bracket is suppressed.
@@ -652,6 +723,7 @@ class Engine:
             try:
                 await self._start_impl()
             except Exception:
+                logger.exception("engine start failed")
                 self._state.status = EngineStatus.STOPPED
                 self._startup = None
                 await self._publish_status()
@@ -674,6 +746,15 @@ class Engine:
                     payload={"replay_summary": asdict(summary)},
                     source="journal",
                 )
+            )
+            logger.info(
+                "journal replay: events=%d fills=%d orders=%d positions=%d open_children=%d errors=%s",
+                summary.events_read,
+                summary.fills_applied,
+                summary.orders_restored,
+                summary.positions_seeded,
+                summary.open_children,
+                summary.errors or "none",
             )
 
         # REST snapshots before WS: a single pass keeps lastUpdateId fresh; avoid
@@ -834,6 +915,7 @@ class Engine:
     async def pause(self) -> None:
         if self._state.status is not EngineStatus.RUNNING:
             return
+        await self._cancel_mm_quotes()
         self._state.status = EngineStatus.PAUSED
         await self._publish_status()
         logger.warning("engine paused")
@@ -905,13 +987,17 @@ class Engine:
                 await self._flatten_and_wait_for_flat()
             except Exception:  # noqa: BLE001
                 logger.exception("flatten_on_stop failed")
+        if self._market_capturer is not None:
+            self._market_capturer.flush()
         await self._clock.stop()
         if self._alert_task is not None:
             self._alert_task.cancel()
             try:
                 await self._alert_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            except asyncio.CancelledError:
                 pass
+            except Exception:  # noqa: BLE001
+                logger.exception("alert task shutdown raised")
             self._alert_task = None
         await self._reconciler.stop()
         await self._order_reconciler.stop()
@@ -926,6 +1012,7 @@ class Engine:
         await self._gateway.disconnect()
         self._state.status = EngineStatus.STOPPED
         await self._publish_status()
+        logger.info("engine stopped")
 
     async def _flatten_and_wait_for_flat(self) -> None:
         """Submit reduce-only flatten orders and wait until venue is flat."""
@@ -980,8 +1067,10 @@ class Engine:
             task.cancel()
             try:
                 await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            except asyncio.CancelledError:
                 pass
+            except Exception:  # noqa: BLE001
+                logger.exception("%s shutdown raised", slot_name)
             setattr(self, slot_name, None)
 
     async def _balance_resync_loop(self) -> None:
@@ -1198,8 +1287,17 @@ class Engine:
             return False
         return parent.notes in ("flatten", "flatten_passive")
 
+    async def _cancel_mm_quotes(self) -> None:
+        syms: list[str] = []
+        for strat in self._strategies:
+            if mm_core.is_mm_strategy(strat.name):
+                syms.extend(strat.symbols())
+        if syms:
+            await self._quote_executor.cancel_all(syms)
+
     async def flatten(self) -> None:
         """Cancel working orders + close all venue positions (market or VWAP)."""
+        await self._cancel_mm_quotes()
         if self._auto_flatten_in_progress:
             logger.warning("flatten skipped: flatten already in progress")
             return
@@ -1291,6 +1389,16 @@ class Engine:
         self._state.last_tick_ts = recv_ts
         self._latency.on_tick(tick.symbol)
         await self._positions.on_tick(tick)
+        mid = tick.mid
+        if mid > 0:
+            st = self._own_book.state(tick.symbol)
+            self._micro.on_mid(
+                tick.symbol,
+                mid,
+                recv_ts,
+                own_bid_qty=st.own_bid_qty,
+                own_ask_qty=st.own_ask_qty,
+            )
         # TICK is a firehose (one event per BBO change × symbol). Only publish when
         # tick archival is enabled; otherwise it floods subscriber queues and drops
         # STATUS/EQUITY events the dashboard relies on.
@@ -1343,6 +1451,16 @@ class Engine:
             diff, best_bid=book.best_bid(), best_ask=book.best_ask(),
         )
         self._touch_symbol_from_book(diff.symbol, book)
+        mid = book.mid()
+        if mid is not None and mid > 0:
+            st = self._own_book.state(diff.symbol)
+            self._micro.on_mid(
+                diff.symbol,
+                mid,
+                time.time(),
+                own_bid_qty=st.own_bid_qty,
+                own_ask_qty=st.own_ask_qty,
+            )
 
     async def _on_market_ws_reconnect(self, symbols: list[str]) -> None:
         """REST-resync L2 books after a public market WebSocket reconnect.
@@ -1423,8 +1541,10 @@ class Engine:
         task.cancel()
         try:
             await task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        except asyncio.CancelledError:
             pass
+        except Exception:  # noqa: BLE001
+            logger.exception("reconnect resync task shutdown raised")
 
     async def _resync_symbol_books(
         self,
@@ -1456,6 +1576,7 @@ class Engine:
                 done=0,
                 total=total,
             )
+            logger.info("book resync started (%s): %d symbols", reason, total)
             await self._publish_book_resync()
 
         async def _one(symbol: str) -> None:
@@ -1510,7 +1631,7 @@ class Engine:
 
     async def _on_trade(self, trade: TapeTrade) -> None:
         self._state.last_tick_ts = time.time()
-        self._tape.record(trade)
+        self._micro.on_trade(trade)
 
     async def _on_quote_volume_24h(self, symbol: str, quote_vol: float) -> None:
         """Rolling 24h quote-asset volume from public WS (``!ticker@arr``)."""
@@ -1532,6 +1653,15 @@ class Engine:
 
         if not await self._oms.on_fill(fill):
             return
+        logger.info(
+            "fill %s %s qty=%.8f @ %.8f parent=%s trade=%s",
+            fill.symbol,
+            fill.side.value,
+            fill.qty,
+            fill.price,
+            fill.parent_id or "-",
+            fill.trade_id or "-",
+        )
         post_position = self._positions.get(fill.symbol)
         pre_position = post_position
         if self._positions_from_account_updates():
@@ -1584,7 +1714,29 @@ class Engine:
                 await self._slippage_guard.on_fill(
                     fill.parent_id, parent.max_slippage_bps,
                 )
+        parent = self._oms.parent(fill.parent_id) if fill.parent_id else None
+        if parent is not None and mm_core.is_mm_strategy(parent.strategy_name):
+            await self._handle_mm_fill(fill, parent.strategy_name)
+
         self._notify_strategies_on_fill(fill)
+
+    async def _handle_mm_fill(self, fill: Fill, strategy_name: str) -> None:
+        sym = fill.symbol.upper()
+        mid = self._mid_for(sym) or fill.price
+        if mid <= 0:
+            return
+        self._micro.on_fill(sym, fill, mid, time.time())
+        pos = self._positions.get(sym) or Position(symbol=sym)
+        adverse = self._micro.last_fill_adverse_bps(sym)
+        self._own_book.on_level_fill(sym, fill, position_qty=pos.qty, adverse_bps=adverse)
+        strat = self._strategies_by_name.get(strategy_name)
+        if strat is None or not hasattr(strat, "on_tick_quotes"):
+            return
+        equity = self._portfolio.snapshot().equity
+        own = self._sync_own_book(sym)
+        feat = self._features.snapshot(sym, own=own, position_qty=pos.qty, equity=equity)
+        intents = list(strat.on_tick_quotes({sym: feat}))
+        await self._quote_executor.refresh(intents)
 
     def _notify_strategies_on_fill(self, fill: Fill) -> None:
         parent_id = fill.parent_id or ""
@@ -1762,6 +1914,8 @@ class Engine:
                 self._refresh_ticks_from_books(active.symbols())
         if self._book_resync is not None:
             return
+        if self._market_capturer is not None:
+            self._market_capturer.on_clock()
         await self._evaluate_exits()
         await self._evaluate_strategies()
 
@@ -1825,6 +1979,9 @@ class Engine:
         active = self._strategies_by_name.get(self._active_strategy_name)
         if active is None:
             return
+        if mm_core.is_mm_strategy(active.name):
+            await self._evaluate_mm_quotes(active)
+            return
         try:
             feats = {sym: self._features.snapshot(sym) for sym in active.symbols()}
             signals = list(active.on_tick(feats))
@@ -1833,9 +1990,47 @@ class Engine:
             return
         await self._dispatch_signals(signals)
 
+    async def _evaluate_mm_quotes(self, strat: StrategyBase) -> None:
+        if not self._settings.mm_quote_enabled:
+            return
+        equity = self._portfolio.snapshot().equity
+        feats: dict[str, Any] = {}
+        for sym in strat.symbols():
+            own = self._sync_own_book(sym)
+            pos = self._positions.get(sym)
+            pos_qty = pos.qty if pos is not None else 0.0
+            feat = self._features.snapshot(sym, own=own, position_qty=pos_qty, equity=equity)
+            breach = self._mm_flow.evaluate_entry(feat, reduce_only=False)
+            if breach is not None:
+                self._breaker.trip(breach)
+            feats[sym] = feat
+        if not hasattr(strat, "on_tick_quotes"):
+            return
+        try:
+            intents = list(strat.on_tick_quotes(feats))
+        except Exception:  # noqa: BLE001
+            logger.exception("strategy %s on_tick_quotes raised", strat.name)
+            return
+        for intent in intents:
+            if intent.reservation_mid > 0 or intent.reason:
+                signal_log_emit(
+                    logger,
+                    (
+                        f"MM {intent.symbol} venue={intent.venue_mid:.4f} "
+                        f"res={intent.reservation_mid:.4f} inv={intent.inventory_ratio:+.3f} "
+                        f"bid={intent.bid_price} ask={intent.ask_price} "
+                        f"pnl_bps={intent.unrealized_pnl_bps:.1f}"
+                    ),
+                    reason=intent.reason,
+                )
+        await self._quote_executor.refresh(intents)
+
     async def _evaluate_all_strategies_netted(self) -> None:
         tagged: list[tuple[str, Signal]] = []
         for strat in self._strategies:
+            if mm_core.is_mm_strategy(strat.name):
+                await self._evaluate_mm_quotes(strat)
+                continue
             try:
                 feats = {sym: self._features.snapshot(sym) for sym in strat.symbols()}
                 for sig in strat.on_tick(feats):
@@ -1884,8 +2079,20 @@ class Engine:
         return_parent: bool = False,
     ) -> ParentOrder | None:
         """Pre-trade validate + submit one ungrouped signal."""
+        sn = signal.strategy_name or self._active_strategy_name
+        if mm_core.is_mm_strategy(sn):
+            logger.error(
+                "MM strategy %s must use QuoteExecutor, not VWAP router (signal ignored)",
+                sn,
+            )
+            return None
         mid = self._mid_for(signal.symbol)
         if mid is None:
+            signal_log_emit(
+                logger,
+                f"dispatch skipped {signal.symbol}: no mid price",
+                reason=signal.reason,
+            )
             return None
         tick = self._latest_tick.get(signal.symbol)
         feat = self._features.snapshot(signal.symbol)
@@ -1897,7 +2104,6 @@ class Engine:
             spread_bps=feat.spread_bps,
         )
         if not result.approved:
-            logger.info("pretrade vetoed %s: %s", signal.symbol, result.reason)
             return None
         self._latency.on_risk_passed(signal.symbol)
         try:
@@ -1913,10 +2119,27 @@ class Engine:
                 strategy_name=signal.strategy_name,
             )
             self._latency.on_child_submitted(signal.symbol)
+            signal_log_emit(
+                logger,
+                f"parent {parent.id} submitted {signal.side.value} {signal.symbol} "
+                f"qty={result.qty:.8f}",
+                reason=signal.reason,
+            )
             if return_parent:
                 return parent
         except ParentSubmissionRejected as exc:
-            logger.info("router gated %s: %s", signal.symbol, exc)
+            signal_log_emit(
+                logger,
+                f"router gated {signal.symbol}: {exc}",
+                reason=signal.reason,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("dispatch failed for %s", signal.symbol)
+            signal_log_emit(
+                logger,
+                f"dispatch error {signal.symbol}",
+                reason=signal.reason,
+            )
         return None
 
     async def _dispatch_group(self, group_id: str, legs: list[Signal]) -> None:
@@ -1929,7 +2152,7 @@ class Engine:
         for leg in legs:
             mid = self._mid_for(leg.symbol)
             if mid is None or mid <= 0:
-                logger.info("group %s aborted: no mid for %s", group_id, leg.symbol)
+                group_signal_log(logger, group_id, f"aborted: no mid for {leg.symbol}", legs)
                 return
             tick = self._latest_tick.get(leg.symbol)
             feat = self._features.snapshot(leg.symbol)
@@ -1941,7 +2164,7 @@ class Engine:
                 filters=self._gateway.get_symbol_filters(leg.symbol),
             )
             if floor is None:
-                logger.info("group %s aborted: venue vetoed %s", group_id, leg.symbol)
+                group_signal_log(logger, group_id, f"aborted: venue vetoed {leg.symbol}", legs)
                 return
             floors[leg.symbol] = floor
 
@@ -1966,11 +2189,11 @@ class Engine:
                 spread_bps=spread_bps[leg.symbol],
             )
             if not decision.approved:
-                logger.info(
-                    "group %s aborted: %s for %s",
+                group_signal_log(
+                    logger,
                     group_id,
-                    decision.reason,
-                    leg.symbol,
+                    f"aborted: {decision.reason} for {leg.symbol}",
+                    legs,
                 )
                 return
             min_allowed = min(min_allowed, decision.qty)
@@ -1979,18 +2202,17 @@ class Engine:
             filt = self._gateway.get_symbol_filters(leg.symbol)
             pair_qty = min(pair_qty, venue_cap_qty(pair_qty, filt))
         if pair_qty <= 0:
-            logger.info("group %s aborted: venue max_qty caps pair to zero", group_id)
+            group_signal_log(logger, group_id, "aborted: venue max_qty caps pair to zero", legs)
             return
         for leg in legs:
             filt = self._gateway.get_symbol_filters(leg.symbol)
             mid = mids[leg.symbol]
             if not venue_qty_in_bounds(pair_qty, filt, mid, reduce_only=False):
-                logger.info(
-                    "group %s aborted: %s qty=%.8f fails venue bounds (mid=%.8f)",
+                group_signal_log(
+                    logger,
                     group_id,
-                    leg.symbol,
-                    pair_qty,
-                    mid,
+                    f"aborted: {leg.symbol} qty={pair_qty:.8f} fails venue bounds",
+                    legs,
                 )
                 return
         result = self._pretrade.validate_group(
@@ -2001,18 +2223,20 @@ class Engine:
             spread_bps_by_symbol=spread_bps,
         )
         if not result.approved:
-            logger.info("group %s pretrade veto: %s", group_id, result.reason)
+            group_signal_log(logger, group_id, f"pretrade veto: {result.reason}", legs)
             return
 
         for leg in legs:
             allowed, reason = self._submit_guard.can_submit_parent(leg.symbol)
             if not allowed:
-                logger.info("group %s aborted: %s for %s", group_id, reason, leg.symbol)
+                group_signal_log(logger, group_id, f"aborted: {reason} for {leg.symbol}", legs)
                 return
 
-        logger.info(
-            "group %s submitting %d legs at pair_qty=%.8f",
-            group_id, len(legs), pair_qty,
+        group_signal_log(
+            logger,
+            group_id,
+            f"submitting {len(legs)} legs at pair_qty={pair_qty:.8f}",
+            legs,
         )
         submitted: list[tuple[Signal, ParentOrder]] = []
         for leg in legs:
@@ -2030,6 +2254,12 @@ class Engine:
                 )
                 self._latency.on_child_submitted(leg.symbol)
                 submitted.append((leg, parent))
+                signal_log_emit(
+                    logger,
+                    f"group {group_id} parent {parent.id} {leg.side.value} "
+                    f"{leg.symbol} qty={pair_qty:.8f}",
+                    reason=leg.reason,
+                )
                 if leg.strategy_name and self.is_multi_strategy_mode():
                     sym = leg.symbol.upper()
                     delta = pair_qty if leg.side is Side.BUY else -pair_qty
@@ -2039,6 +2269,18 @@ class Engine:
             except ParentSubmissionRejected as exc:
                 await self._compensate_group_submission(group_id, submitted, exc)
                 return
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "group %s leg %s submit raised",
+                    group_id,
+                    leg.symbol,
+                )
+                await self._compensate_group_submission(
+                    group_id,
+                    submitted,
+                    ParentSubmissionRejected(str(exc)),
+                )
+                return
 
     async def _compensate_group_submission(
         self,
@@ -2046,22 +2288,16 @@ class Engine:
         submitted: list[tuple[Signal, ParentOrder]],
         exc: ParentSubmissionRejected,
     ) -> None:
+        legs = [leg for leg, _parent in submitted]
+        signal_log_emit(
+            logger,
+            f"group {group_id} partial failure after {len(submitted)} leg(s): {exc} "
+            "— compensating unwind",
+            reason=" | ".join(f"{leg.symbol}:{leg.reason}" for leg in legs[:4]),
+        )
         logger.error(
             "group %s partial failure after %d leg(s): %s — unwinding",
             group_id, len(submitted), exc,
-        )
-        await self._bus.publish(
-            Event(
-                type=EventType.LOG,
-                payload={
-                    "level": LogLevel.ERROR.value,
-                    "message": (
-                        f"group {group_id} partial submit; compensating unwind "
-                        f"({len(submitted)} leg(s)): {exc}"
-                    ),
-                },
-                source="engine",
-            )
         )
         for leg, parent in submitted:
             try:
@@ -2164,6 +2400,7 @@ class Engine:
         clear: bool = False,
     ) -> None:
         if clear:
+            logger.info("book resync complete")
             await self._bus.publish(
                 Event(type=EventType.STATUS, payload={"kind": "book_resync", "clear": True}),
             )
@@ -2199,6 +2436,10 @@ class Engine:
         startup = self._startup_payload()
         if startup is not None:
             payload["startup"] = startup
+        status_value = self._state.status.value
+        if status_value != self._last_logged_status:
+            logger.info("engine status -> %s", status_value)
+            self._last_logged_status = status_value
         await self._bus.publish(Event(type=EventType.STATUS, payload=payload))
 
     def _user_data_health(self, now: float) -> dict[str, float | bool]:
@@ -2253,6 +2494,26 @@ class Engine:
     async def _publish_ops_status(self) -> None:
         now = time.time()
         tick_age = (now - self._state.last_tick_ts) if self._state.last_tick_ts > 0 else -1.0
+        user_health = self._user_data_health(now)
+        active_breakers = tuple(sorted(s.code for s in self._breaker.active()))
+        signature: tuple[object, ...] = (
+            active_breakers,
+            bool(user_health.get("user_data_stale")),
+            bool(user_health.get("user_data_reconcile_stale")),
+            round(tick_age) if tick_age >= 0 else -1,
+        )
+        if signature != self._last_ops_health_signature:
+            portfolio = self._portfolio_health()
+            logger.info(
+                "system_health breakers=%s tick_age=%.1fs user_stale=%s "
+                "reconcile_stale=%s equity=%.2f",
+                active_breakers or "none",
+                tick_age,
+                user_health.get("user_data_stale"),
+                user_health.get("user_data_reconcile_stale"),
+                portfolio.get("equity", 0.0),
+            )
+            self._last_ops_health_signature = signature
         await self._bus.publish(
             Event(
                 type=EventType.STATUS,
@@ -2264,9 +2525,9 @@ class Engine:
                     "clock_skew_ms": self._clock_skew_ms,
                     "clock_skew_synced": self._clock_skew_synced,
                     "tick_age_sec": tick_age,
-                    **self._user_data_health(now),
+                    **user_health,
                     **self._portfolio_health(),
-                    "active_breakers": [s.code for s in self._breaker.active()],
+                    "active_breakers": list(active_breakers),
                 },
                 source="engine",
             )
@@ -2290,6 +2551,11 @@ class Engine:
             logger.exception("alert pump crashed")
 
     async def _on_order_reconcile_mismatch(self, result: dict[str, object]) -> None:
+        logger.warning(
+            "order reconcile mismatch venue_only=%s local_only=%s",
+            result.get("venue_only"),
+            result.get("local_only"),
+        )
         await self._alerts.fire(
             "order_reconcile_mismatch",
             f"order reconcile mismatch venue_only={result.get('venue_only')} "

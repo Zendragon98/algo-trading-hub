@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 from common.config import Settings
 from common.enums import Side
+from common.logging import group_signal_log, signal_log_emit
 from common.types import Signal
 
 from gateways.gateway_interface import GatewayInterface
@@ -75,35 +76,67 @@ class PreTradeValidator:
         )
         if not decision.approved:
             vetoes.append(decision.reason or "risk_veto")
+            signal_log_emit(
+                logger,
+                f"pretrade veto {signal.symbol}: {decision.reason}",
+                reason=signal.reason,
+            )
             return ValidationResult(False, reason=decision.reason, vetoes=vetoes)
 
         qty = decision.qty
+        if qty + 1e-12 < signal.qty:
+            signal_log_emit(
+                logger,
+                f"risk scaled {signal.symbol} {signal.qty:.4f} -> {qty:.4f}",
+                reason=signal.reason,
+            )
         ff = self._fat_finger(signal.symbol, qty, mid)
         if ff is not None:
             vetoes.append(ff)
+            signal_log_emit(
+                logger,
+                f"pretrade veto {signal.symbol}: {ff}",
+                reason=signal.reason,
+            )
             return ValidationResult(False, reason=ff, vetoes=vetoes)
 
         filters = self._gateway.get_symbol_filters(signal.symbol)
         floor = venue_min_qty(mid=mid, filters=filters)
         if floor is None:
             vetoes.append("venue_veto")
+            signal_log_emit(
+                logger,
+                f"pretrade veto {signal.symbol}: venue_veto",
+                reason=signal.reason,
+            )
             return ValidationResult(False, reason="venue_veto", vetoes=vetoes)
 
         final_qty = max(qty, floor)
         capped = venue_cap_qty(final_qty, filters)
         if capped + 1e-12 < floor:
             vetoes.append("venue_max_qty")
+            signal_log_emit(
+                logger,
+                f"pretrade veto {signal.symbol}: venue_max_qty",
+                reason=signal.reason,
+            )
             return ValidationResult(False, reason="venue_max_qty", vetoes=vetoes)
         if capped + 1e-12 < final_qty:
-            logger.info(
-                "capping signal %s %.4f -> %.4f (venue max_qty)",
-                signal.symbol, final_qty, capped,
+            signal_log_emit(
+                logger,
+                f"venue capped {signal.symbol} {final_qty:.4f} -> {capped:.4f}",
+                reason=signal.reason,
             )
             final_qty = capped
         if final_qty > qty + 1e-12:
             bump = self._venue_bump_ok(signal.symbol, final_qty, mid)
             if not bump.approved:
                 vetoes.extend(bump.vetoes)
+                signal_log_emit(
+                    logger,
+                    f"pretrade veto {signal.symbol}: {bump.reason or 'venue_bump'}",
+                    reason=signal.reason,
+                )
                 return bump
 
         if not skip_dedup:
@@ -121,12 +154,20 @@ class PreTradeValidator:
     ) -> ValidationResult:
         vetoes: list[str] = []
         if pair_qty <= 0:
+            if legs:
+                group_signal_log(logger, legs[0].group_id or "group", "pretrade veto: zero_qty", legs)
             return ValidationResult(False, reason="zero_qty", vetoes=["zero_qty"])
 
         for leg in legs:
             mid = mids.get(leg.symbol)
             if mid is None or mid <= 0:
                 vetoes.append(f"no_mid:{leg.symbol}")
+                group_signal_log(
+                    logger,
+                    legs[0].group_id or "group",
+                    f"pretrade veto: no_mid:{leg.symbol}",
+                    legs,
+                )
                 return ValidationResult(False, reason=f"no_mid:{leg.symbol}", vetoes=vetoes)
 
         for leg in legs:
@@ -147,6 +188,12 @@ class PreTradeValidator:
             )
             if not result.approved:
                 vetoes.extend(result.vetoes)
+                group_signal_log(
+                    logger,
+                    leg.group_id or "group",
+                    f"pretrade veto: {leg.symbol}:{result.reason}",
+                    legs,
+                )
                 return ValidationResult(
                     False,
                     reason=f"group_leg:{leg.symbol}:{result.reason}",
@@ -154,6 +201,12 @@ class PreTradeValidator:
                 )
             if result.qty + 1e-12 < pair_qty:
                 vetoes.append(f"risk_scale:{leg.symbol}")
+                group_signal_log(
+                    logger,
+                    leg.group_id or "group",
+                    f"pretrade veto: risk_scale:{leg.symbol}",
+                    legs,
+                )
                 return ValidationResult(
                     False,
                     reason=f"risk_scale:{leg.symbol}",
@@ -189,14 +242,29 @@ class PreTradeValidator:
         """Light path for strategy-driven position reductions."""
         pos = self._positions.get(signal.symbol)
         if pos is None or abs(pos.qty) <= 0:
+            signal_log_emit(
+                logger,
+                f"pretrade veto {signal.symbol}: reduce_only_no_position",
+                reason=signal.reason,
+            )
             return ValidationResult(False, reason="reduce_only_no_position")
 
         close_side = Side.SELL if pos.qty > 0 else Side.BUY
         if signal.side is not close_side:
+            signal_log_emit(
+                logger,
+                f"pretrade veto {signal.symbol}: reduce_only_wrong_side",
+                reason=signal.reason,
+            )
             return ValidationResult(False, reason="reduce_only_wrong_side")
 
         close_qty = min(signal.qty, abs(pos.qty))
         if close_qty <= 0:
+            signal_log_emit(
+                logger,
+                f"pretrade veto {signal.symbol}: reduce_only_zero_qty",
+                reason=signal.reason,
+            )
             return ValidationResult(False, reason="reduce_only_zero_qty")
 
         if not skip_dedup and self._is_duplicate(signal):
@@ -205,6 +273,11 @@ class PreTradeValidator:
         filters = self._gateway.get_symbol_filters(signal.symbol)
         floor = venue_min_qty(mid=mid, filters=filters)
         if floor is None:
+            signal_log_emit(
+                logger,
+                f"pretrade veto {signal.symbol}: venue_veto",
+                reason=signal.reason,
+            )
             return ValidationResult(False, reason="venue_veto", vetoes=["venue_veto"])
 
         final_qty = max(close_qty, floor) if close_qty < abs(pos.qty) else close_qty
@@ -258,7 +331,11 @@ class PreTradeValidator:
         key = self._dedup_key(signal, signal.qty)
         entry = self._dedup.get(key)
         if entry is not None and entry.expires_at > now:
-            logger.info("signal dedup veto %s %s", signal.symbol, signal.reason)
+            signal_log_emit(
+                logger,
+                f"signal dedup veto {signal.symbol}",
+                reason=signal.reason,
+            )
             return True
         return False
 

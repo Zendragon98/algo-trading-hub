@@ -38,8 +38,10 @@ class Clock:
         self._task.cancel()
         try:
             await self._task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        except asyncio.CancelledError:
             pass
+        except Exception:  # noqa: BLE001
+            logger.exception("clock task shutdown raised")
         self._task = None
 
     async def _run(self) -> None:

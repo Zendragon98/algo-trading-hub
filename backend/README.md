@@ -6,7 +6,7 @@ Python backend for the React console at the repo root. Connects to **Binance USD
 |------------|--------|
 | **Process model** | Single asyncio loop: `Engine` + FastAPI + `EventBus` in `main.py` |
 | **Venue seam** | `GatewayInterface` — Binance production; IBKR skeleton |
-| **Strategies** | Pairs (basis z), SMA crossover, market making; hot-swap at runtime |
+| **Strategies** | Pairs (basis z), SMA crossover, institutional market making (quote + microstructure); hot-swap at runtime |
 | **Multi-strategy** | `STRATEGY=all` nets signals via `signal_netter` before execution |
 | **Persistence** | Per-run JSONL under `data/runs/` + optional WAL replay |
 | **API** | REST control + `/ws` stream; schemas mirror `src/components/algo/types.ts` |
@@ -498,24 +498,34 @@ Sizing is equity-budgeted: each entry risks `SMA_RISK_PER_TRADE_PCT` of equity, 
 
 Unlike pairs trading, the SMA strategy does **not** manage its own SL/TP — `manages_own_risk()` returns False so the engine's per-leg `StopLossMonitor` stays armed for every coin it trades. Strategy hot-swap (`POST /api/control/strategy { name: "sma_crossover" }`) atomically rotates the externally-managed set: pairs symbols stop bypassing the bracket and SMA symbols pick up a fresh per-leg stop on the next tick.
 
-### Strategy — `engine/strategies/market_making.py`
+### Strategy — `engine/strategies/market_making.py` (+ `market_making_v2.py`)
 
-Microstructure-tilt strategy using **rolling micro-price skew**, **L2 imbalance**, and **tape pressure** (bid-hit vs offer-lift counts in the `trade_tape_window_sec` window). Composite signal:
+Institutional **two-sided market making** posts standing post-only bid/ask quotes via `QuoteExecutor` — **not** the VWAP wheel. Alpha strategies (`pairs_trading`, `sma_crossover`, `blended_signals`) still route `Signal` → `ExecutionRouter` → `VwapExecutor`.
 
-```
-composite = mm_skew_scale * skew_avg + mm_imbalance_scale * imbalance + mm_tape_scale * tape_pressure
-```
+| Path | Execution |
+|------|-----------|
+| `market_making`, `market_making_v2` | `QuoteIntent` → `QuoteExecutor` (cancel/replace LIMIT children, parent id `Q-{symbol}-…`) |
+| Alpha + operator flatten (non-MM) | VWAP / market slicer |
 
-`MM_SIGNAL_MODE`:
+**Microstructure** (`engine/market_data/microstructure_hub.py`): mid-return jump latch, extended `TradeTape` (VPIN, velocity, large-trade share), effective book depth minus own quotes (`BookDepletionTracker`), post-fill markouts (`MarkoutTracker`), composite toxicity (`ToxicityScorer`). Snapshots land in `FeatureStore` / `Features` for quoting.
 
-- **`fade`** (default) — buy when composite is very negative, sell when very positive (mean-reversion).
-- **`follow`** — buy on positive composite, sell on negative (short-term continuation).
+**Shared quote logic** (`engine/strategies/mm_core.py`): inventory skew and hard caps, toxicity/jump/depletion gates, asymmetric half-spread widening, tape pressure tilt, profit-aware exits (`mm_scratch_loss_bps`, `mm_min_exit_profit_bps`, `mm_max_hold_sec`). **Own book** (`own_quote_book.py`) tracks resting MM levels and entry ledger; level fills trigger immediate re-quote in the engine.
 
-Universe via `MM_SYMBOLS` (CSV or `AUTO` → full engine `SYMBOLS` list, e.g. all 88 perps when `SYMBOLS=AUTO`). Sizing is equity-budgeted (`MM_RISK_PER_TRADE_PCT` / `DEFAULT_STOP_LOSS_PCT`) with `MM_QTY` fallback at boot. Per-symbol cooldown (`MM_COOLDOWN_SEC`).
+**Risk:** When `MM_INSTITUTIONAL_RISK_ENABLED=true` (default), strategies set `manages_own_risk()` and symbols are excluded from fixed-% `StopLossMonitor` brackets. `MmFlowGuard` trips symbol breakers on price jump, toxic flow, and book depletion (`price_jump`, `toxic_flow`, `book_depleted`).
 
-**At scale:** `MM_MAX_ENTRIES_PER_TICK` (default `4`) caps new MM entries per 1 Hz tick by signal score so the engine does not flood `MAX_OPEN_PARENTS`. Exits (`reduce_only`) are not capped.
+**Pricing loop (each 1 Hz tick):**
 
-Does **not** manage its own SL/TP — engine `StopLossMonitor` stays armed. Hot-swap: `POST /api/control/strategy { "name": "market_making" }`.
+1. **Venue mid** — L2 mid from `OrderBookStore`.
+2. **MM reservation mid** — `reservation = venue_mid × (1 + (micro_bps + inventory_bps) / 10_000)` where `micro_bps` blends skew / imbalance / tape / depletion and `inventory_bps = -inventory_ratio × MM_RESERVATION_INVENTORY_BPS` (long inventory pushes fair mid **down** so you sell more aggressively).
+3. **Half-spreads** — base `MM_QUOTE_HALF_SPREAD_BPS` + toxicity/depletion widen; **asymmetric** via `MM_INVENTORY_SPREAD_SKEW_BPS` (widen bid / tighten ask when long).
+4. **Limit prices** — `bid = reservation × (1 - bid_half/10k)`, `ask = reservation × (1 + ask_half/10k)`.
+5. **Inventory** — `inventory_ratio = signed_notional / cap` (position ± working quotes if enabled); size damps on crowded side; hard ratio pulls that side entirely.
+
+Live logs emit `venue=`, `res=`, `inv=`, `pnl_bps=` on each quote refresh (SIG level).
+
+**Key settings:** `MM_QUOTE_*`, `MM_RESERVATION_INVENTORY_BPS`, `MM_INVENTORY_SPREAD_SKEW_BPS`, `MM_INVENTORY_*`, `MM_JUMP_*`, `MM_DEPLETION_*`, `MM_TOXICITY_THRESHOLD`. Legacy `MM_SKEW_*` / `MM_TAPE_*` feed the micro shift into reservation mid only.
+
+`market_making_v2` adds fee-aware spread floor (`MM2_MIN_SPREAD_BPS`) before posting. Hot-swap: `POST /api/control/strategy { "name": "market_making" }`.
 
 ### Multi-strategy mode — `all`
 
@@ -703,6 +713,7 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `PERSIST_ENABLED`            | `true`                               | Tee every event into the per-run JSONL archive |
 | `PERSIST_DIR`                | `data/runs`                          | Base folder for run archives (relative paths anchored at `backend/`) |
 | `PERSIST_RECORD_TICKS`       | `false`                              | Also archive the TICK firehose (very high volume) |
+| `LOG_LEVEL`                  | `info`                               | Root log level: `debug`, `info`, `warning`, `error` (console, `app.log`, LIVE LOG) |
 | `LOG_FILE_ENABLED`           | `true`                               | Write `app.log` into the run archive |
 | `LOG_FILE_MAX_BYTES`         | `10000000`                           | Rotate `app.log` at this size |
 | `LOG_FILE_BACKUP_COUNT`      | `5`                                  | Keep N rotated `app.log` backups |
@@ -785,6 +796,36 @@ print(exec_["data"].apply(pd.Series)[["symbol", "slippage_bps", "impact_bps"]].d
 ```
 
 Persistence is opt-out (`PERSIST_ENABLED=false`); the rotating `app.log` is independent (`LOG_FILE_ENABLED=false`) so you can drop one without losing the other.
+
+## Backtesting data (1m klines)
+
+While the engine runs with persistence on, **`CAPTURE_MARKET_BARS=true`** (default) aggregates live mids into 1m OHLCV bars every clock tick. Closed bars are written to:
+
+- `data/runs/<run-id>/market_bars/{SYMBOL}_1m.parquet` (per session)
+- `data/klines/{SYMBOL}_1m.parquet` (merged library, deduped by `open_time`)
+
+Optional bulk history (gap-fill before you have enough live data):
+
+```bash
+python -m analytics.data_loader --symbols BTCUSDT,ETHUSDT --interval 1m --days 30
+```
+
+Manifest: `data/klines/manifest.json` tags each series as `live`, `download`, or `mixed`.
+
+Offline backtest (SMA, blended, pairs — not market-making):
+
+| Method | Path | Body |
+| ------ | ---- | ---- |
+| GET | `/api/backtest/datasets` | List library entries |
+| GET | `/api/backtest/sessions` | Run folders with captured bars |
+| POST | `/api/backtest/download` | `{symbols, interval, days}` |
+| POST | `/api/backtest/run` | `{strategy, dataset: "library" \| "run:<id>", settings_overrides?}` |
+| GET | `/api/backtest/runs` | Saved result summaries |
+| GET | `/api/backtest/runs/{id}` | Full result JSON |
+
+Dashboard: **Backtest** tab at `/backtesting` (link in the live console top bar).
+
+Limitations: 1m bars approximate live microstructure; fills are simulated at mid ± `BACKTEST_SLIPPAGE_BPS` (default 5 bps), not VWAP/OMS.
 
 ## REST + WebSocket contract
 

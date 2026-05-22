@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from itertools import islice
 
 from common.config import Settings
-from common.logging import signal_log
+from common.logging import signal_log_emit
 from common.types import Signal
 
 from ..market_data.feature_store import Features
@@ -196,14 +196,25 @@ class SmaCrossoverStrategy(StrategyBase):
                 )
 
             if sig is None:
+                if crossed_up or crossed_down:
+                    logger.debug(
+                        "SMA %s cross ignored: up=%s down=%s fast=%.6f slow=%.6f pos=%.8f",
+                        symbol,
+                        crossed_up,
+                        crossed_down,
+                        fast_avg,
+                        slow_avg,
+                        pos_qty,
+                    )
                 continue
             state.last_action_ts = now
             if not sig.reduce_only:
                 state.open_side = 1 if sig.side.value.lower() == "buy" else -1
-            signal_log(
+            signal_log_emit(
                 logger,
                 f"SMA {'close' if sig.reduce_only else 'open'} -> {sig.side.value.upper()} "
                 f"{symbol} qty={sig.qty:.10f}",
+                reason=sig.reason,
             )
             signals.append(sig)
 
@@ -306,6 +317,7 @@ class SmaCrossoverStrategy(StrategyBase):
         try:
             equity = float(provider())
         except Exception:  # noqa: BLE001
+            logger.warning("equity provider raised; using sma_qty default")
             return float(self._settings.sma_qty)
         if equity <= 0:
             return float(self._settings.sma_qty)

@@ -33,9 +33,11 @@ from api.server import create_app
 from common.config import get_settings, normalize_strategy_name
 from common.enums import TradingMode
 from common.events import EventBus
-from common.logging import configure_logging
+from common.logging import configure_logging, resolve_log_level
 from engine.core.engine import ALL_STRATEGIES_MODE, Engine
+from engine.persistence.market_capture import create_capturer
 from engine.persistence.run_bootstrap import bootstrap_run, shutdown_bootstrap
+from engine.strategies.blended_signals import BlendedSignalsStrategy
 from engine.strategies.market_making import MarketMakingStrategy
 from engine.strategies.market_making_v2 import MarketMakingV2Strategy
 from engine.strategies.pairs_trading import PairsTradingStrategy
@@ -156,11 +158,13 @@ async def _run() -> None:
 
     configure_logging(
         bus=bus,
+        level=resolve_log_level(settings.log_level),
         log_file=bootstrap.log_file,
         log_file_max_bytes=settings.log_file_max_bytes,
         log_file_backup_count=settings.log_file_backup_count,
     )
     logger.info("config loaded from %s", settings.env_path)
+    logger.info("log level=%s (LOG_LEVEL)", settings.log_level.lower())
     _log_mode_banner(settings)
     if bootstrap.run_dir is not None:
         logger.info("run archive: %s", bootstrap.run_dir)
@@ -173,6 +177,7 @@ async def _run() -> None:
     strategies = [
         PairsTradingStrategy(settings),
         SmaCrossoverStrategy(settings),
+        BlendedSignalsStrategy(settings),
         MarketMakingStrategy(settings),
         MarketMakingV2Strategy(settings),
     ]
@@ -198,6 +203,16 @@ async def _run() -> None:
         recovery_wal=bootstrap.recovery_wal,
         event_archive_dir=bootstrap.run_dir,
     )
+    if bootstrap.run_dir is not None:
+        capturer = create_capturer(
+            settings,
+            bootstrap.run_dir,
+            engine._symbols,  # noqa: SLF001
+            snapshot_fn=lambda sym: engine._features.snapshot(sym),  # noqa: SLF001
+        )
+        if capturer is not None:
+            engine.attach_market_capturer(capturer)
+            bootstrap.market_capturer = capturer
 
     # Wire live equity + liquidity weights into strategies so they can
     # stop-loss-budget each entry and (for pairs) anchor their consensus
@@ -217,7 +232,7 @@ async def _run() -> None:
         if isinstance(strat, PairsTradingStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_weight_provider(lambda: engine.volume_weights)
-        if isinstance(strat, SmaCrossoverStrategy):
+        if isinstance(strat, (SmaCrossoverStrategy, BlendedSignalsStrategy)):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_position_provider(_position_qty_for(strat.name))
         if isinstance(strat, (MarketMakingStrategy, MarketMakingV2Strategy)):
@@ -250,7 +265,7 @@ async def _run() -> None:
         app=app,
         host=settings.api_host,
         port=settings.api_port,
-        log_level="info",
+        log_level=settings.log_level.lower(),
         # Disable uvicorn's signal handlers; we install our own to ensure
         # the engine stops cleanly before the server tears down.
         loop="asyncio",
@@ -289,7 +304,7 @@ async def _run() -> None:
             with suppress(asyncio.CancelledError):
                 await task
     except KeyboardInterrupt:
-        pass
+        logger.info("shutdown: keyboard interrupt")
     finally:
         server.should_exit = True
         with suppress(asyncio.CancelledError, Exception):
@@ -302,7 +317,7 @@ def main() -> None:
     try:
         asyncio.run(_run())
     except KeyboardInterrupt:
-        pass
+        logging.getLogger(__name__).info("shutdown: keyboard interrupt (outer)")
 
 
 if __name__ == "__main__":

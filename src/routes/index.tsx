@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
@@ -839,6 +839,9 @@ function TopBar(props: {
         </div>
 
         <div className="hidden items-center gap-2 md:flex">
+          <Button size="sm" variant="outline" className="border-border" asChild>
+            <Link to="/backtesting">Backtest</Link>
+          </Button>
           {props.onOpenSettings && (
             <Button size="sm" variant="outline" onClick={props.onOpenSettings} className="border-border">
               <Settings2 className="size-4" /> Settings
@@ -1854,12 +1857,14 @@ function TradesTable({ trades }: { trades: Trade[] }) {
 
 function LogStream({ logs, className }: { logs: LogEntry[]; className?: string }) {
   const color: Record<LogEntry["level"], string> = {
+    debug: "text-muted-foreground/60",
     info: "text-muted-foreground",
     warn: "text-warning",
     error: "text-bear",
     signal: "text-bull",
   };
   const tag: Record<LogEntry["level"], string> = {
+    debug: "DBG ",
     info: "INFO",
     warn: "WARN",
     error: "ERR ",
@@ -1872,7 +1877,12 @@ function LogStream({ logs, className }: { logs: LogEntry[]; className?: string }
           <div key={i} className="flex gap-2">
             <span className="shrink-0 text-muted-foreground/70 tabular-nums">{l.ts}</span>
             <span className={cn("shrink-0 font-semibold", color[l.level])}>{tag[l.level]}</span>
-            <span className="text-foreground/90">{l.msg}</span>
+            {l.logger ? (
+              <span className="shrink-0 max-w-[10rem] truncate text-[10px] text-muted-foreground/60">
+                {l.logger.split(".").slice(-1)[0]}
+              </span>
+            ) : null}
+            <span className="min-w-0 break-words text-foreground/90">{l.msg}</span>
           </div>
         ))}
       </div>
@@ -1988,7 +1998,16 @@ function ParentRow({
           impact {parent.impactBps.toFixed(1)} bps
         </span>
         <span className="tabular-nums">{parent.durationSec.toFixed(1)}s</span>
+        {parent.signalScore > 0 ? (
+          <span className="tabular-nums">score {parent.signalScore.toFixed(2)}</span>
+        ) : null}
       </div>
+
+      {parent.notes ? (
+        <p className="mt-1.5 break-words font-mono text-[10px] leading-snug text-muted-foreground">
+          {parent.notes}
+        </p>
+      ) : null}
 
       {children.length > 0 && (
         <div className="mt-2 space-y-1 border-l border-border/60 pl-3">
@@ -2114,6 +2133,14 @@ function ExecutionQualityPanel({
                   <span className="tabular-nums text-muted-foreground">
                     {r.durationSec.toFixed(1)}s
                   </span>
+                  {r.notes ? (
+                    <span
+                      className="min-w-0 max-w-[12rem] truncate text-muted-foreground/80"
+                      title={r.notes}
+                    >
+                      {r.notes}
+                    </span>
+                  ) : null}
                 </div>
               ))}
             </div>

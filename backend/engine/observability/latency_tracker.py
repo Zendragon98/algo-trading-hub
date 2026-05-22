@@ -119,6 +119,13 @@ class LatencyTracker:
             }
         if len(payload) <= 1:
             return
+        summary = ", ".join(
+            f"{k}:p95={v['p95']:.0f}ms"
+            for k, v in payload.items()
+            if k != "kind" and isinstance(v, dict) and "p95" in v
+        )
+        if summary:
+            logger.debug("latency_metrics %s", summary)
         await self._bus.publish(Event(type=EventType.STATUS, payload=payload))
 
     def _record(self, key: str, delta_ms: float) -> None:

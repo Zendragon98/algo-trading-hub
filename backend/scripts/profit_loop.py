@@ -68,6 +68,15 @@ STRATEGY_PATCHES: dict[str, dict[str, object]] = {
         "sma_max_entries_per_tick": 1,
         "sma_min_mid_price": 0.05,
     },
+    "blended_signals": {
+        "blend_symbols": ["BTCUSDT", "ETHUSDT"],
+        "blend_bar_interval_sec": 300.0,
+        "blend_entry_threshold": 0.35,
+        "blend_min_confirming_votes": 3,
+        "blend_cooldown_sec": 120.0,
+        "blend_risk_per_trade_pct": 0.0008,
+        "blend_max_entries_per_tick": 1,
+    },
     "market_making": {
         "mm_symbols": LIQUID_SYMBOLS,
         "mm_entry_tilt": 10.0,
@@ -80,14 +89,14 @@ STRATEGY_PATCHES: dict[str, dict[str, object]] = {
     },
     "market_making_v2": {
         "mm2_symbols": ["BTCUSDT", "ETHUSDT"],
-        "mm2_entry_tilt": 7.5,
-        "mm2_min_skew_bps": 0.8,
-        "mm2_tape_confirm": 0.08,
-        "mm2_min_exit_profit_bps": 4.5,
-        "mm2_max_hold_sec": 75.0,
-        "mm2_cooldown_sec": 30.0,
+        "mm2_entry_tilt": 6.25,
+        "mm2_min_skew_bps": 0.5,
+        "mm2_tape_confirm": 0.0,
+        "mm2_min_exit_profit_bps": 10.0,
+        "mm2_max_hold_sec": 90.0,
+        "mm2_cooldown_sec": 45.0,
         "mm2_max_entries_per_tick": 1,
-        "mm2_risk_per_trade_pct": 0.0005,
+        "mm2_risk_per_trade_pct": 0.0004,
         "mm2_min_samples": 5,
     },
 }
@@ -95,6 +104,7 @@ STRATEGY_PATCHES: dict[str, dict[str, object]] = {
 _MARKER_COUNTS: dict[str, re.Pattern[str]] = {
     "pairs_trading_usdt_usdc": re.compile(r"PAIRS (entry|exit)", re.I),
     "sma_crossover": re.compile(r"SMA (open|close)", re.I),
+    "blended_signals": re.compile(r"BLEND (open|close)", re.I),
     "market_making": re.compile(r"MM (tilt|open|close)", re.I),
     "market_making_v2": re.compile(r"MM2 (entry|exit)", re.I),
 }
@@ -212,26 +222,35 @@ def _tune_from_cycle(
             continue
         if leg_delta < -15 and n == 0 and name == "pairs_trading_usdt_usdc":
             sp["pair_entry_z"] = min(5.0, float(sp.get("pair_entry_z", 3.8)) + 0.2)
-        if leg_delta >= -5 or n == 0:
+            patch["pair_entry_z"] = sp["pair_entry_z"]
+        if n == 0:
+            continue
+        if leg_delta >= -5:
             continue
         if name == "pairs_trading_usdt_usdc":
             sp["pair_entry_z"] = min(5.0, float(sp.get("pair_entry_z", 3.8)) + 0.15)
             sp["pair_cooldown_sec"] = min(240, int(sp.get("pair_cooldown_sec", 120)) + 15)
+            patch["pair_entry_z"] = sp["pair_entry_z"]
+            patch["pair_cooldown_sec"] = sp["pair_cooldown_sec"]
         elif name == "sma_crossover":
             sp["sma_cooldown_sec"] = min(180, int(sp.get("sma_cooldown_sec", 90)) + 15)
             sp["sma_risk_per_trade_pct"] = max(0.0004, float(sp.get("sma_risk_per_trade_pct", 0.0008)) - 0.0001)
+            patch["sma_cooldown_sec"] = sp["sma_cooldown_sec"]
+            patch["sma_risk_per_trade_pct"] = sp["sma_risk_per_trade_pct"]
         elif name == "market_making":
             sp["mm_entry_tilt"] = min(12.0, float(sp.get("mm_entry_tilt", 10.0)) + 0.5)
             sp["mm_cooldown_sec"] = min(120.0, float(sp.get("mm_cooldown_sec", 60.0)) + 10.0)
             sp["mm_risk_per_trade_pct"] = max(0.0004, float(sp.get("mm_risk_per_trade_pct", 0.0008)) - 0.0001)
+            patch["mm_entry_tilt"] = sp["mm_entry_tilt"]
+            patch["mm_cooldown_sec"] = sp["mm_cooldown_sec"]
+            patch["mm_risk_per_trade_pct"] = sp["mm_risk_per_trade_pct"]
         elif name == "market_making_v2":
-            sp["mm2_entry_tilt"] = min(12.0, float(sp.get("mm2_entry_tilt", 9.5)) + 0.25)
-            sp["mm2_min_exit_profit_bps"] = min(10.0, float(sp.get("mm2_min_exit_profit_bps", 7.0)) + 0.5)
-            sp["mm2_risk_per_trade_pct"] = max(0.0004, float(sp.get("mm2_risk_per_trade_pct", 0.0008)) - 0.0001)
-
-    for name, sp in STRATEGY_PATCHES.items():
-        for key, val in sp.items():
-            patch.setdefault(key, val)
+            sp["mm2_entry_tilt"] = min(12.0, float(sp.get("mm2_entry_tilt", 7.5)) + 0.25)
+            sp["mm2_min_exit_profit_bps"] = min(12.0, float(sp.get("mm2_min_exit_profit_bps", 10.0)) + 0.5)
+            sp["mm2_risk_per_trade_pct"] = max(0.0004, float(sp.get("mm2_risk_per_trade_pct", 0.0004)) - 0.0001)
+            patch["mm2_entry_tilt"] = sp["mm2_entry_tilt"]
+            patch["mm2_min_exit_profit_bps"] = sp["mm2_min_exit_profit_bps"]
+            patch["mm2_risk_per_trade_pct"] = sp["mm2_risk_per_trade_pct"]
 
     if cycle_delta < -15:
         patch["risk_per_trade_pct"] = max(0.0005, 0.001 - 0.0002 * cycle)

@@ -151,8 +151,10 @@ class VwapExecutor:
         for task in list(self._tasks.values()):
             try:
                 await task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            except asyncio.CancelledError:
                 pass
+            except Exception:  # noqa: BLE001
+                logger.exception("vwap slice task shutdown raised")
         self._tasks.clear()
 
     # --- Internal ---
@@ -214,11 +216,13 @@ class VwapExecutor:
         return schedule
 
     async def _run_parent(self, parent: ParentOrder, schedule: list[Slice]) -> None:
+        note_suffix = f" | {parent.notes}" if parent.notes else ""
         logger.info(
-            "VWAP %s %s %.6f %s mode=%s slices=%d",
+            "VWAP %s %s %.6f %s mode=%s slices=%d%s",
             parent.id, parent.side.value, parent.qty, parent.symbol,
             parent.algo_mode.value if parent.algo_mode else "-",
             len(schedule),
+            note_suffix,
         )
         try:
             last_delay = 0.0
@@ -548,6 +552,18 @@ class VwapExecutor:
                     parent.symbol, dev_bps, cap_bps,
                 )
                 return None
+            gateway_px = self._price(parent.symbol)
+            if gateway_px and gateway_px > 0:
+                gw_dev = abs(price - gateway_px) / gateway_px * 10_000.0
+                if gw_dev > cap_bps:
+                    logger.warning(
+                        "passive price stale %s: book=%.4f mark=%.4f dev=%.1fbps",
+                        parent.symbol,
+                        price,
+                        gateway_px,
+                        gw_dev,
+                    )
+                    return None
         return price
 
 

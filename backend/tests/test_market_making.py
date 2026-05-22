@@ -6,223 +6,54 @@ os.environ.setdefault("BINANCE_API_KEY", "test")
 os.environ.setdefault("BINANCE_API_SECRET", "test")
 
 from common.config import Settings  # noqa: E402
-from common.enums import Side  # noqa: E402
-from common.types import Signal  # noqa: E402
 from engine.market_data.feature_store import Features  # noqa: E402
+from engine.market_data.own_quote_book import OwnBookState  # noqa: E402
 from engine.strategies.market_making import MarketMakingStrategy  # noqa: E402
 
 
-def _feat(
-    mid: float,
-    micro: float,
-    imb: float,
-    *,
-    tape_bid_hits: int = 0,
-    tape_ask_hits: int = 0,
-) -> dict[str, Features]:
+def _feat(mid: float = 100.0, micro: float = 100.0) -> dict[str, Features]:
     return {
         "BTCUSDT": Features(
             symbol="BTCUSDT",
             mid=mid,
             spread_bps=10.0,
             micro_price=micro,
-            imbalance_topn=imb,
+            imbalance_topn=0.0,
             bid_hit_ratio=0.5,
             ask_hit_ratio=0.5,
-            tape_bid_hit_count=tape_bid_hits,
-            tape_ask_hit_count=tape_ask_hits,
+            bid_depth_ratio=1.0,
+            ask_depth_ratio=1.0,
         )
     }
 
 
-def test_mm_fade_emits_buy_on_negative_composite() -> None:
-    settings = Settings(
-        binance_api_key="x",
-        binance_api_secret="y",
-        mm_symbols=["BTCUSDT"],
-        mm_skew_window_sec=300.0,
-        mm_skew_scale=1.0,
-        mm_imbalance_scale=15.0,
-        mm_entry_tilt=8.0,
-        mm_signal_mode="fade",
-        mm_min_samples=5,
-        mm_qty=1.0,
-        mm_cooldown_sec=0.0,
-    )
-    strat = MarketMakingStrategy(settings)
-    # Negative skew + ask-heavy book -> strongly negative composite -> fade -> BUY
-    f = _feat(mid=100.0, micro=99.5, imb=-0.5)
-    sigs: list = []
-    for _ in range(6):
-        sigs = list(strat.on_tick(f))
-        if sigs:
-            break
-    assert len(sigs) == 1
-    assert sigs[0].side is Side.BUY
-    assert sigs[0].symbol == "BTCUSDT"
+def test_mm_on_tick_returns_no_signals() -> None:
+    strat = MarketMakingStrategy(Settings(mm_symbols=["BTCUSDT"]))
+    assert list(strat.on_tick(_feat())) == []
 
 
-def test_mm_fade_emits_sell_on_positive_composite() -> None:
-    settings = Settings(
-        binance_api_key="x",
-        binance_api_secret="y",
-        mm_symbols=["BTCUSDT"],
-        mm_entry_tilt=5.0,
-        mm_signal_mode="fade",
-        mm_min_samples=5,
-        mm_qty=1.0,
-        mm_cooldown_sec=0.0,
-    )
-    strat = MarketMakingStrategy(settings)
-    f = _feat(mid=100.0, micro=100.3, imb=0.6)
-    sigs = []
-    for _ in range(6):
-        sigs = list(strat.on_tick(f))
-        if sigs:
-            break
-    assert len(sigs) == 1
-    assert sigs[0].side is Side.SELL
-
-
-def test_mm_fade_tape_offer_lifts_drive_sell() -> None:
-    """Many more offer lifts than bid hits => positive tape pressure => fade SELL."""
-    settings = Settings(
-        binance_api_key="x",
-        binance_api_secret="y",
-        mm_symbols=["BTCUSDT"],
-        mm_skew_scale=0.0,
-        mm_imbalance_scale=0.0,
-        mm_tape_scale=20.0,
-        mm_min_tape_trades=5,
-        mm_entry_tilt=10.0,
-        mm_signal_mode="fade",
-        mm_min_samples=5,
-        mm_qty=1.0,
-        mm_cooldown_sec=0.0,
-    )
-    strat = MarketMakingStrategy(settings)
-    f = _feat(100.0, 100.0, 0.0, tape_bid_hits=2, tape_ask_hits=10)
-    sigs: list = []
-    for _ in range(6):
-        sigs = list(strat.on_tick(f))
-        if sigs:
-            break
-    assert len(sigs) == 1
-    assert sigs[0].side is Side.SELL
-    assert "hits_ba=2/10" in sigs[0].reason
-
-
-def test_mm_follow_mapping() -> None:
-    settings = Settings(
-        binance_api_key="x",
-        binance_api_secret="y",
-        mm_symbols=["BTCUSDT"],
-        mm_entry_tilt=5.0,
-        mm_signal_mode="follow",
-        mm_min_samples=5,
-        mm_qty=1.0,
-        mm_cooldown_sec=0.0,
-    )
-    strat = MarketMakingStrategy(settings)
-    f = _feat(mid=100.0, micro=100.3, imb=0.6)
-    sigs = []
-    for _ in range(6):
-        sigs = list(strat.on_tick(f))
-        if sigs:
-            break
-    assert sigs[0].side is Side.BUY
-
-
-def test_mm_uses_full_engine_symbol_universe_when_unconfigured() -> None:
-    settings = Settings(
-        binance_api_key="x",
-        binance_api_secret="y",
-        symbols=["BTCUSDT", "ETHUSDT", "SOLUSDC"],
-        mm_symbols=[],
-    )
-    strat = MarketMakingStrategy(settings)
-    assert set(strat.symbols()) == {"BTCUSDT", "ETHUSDT", "SOLUSDC"}
-
-
-def test_mm_auto_alias_matches_engine_symbols() -> None:
-    settings = Settings(
-        binance_api_key="x",
-        binance_api_secret="y",
-        symbols=["AVAXUSDT", "AVAXUSDC"],
-        mm_symbols=["AUTO"],
-    )
-    strat = MarketMakingStrategy(settings)
-    assert set(strat.symbols()) == {"AVAXUSDT", "AVAXUSDC"}
-
-
-def test_mm_caps_new_entries_per_tick() -> None:
-    settings = Settings(
-        binance_api_key="x",
-        binance_api_secret="y",
-        mm_max_entries_per_tick=2,
-    )
-    strat = MarketMakingStrategy(settings)
-    sigs = [
-        Signal(symbol="A", side=Side.BUY, qty=1.0, score=1.0, reason="mm"),
-        Signal(symbol="B", side=Side.BUY, qty=1.0, score=5.0, reason="mm"),
-        Signal(symbol="C", side=Side.BUY, qty=1.0, score=3.0, reason="mm"),
-        Signal(symbol="D", side=Side.SELL, qty=1.0, score=10.0, reason="mm_exit", reduce_only=True),
-    ]
-    capped = strat._cap_entries(sigs)
-    assert [s.symbol for s in capped] == ["D", "B", "C"]
-
-
-def test_mm_skips_when_book_not_ready() -> None:
-    """Do not tilt on cached skew/tape while L2 is resyncing (mid unset)."""
-    settings = Settings(
-        binance_api_key="x",
-        binance_api_secret="y",
-        mm_symbols=["BTCUSDT"],
-        mm_skew_scale=1.0,
-        mm_imbalance_scale=15.0,
-        mm_entry_tilt=8.0,
-        mm_signal_mode="fade",
-        mm_min_samples=3,
-        mm_qty=1.0,
-        mm_cooldown_sec=0.0,
-    )
-    strat = MarketMakingStrategy(settings)
-    for _ in range(5):
-        list(strat.on_tick(_feat(mid=100.0, micro=90.0, imb=-1.0)))
-    stale_book = {
-        "BTCUSDT": Features(
-            symbol="BTCUSDT",
-            tape_bid_hit_count=0,
-            tape_ask_hit_count=50,
+def test_mm_on_tick_quotes_posts_bid_and_ask() -> None:
+    strat = MarketMakingStrategy(
+        Settings(
+            binance_api_key="x",
+            binance_api_secret="y",
+            mm_symbols=["BTCUSDT"],
+            mm_min_samples=1,
+            mm_quote_half_spread_bps=5.0,
         )
-    }
-    assert list(strat.on_tick(stale_book)) == []
-
-
-def test_mm_exits_when_composite_reverts() -> None:
-    settings = Settings(
-        binance_api_key="x",
-        binance_api_secret="y",
-        mm_symbols=["BTCUSDT"],
-        mm_skew_scale=0.0,
-        mm_imbalance_scale=0.0,
-        mm_tape_scale=0.0,
-        mm_entry_tilt=8.0,
-        mm_exit_tilt=3.0,
-        mm_signal_mode="fade",
-        mm_min_samples=3,
-        mm_qty=1.0,
-        mm_cooldown_sec=0.0,
     )
-    strat = MarketMakingStrategy(settings)
-    strat.attach_position_provider(lambda _sym: 1.0)
+    strat.attach_own_book_provider(lambda _s: OwnBookState(symbol="BTCUSDT"))
+    intents = []
+    for _ in range(3):
+        intents = strat.on_tick_quotes(_feat())
+        if intents and intents[0].bid_price and intents[0].ask_price:
+            break
+    assert len(intents) == 1
+    assert intents[0].bid_price is not None
+    assert intents[0].ask_price is not None
+    assert intents[0].ask_price > intents[0].bid_price
 
-    # Warm skew buffer (composite will be 0 once micro == mid).
-    for _ in range(5):
-        list(strat.on_tick(_feat(mid=100.0, micro=100.1, imb=0.0)))
 
-    sigs = list(strat.on_tick(_feat(mid=100.0, micro=100.0, imb=0.0)))
-    assert len(sigs) == 1
-    assert sigs[0].reduce_only is True
-    assert sigs[0].side is Side.SELL
-    assert "mm_exit" in sigs[0].reason
+def test_mm_manages_own_risk_when_enabled() -> None:
+    strat = MarketMakingStrategy(Settings(mm_institutional_risk_enabled=True))
+    assert strat.manages_own_risk() is True

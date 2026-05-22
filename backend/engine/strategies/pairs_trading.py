@@ -52,7 +52,7 @@ from pathlib import Path
 
 from common.config import Settings
 from common.enums import Side
-from common.logging import signal_log
+from common.logging import signal_log_emit
 from common.types import Signal
 
 from ..market_data.feature_store import Features
@@ -416,6 +416,7 @@ class PairsTradingStrategy(StrategyBase):
         try:
             data = provider()
         except Exception:  # noqa: BLE001 — never let weight fetch crash the loop
+            logger.debug("weight provider raised; using equal weights", exc_info=True)
             return {}
         if not isinstance(data, dict):
             return {}
@@ -533,10 +534,11 @@ class PairsTradingStrategy(StrategyBase):
             self._clear_pending(stats)
             return []
         qty = stats.pending_qty if stats.pending_qty > 0 else self._FALLBACK_QTY
-        signal_log(
+        signal_log_emit(
             logger,
             f"PAIRS partial abort -> {open_side.opposite.value.upper()} {filled} "
             f"qty={qty:.8f} (partner leg never filled)",
+            reason="pairs_partial_abort",
         )
         self._clear_pending(stats)
         return [
@@ -582,6 +584,15 @@ class PairsTradingStrategy(StrategyBase):
 
         if stats.open_side == 0:
             if abs(z) < pair.entry_z:
+                if abs(z) >= pair.entry_z * 0.85:
+                    logger.debug(
+                        "PAIRS %s/%s below entry: |z|=%.2f need=%.2f basis=%.5f",
+                        pair.usdt_symbol,
+                        pair.usdc_symbol,
+                        abs(z),
+                        pair.entry_z,
+                        basis,
+                    )
                 return []
             qty = self._size_pair(usdt_mid, usdc_mid, abs(z), pair.entry_z)
             if qty <= 0:
@@ -597,10 +608,11 @@ class PairsTradingStrategy(StrategyBase):
                 stats.pending_is_close = False
                 stats.pending_filled_symbol = ""
                 stats.last_action_ts = now
-                signal_log(
+                signal_log_emit(
                     logger,
                     f"PAIRS entry +z={z:.2f} short {pair.usdc_symbol}, "
                     f"long {pair.usdt_symbol} qty={qty:.8f}",
+                    reason=reason_open,
                 )
                 return [
                     Signal(symbol=pair.usdc_symbol, side=Side.SELL, qty=qty,
@@ -618,10 +630,11 @@ class PairsTradingStrategy(StrategyBase):
             stats.pending_is_close = False
             stats.pending_filled_symbol = ""
             stats.last_action_ts = now
-            signal_log(
+            signal_log_emit(
                 logger,
                 f"PAIRS entry -z={z:.2f} short {pair.usdt_symbol}, "
                 f"long {pair.usdc_symbol} qty={qty:.8f}",
+                reason=reason_open,
             )
             return [
                 Signal(symbol=pair.usdt_symbol, side=Side.SELL, qty=qty,
@@ -667,10 +680,11 @@ class PairsTradingStrategy(StrategyBase):
         stats.pending_since_ts = now
         stats.pending_is_close = True
         stats.last_action_ts = now
-        signal_log(
+        signal_log_emit(
             logger,
             f"PAIRS {unwind_reason} z={z:.2f} -> close "
             f"{pair.usdt_symbol}/{pair.usdc_symbol} qty={qty:.8f}",
+            reason=reason_text,
         )
         return [
             Signal(symbol=pair.usdc_symbol, side=unwind_usdc, qty=qty,

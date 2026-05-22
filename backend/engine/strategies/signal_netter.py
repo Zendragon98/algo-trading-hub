@@ -6,11 +6,15 @@ they pass through unchanged so atomic multi-leg submits stay intact.
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 
 from common.enums import Side
+from common.logging import signal_log_emit
 from common.types import Signal
+
+logger = logging.getLogger(__name__)
 
 
 def _signed_delta(sig: Signal) -> float:
@@ -71,16 +75,28 @@ def net_strategy_signals(
             reduce_only = reduce_only and sig.reduce_only
 
         if abs(net) < 1e-12:
+            logger.debug(
+                "net zero %s: opposing intents cancelled (%s)",
+                symbol,
+                " | ".join(reasons),
+            )
             continue
 
         side = Side.BUY if net > 0 else Side.SELL
+        net_reason = " | ".join(reasons)
+        signal_log_emit(
+            logger,
+            f"net {side.value} {symbol} qty={abs(net):.8f} "
+            f"({len(entries)} strategies)",
+            reason=net_reason,
+        )
         loose.append(
             NettedSignal(
                 signal=Signal(
                     symbol=symbol,
                     side=side,
                     qty=abs(net),
-                    reason=" | ".join(reasons),
+                    reason=net_reason,
                     score=max_score,
                     reduce_only=reduce_only,
                     strategy_name="__netted__",

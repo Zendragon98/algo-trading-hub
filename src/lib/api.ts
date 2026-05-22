@@ -121,6 +121,9 @@ export type ParentOrderDTO = {
   impact_bps: number;
   duration_sec: number;
   algo_mode: string | null;
+  notes?: string;
+  signal_score?: number;
+  strategy_name?: string;
   started_at: number;
 };
 
@@ -401,6 +404,27 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  backtestDatasets: () => request<BacktestDatasetDTO[]>("/api/backtest/datasets"),
+  backtestSessions: () => request<BacktestSessionDTO[]>("/api/backtest/sessions"),
+  backtestDownload: (body: { symbols: string[]; interval?: string; days?: number }) =>
+    request<{ ok: boolean; downloaded: { symbol: string; interval: string; rows: number; path: string }[] }>(
+      "/api/backtest/download",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  backtestRun: (body: {
+    strategy: string;
+    dataset?: string;
+    start?: string;
+    end?: string;
+    settings_overrides?: Record<string, unknown>;
+  }) =>
+    request<BacktestResultDTO>("/api/backtest/run", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  backtestRuns: () => request<BacktestResultSummaryDTO[]>("/api/backtest/runs"),
+  backtestRunById: (runId: string) => request<BacktestResultDTO>(`/api/backtest/runs/${runId}`),
 };
 
 export type WsEvent =
@@ -483,6 +507,9 @@ export function toExecutionParent(d: ParentOrderDTO | ExecutionReportDTO): Execu
     impactBps: d.impact_bps,
     durationSec: d.duration_sec,
     algoMode: d.algo_mode,
+    notes: d.notes ?? "",
+    signalScore: d.signal_score ?? 0,
+    strategyName: d.strategy_name ?? "",
     startedAt: d.started_at,
     completedAt: "completed_at" in d ? d.completed_at : null,
   };
@@ -590,5 +617,107 @@ export function toKline(d: KlineDTO): Kline {
     close: d.close,
     volume: d.volume,
     closeTime: d.close_time,
+  };
+}
+
+export type BacktestDatasetDTO = {
+  symbol: string;
+  interval: string;
+  source: "live" | "download" | "mixed";
+  rows: number;
+  start: string | null;
+  end: string | null;
+  path: string;
+  run_ids: string[];
+  updated_at: string;
+};
+
+export type BacktestSessionDTO = {
+  run_id: string;
+  label: string;
+};
+
+export type BacktestMetricsDTO = {
+  total_return_pct: number;
+  max_drawdown_pct: number;
+  trade_count: number;
+  win_rate: number;
+  realized_pnl: number;
+  final_equity: number;
+};
+
+export type BacktestFillDTO = {
+  symbol: string;
+  side: string;
+  qty: number;
+  price: number;
+  ts: number;
+  reason: string;
+  pnl: number;
+  action: string;
+};
+
+export type BacktestResultDTO = {
+  run_id: string;
+  strategy: string;
+  dataset: string;
+  bar_count: number;
+  symbols: string[];
+  metrics: BacktestMetricsDTO;
+  equity_curve: number[];
+  fills: BacktestFillDTO[];
+  notes: string[];
+};
+
+export type BacktestResultSummaryDTO = {
+  run_id: string;
+  strategy: string;
+  dataset: string;
+  bar_count: number;
+  total_return_pct: number;
+  saved_at: string | null;
+};
+
+export function toBacktestDataset(d: BacktestDatasetDTO): import("@/components/algo/types").BacktestDataset {
+  return {
+    symbol: d.symbol,
+    interval: d.interval,
+    source: d.source,
+    rows: d.rows,
+    start: d.start,
+    end: d.end,
+    path: d.path,
+    runIds: d.run_ids,
+    updatedAt: d.updated_at,
+  };
+}
+
+export function toBacktestResult(d: BacktestResultDTO): import("@/components/algo/types").BacktestResult {
+  return {
+    runId: d.run_id,
+    strategy: d.strategy,
+    dataset: d.dataset,
+    barCount: d.bar_count,
+    symbols: d.symbols,
+    metrics: {
+      totalReturnPct: d.metrics.total_return_pct,
+      maxDrawdownPct: d.metrics.max_drawdown_pct,
+      tradeCount: d.metrics.trade_count,
+      winRate: d.metrics.win_rate,
+      realizedPnl: d.metrics.realized_pnl,
+      finalEquity: d.metrics.final_equity,
+    },
+    equityCurve: d.equity_curve,
+    fills: d.fills.map((f) => ({
+      symbol: f.symbol,
+      side: f.side,
+      qty: f.qty,
+      price: f.price,
+      ts: f.ts,
+      reason: f.reason,
+      pnl: f.pnl,
+      action: f.action,
+    })),
+    notes: d.notes,
   };
 }

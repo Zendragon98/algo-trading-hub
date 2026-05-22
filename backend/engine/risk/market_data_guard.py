@@ -27,10 +27,14 @@ present and exceeds the configured threshold.
 
 from __future__ import annotations
 
+import logging
 import time as _time
+
 from common.config import Settings
 
 from .circuit_breaker import Breach, BreakerScope, BreakerSeverity
+
+logger = logging.getLogger(__name__)
 
 
 class MarketDataGuard:
@@ -95,7 +99,7 @@ class MarketDataGuard:
         if tick_ts is not None and self._max_tick_age > 0:
             age = max(0.0, _time.time() - tick_ts)
             if age > self._max_tick_age:
-                return Breach(
+                breach = Breach(
                     code="stale_tick",
                     scope=BreakerScope.SYMBOL,
                     severity=BreakerSeverity.MINOR,
@@ -103,6 +107,12 @@ class MarketDataGuard:
                     cooldown_sec=self._cooldown_sec,
                     detail=f"age={age:.1f}s>{self._max_tick_age:.1f}s",
                 )
+                logger.warning(
+                    "stale_tick %s: %s",
+                    symbol,
+                    breach.detail,
+                )
+                return breach
 
         if spread_bps is None:
             return None
@@ -118,7 +128,7 @@ class MarketDataGuard:
         if self._max_spread_bps <= 0:
             return None
         if spread_bps > self._max_spread_bps:
-            return Breach(
+            breach = Breach(
                 code="wide_spread",
                 scope=BreakerScope.SYMBOL,
                 severity=BreakerSeverity.MINOR,
@@ -126,6 +136,8 @@ class MarketDataGuard:
                 cooldown_sec=self._cooldown_sec,
                 detail=f"spread={spread_bps:.1f}bps>{self._max_spread_bps:.1f}bps",
             )
+            logger.warning("wide_spread %s: %s", symbol, breach.detail)
+            return breach
         return None
 
     def _evaluate_spread_dynamic(self, symbol: str, spread_bps: float) -> Breach | None:
@@ -142,7 +154,7 @@ class MarketDataGuard:
 
         if spread_bps > allowed:
             ewma_after = self._spread_ewma[symbol]
-            return Breach(
+            breach = Breach(
                 code="wide_spread",
                 scope=BreakerScope.SYMBOL,
                 severity=BreakerSeverity.MINOR,
@@ -153,6 +165,8 @@ class MarketDataGuard:
                     f"(dyn mult={self._spread_mult}:1 ewma~{baseline:.1f}->{ewma_after:.1f})"
                 ),
             )
+            logger.warning("wide_spread %s: %s", symbol, breach.detail)
+            return breach
         return None
 
     def _allowed_spread_bps(self, baseline_ewma: float) -> float:

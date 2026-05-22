@@ -16,14 +16,16 @@ from pathlib import Path
 from common.config import get_settings
 from common.enums import TradingMode
 from common.events import EventBus
-from common.logging import configure_logging
+from common.logging import configure_logging, resolve_log_level
 from gateways.factory import create_gateway
 
 from .core.engine import Engine
+from .persistence.market_capture import create_capturer
 from .persistence.run_bootstrap import bootstrap_run, shutdown_bootstrap
 from .strategies.market_making import MarketMakingStrategy
 from .strategies.market_making_v2 import MarketMakingV2Strategy
 from .strategies.pairs_trading import PairsTradingStrategy
+from .strategies.blended_signals import BlendedSignalsStrategy
 from .strategies.sma_crossover import SmaCrossoverStrategy
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,7 @@ async def run() -> None:
 
     configure_logging(
         bus=bus,
+        level=resolve_log_level(settings.log_level),
         log_file=bootstrap.log_file,
         log_file_max_bytes=settings.log_file_max_bytes,
         log_file_backup_count=settings.log_file_backup_count,
@@ -61,6 +64,8 @@ async def run() -> None:
         "pairs": PairsTradingStrategy.name,
         "pairs_trading": PairsTradingStrategy.name,
         "sma": SmaCrossoverStrategy.name,
+        "blend": BlendedSignalsStrategy.name,
+        "blended": BlendedSignalsStrategy.name,
         "mm": MarketMakingStrategy.name,
         "market_making": MarketMakingStrategy.name,
         "mm2": MarketMakingV2Strategy.name,
@@ -70,6 +75,7 @@ async def run() -> None:
     all_strategies = [
         PairsTradingStrategy(settings),
         SmaCrossoverStrategy(settings),
+        BlendedSignalsStrategy(settings),
         MarketMakingStrategy(settings),
         MarketMakingV2Strategy(settings),
     ]
@@ -88,6 +94,16 @@ async def run() -> None:
         recovery_wal=bootstrap.recovery_wal,
         event_archive_dir=bootstrap.run_dir,
     )
+    if bootstrap.run_dir is not None:
+        capturer = create_capturer(
+            settings,
+            bootstrap.run_dir,
+            engine._symbols,  # noqa: SLF001
+            snapshot_fn=lambda sym: engine._features.snapshot(sym),  # noqa: SLF001
+        )
+        if capturer is not None:
+            engine.attach_market_capturer(capturer)
+            bootstrap.market_capturer = capturer
 
     def _position_qty(symbol: str) -> float:
         pos = engine._positions.get(symbol)  # noqa: SLF001
@@ -97,7 +113,7 @@ async def run() -> None:
         if isinstance(strat, PairsTradingStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_weight_provider(lambda: engine.volume_weights)
-        if isinstance(strat, SmaCrossoverStrategy):
+        if isinstance(strat, (SmaCrossoverStrategy, BlendedSignalsStrategy)):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_position_provider(_position_qty)
         if isinstance(strat, (MarketMakingStrategy, MarketMakingV2Strategy)):
@@ -127,7 +143,7 @@ async def run() -> None:
     try:
         await stop_event.wait()
     except KeyboardInterrupt:
-        pass
+        logger.info("shutdown: keyboard interrupt")
     finally:
         await engine.stop()
         await shutdown_bootstrap(bootstrap)

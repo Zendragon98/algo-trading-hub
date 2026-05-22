@@ -68,6 +68,29 @@ class TapeTrade:
 
 
 @dataclass(slots=True)
+class QuoteIntent:
+    """Two-sided MM quote request (not routed through VWAP)."""
+
+    symbol: str
+    bid_price: float | None
+    ask_price: float | None
+    bid_qty: float
+    ask_qty: float
+    reason: str = ""
+    strategy_name: str = ""
+    reduce_only_bid: bool = False
+    reduce_only_ask: bool = False
+    # Pricing audit trail (venue mid vs MM reservation mid + spreads).
+    venue_mid: float = 0.0
+    reservation_mid: float = 0.0
+    inventory_ratio: float = 0.0
+    bid_half_bps: float = 0.0
+    ask_half_bps: float = 0.0
+    unrealized_pnl_bps: float = 0.0
+    ts: float = field(default_factory=time)
+
+
+@dataclass(slots=True)
 class Signal:
     """A strategy's request to take a position.
 
@@ -84,7 +107,7 @@ class Signal:
     symbol: str
     side: Side
     qty: float
-    reason: str                        # human-readable, surfaced in the log stream
+    reason: str                        # human-readable; logged via signal_log_emit
     score: float = 0.0                 # strategy-internal confidence in [0, 1]
     group_id: str | None = None        # legs sharing this id are submitted atomically
     # When True the engine submits a position-reducing parent only (exits / flattens).

@@ -46,6 +46,9 @@ class ExecutionReport:
     fill_ratio: float = 0.0
     duration_sec: float = 0.0
     algo_mode: str | None = None
+    notes: str = ""
+    signal_score: float = 0.0
+    strategy_name: str = ""
     started_at: float = field(default_factory=time)
     completed_at: float | None = None
 
@@ -75,6 +78,9 @@ class ExecutionTracker:
             requested_qty=parent.qty,
             arrival_price=arrival_price,
             algo_mode=parent.algo_mode.value if parent.algo_mode else None,
+            notes=parent.notes,
+            signal_score=parent.signal_score,
+            strategy_name=parent.strategy_name,
         )
         self._open[parent.id] = report
         return report
@@ -136,6 +142,11 @@ class ExecutionTracker:
             report.requested_qty > 0
             and report.fill_ratio < 1.0 - self._COMPLETE_EPSILON
         ):
+            logger.warning(
+                "parent underfill %s fill_ratio=%.4f",
+                parent_id,
+                report.fill_ratio,
+            )
             await self._bus.publish(
                 Event(
                     type=EventType.STATUS,
@@ -202,8 +213,10 @@ class ExecutionTracker:
         await self._bus.publish(
             Event(type=EventType.EXECUTION_REPORT, payload=asdict(report))
         )
+        note_suffix = f" notes={report.notes!r}" if report.notes else ""
         logger.info(
-            "parent %s done: filled=%.4f@%.4f arrival=%.4f slip=%.2fbps impact=%.2fbps in %.1fs",
+            "parent %s done: filled=%.4f@%.4f arrival=%.4f slip=%.2fbps impact=%.2fbps "
+            "in %.1fs%s",
             report.parent_id,
             report.filled_qty,
             report.vwap_price,
@@ -211,6 +224,7 @@ class ExecutionTracker:
             report.slippage_bps,
             report.impact_bps,
             report.duration_sec,
+            note_suffix,
         )
 
     async def _publish_progress(self, report: ExecutionReport) -> None:

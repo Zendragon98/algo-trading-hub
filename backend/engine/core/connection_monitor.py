@@ -45,6 +45,8 @@ class ConnectionMonitor:
         self._stale_threshold = max(0.0, ws_stale_pause_sec)
         self._user_stale_threshold = max(0.0, user_data_stale_sec)
         self._cooldown_sec = max(0.0, cooldown_sec)
+        self._market_was_stale = False
+        self._user_was_stale = False
 
     def apply_settings(self, settings: Settings) -> None:
         self._stale_threshold = max(0.0, settings.ws_stale_pause_sec)
@@ -86,6 +88,13 @@ class ConnectionMonitor:
         if last_tick_ts > 0:
             tick_age = max(0.0, now - last_tick_ts)
             if tick_age > self._stale_threshold:
+                if not self._market_was_stale:
+                    logger.warning(
+                        "stale market data: tick_age=%.1fs threshold=%.1fs — tripping breaker",
+                        tick_age,
+                        self._stale_threshold,
+                    )
+                    self._market_was_stale = True
                 self._breaker.trip(
                     Breach(
                         code="stale_market_data",
@@ -95,11 +104,25 @@ class ConnectionMonitor:
                         detail=f"tick_age={tick_age:.1f}s",
                     )
                 )
+            elif self._market_was_stale:
+                logger.info(
+                    "market data recovered: tick_age=%.1fs (threshold=%.1fs)",
+                    tick_age,
+                    self._stale_threshold,
+                )
+                self._market_was_stale = False
 
         user_limit = self._user_stale_threshold or self._stale_threshold
         if check_user_data_stale and last_user_data_ts > 0 and user_limit > 0:
             user_age = max(0.0, now - last_user_data_ts)
             if user_age > user_limit:
+                if not self._user_was_stale:
+                    logger.warning(
+                        "stale user data: user_age=%.1fs threshold=%.1fs — tripping breaker",
+                        user_age,
+                        user_limit,
+                    )
+                    self._user_was_stale = True
                 self._breaker.trip(
                     Breach(
                         code="stale_user_data",
@@ -109,3 +132,10 @@ class ConnectionMonitor:
                         detail=f"user_age={user_age:.1f}s",
                     )
                 )
+            elif self._user_was_stale:
+                logger.info(
+                    "user data recovered: user_age=%.1fs (threshold=%.1fs)",
+                    user_age,
+                    user_limit,
+                )
+                self._user_was_stale = False

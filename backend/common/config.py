@@ -317,6 +317,46 @@ class Settings(BaseSettings):
     # Cap SMA_SYMBOLS=AUTO to the top-N USDT perps by 24h quote volume (0 = full universe).
     sma_max_symbols: int = 10
 
+    # --- Blended multi-indicator strategy (EMA + MACD + RSI + BB + micro) ---
+    blend_symbols: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["BTCUSDT", "ETHUSDT"],
+    )
+    blend_symbol: str = "BTCUSDT"
+    blend_bar_interval_sec: float = 300.0
+    blend_ema_fast: int = 9
+    blend_ema_slow: int = 21
+    blend_macd_fast: int = 12
+    blend_macd_slow: int = 26
+    blend_macd_signal: int = 9
+    blend_rsi_period: int = 14
+    blend_rsi_long_low: float = 45.0
+    blend_rsi_long_high: float = 70.0
+    blend_rsi_short_low: float = 30.0
+    blend_rsi_short_high: float = 55.0
+    blend_rsi_overbought: float = 75.0
+    blend_rsi_oversold: float = 25.0
+    blend_bb_period: int = 20
+    blend_bb_std: float = 2.0
+    blend_bb_long_pct: float = 0.2
+    blend_bb_short_pct: float = 0.8
+    blend_weight_ema: float = 1.0
+    blend_weight_macd: float = 1.0
+    blend_weight_rsi: float = 0.8
+    blend_weight_bb: float = 0.7
+    blend_weight_micro: float = 0.5
+    blend_micro_imbalance_scale: float = 4.0
+    blend_micro_tape_scale: float = 6.0
+    blend_micro_threshold: float = 0.12
+    blend_entry_threshold: float = 0.35
+    blend_exit_threshold: float = 0.1
+    blend_min_confirming_votes: int = 3
+    blend_min_mid_price: float = 0.01
+    blend_risk_per_trade_pct: float = 0.002
+    blend_qty: float = 0.001
+    blend_cooldown_sec: float = 60.0
+    blend_max_entries_per_tick: int = 2
+    blend_scan_log_interval_sec: float = 60.0
+
     # --- Market-making tilt strategy (skew + imbalance + tape) ---
     # MM_SYMBOLS: CSV list, or ``AUTO`` for the full engine ``SYMBOLS`` universe.
     # Default is a small liquid set so MM does not inherit the full pairs AUTO list.
@@ -393,6 +433,52 @@ class Settings(BaseSettings):
     mm2_composite_fee_scale: float = 0.0
     mm2_scan_log_interval_sec: float = 60.0
 
+    # --- Institutional MM (quote-only execution, microstructure) ---
+    mm_institutional_risk_enabled: bool = True
+    mm_quote_enabled: bool = True
+    mm_urgent_exit_market: bool = False
+    mm_tape_pressure_mode: str = "volume"  # volume | count
+    mm_max_inventory_notional: float = 0.0  # 0 = use max_symbol_notional_pct * equity
+    mm_inventory_skew_scale: float = 4.0
+    # Shift MM reservation mid away from inventory at |ratio|=1 (bps; long -> lower mid).
+    mm_reservation_inventory_bps: float = 12.0
+    # Extra half-spread on the side that would add exposure at |ratio|=1 (bps).
+    mm_inventory_spread_skew_bps: float = 5.0
+    # Weight on microstructure bias when building reservation mid (0–1 scale on bias units).
+    mm_reservation_micro_weight: float = 0.12
+    mm_inventory_hard_ratio: float = 0.85
+    mm_inventory_exit_ratio: float = 0.7
+    mm_inventory_size_damp: float = 0.5
+    mm_inventory_include_working: bool = False
+    mm_jump_return_bps: float = 25.0
+    mm_jump_vol_mult: float = 3.0
+    mm_jump_pause_sec: float = 30.0
+    mm_jump_flatten: bool = False
+    mm_max_adverse_markout_bps: float = 8.0
+    mm_markout_cooldown_sec: float = 15.0
+    mm_scratch_loss_bps: float = 15.0
+    mm_min_exit_profit_bps: float = 5.0
+    mm_max_hold_sec: float = 150.0
+    mm_catastrophe_stop_pct: float = 0.0
+    mm_depletion_top_n: int = 10
+    mm_depletion_baseline_alpha: float = 0.06
+    mm_depletion_drop_pct: float = 0.25
+    mm_depletion_window_sec: float = 5.0
+    mm_depletion_widen_bps: float = 4.0
+    mm_depletion_shift_bps: float = 3.0
+    mm_depletion_size_damp: float = 0.4
+    mm_depletion_pull_ratio: float = 0.35
+    mm_depletion_breaker_ratio: float = 0.25
+    mm_depletion_scale: float = 6.0
+    mm_large_trade_mult: float = 3.0
+    mm_toxicity_threshold: float = 0.65
+    mm_quote_half_spread_bps: float = 3.0
+    mm_quote_refresh_bps: float = 1.0
+    mm_quote_min_rest_sec: float = 0.5
+    mm_quote_size_pct: float = 0.002
+    mm_quote_max_refresh_per_tick: int = 8
+    mm_quote_toxic_widen_bps: float = 6.0
+
     # --- API ---
     api_host: str = "127.0.0.1"
     api_port: int = 8000
@@ -409,12 +495,24 @@ class Settings(BaseSettings):
     persist_enabled: bool = True
     persist_dir: str = "data/runs"
     persist_record_ticks: bool = False    # firehose; off by default
+    capture_market_bars: bool = True    # 1m OHLCV from live mids → backtest library
+    capture_bar_interval_sec: int = 60
+    capture_flush_interval_sec: float = 300.0
+    backtest_slippage_bps: float = 5.0
+    backtest_initial_equity: float = 10_000.0
+    log_level: str = "info"  # debug | info | warning | error — env LOG_LEVEL
     log_file_enabled: bool = True
     log_file_max_bytes: int = 10_000_000  # 10 MB before rotation
     log_file_backup_count: int = 5
 
     @field_validator(
-        "symbols", "sma_symbols", "mm_symbols", "mm2_symbols", "cors_origins", mode="before"
+        "symbols",
+        "sma_symbols",
+        "blend_symbols",
+        "mm_symbols",
+        "mm2_symbols",
+        "cors_origins",
+        mode="before",
     )
     @classmethod
     def _split_csv(cls, value: object) -> object:
@@ -435,6 +533,13 @@ class Settings(BaseSettings):
     @field_validator("trading_mode", mode="before")
     @classmethod
     def _normalise_mode(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _normalise_log_level(cls, value: object) -> object:
         if isinstance(value, str):
             return value.strip().lower()
         return value
@@ -469,6 +574,9 @@ def normalize_strategy_name(value: str) -> str:
         "pairs": "pairs_trading_usdt_usdc",
         "pairs_trading": "pairs_trading_usdt_usdc",
         "sma": "sma_crossover",
+        "blend": "blended_signals",
+        "blended": "blended_signals",
+        "blended_signals": "blended_signals",
         "mm": "market_making",
         "market_making": "market_making",
         "mm2": "market_making_v2",

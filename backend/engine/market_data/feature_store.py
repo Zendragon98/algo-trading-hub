@@ -1,9 +1,4 @@
-"""Snapshot of per-symbol features consumed by strategies + algo wheel.
-
-Strategies should never reach into the order book or trade tape directly;
-they consume `Features` snapshots so the surface stays small and easy to
-mock in tests.
-"""
+"""Snapshot of per-symbol features consumed by strategies + algo wheel."""
 
 from __future__ import annotations
 
@@ -12,18 +7,15 @@ from time import time
 
 from common.config import Settings
 
+from .microstructure_hub import MicrostructureHub
 from .orderbook import OrderBookStore
+from .own_quote_book import OwnBookState
 from .trade_tape import TradeTape
 
 
 @dataclass(slots=True)
 class Features:
-    """Microstructure features for a single symbol.
-
-    All fields are populated from the live order book + tape at read
-    time. None means "not enough data yet" (typically during the first
-    few seconds after subscribe).
-    """
+    """Microstructure features for a single symbol."""
 
     symbol: str
     ts: float = field(default_factory=time)
@@ -33,54 +25,149 @@ class Features:
     imbalance_topn: float = 0.0
     bid_hit_ratio: float = 0.0
     ask_hit_ratio: float = 0.0
-    # Aggressor trade counts in the rolling tape window (`trade_tape_window_sec`,
-    # default 300s): bid hits = sellers lifted bids; ask hits = buyers lifted offers.
     tape_bid_hit_count: int = 0
     tape_ask_hit_count: int = 0
     last_price: float | None = None
     best_bid: float | None = None
     best_ask: float | None = None
+    mid_return_1s_bps: float = 0.0
+    vol_ewma_bps: float = 0.0
+    jump_active: bool = False
+    vpin: float = 0.5
+    tape_velocity: float = 0.0
+    large_trade_share: float = 0.0
+    markout_adverse_ewma_bps: float = 0.0
+    toxicity_score: float = 0.0
+    is_toxic: bool = False
+    toxicity_flow_direction: float = 0.0
+    bid_depth_ratio: float = 1.0
+    ask_depth_ratio: float = 1.0
+    bid_depletion_score: float = 0.0
+    ask_depletion_score: float = 0.0
+    depth_depletion_asym: float = 0.0
+    inventory_ratio: float = 0.0
+    own_bid_price: float | None = None
+    own_ask_price: float | None = None
+    own_bid_qty: float = 0.0
+    own_ask_qty: float = 0.0
+    entry_mid: float = 0.0
+    unrealized_pnl_bps: float = 0.0
 
 
 class FeatureStore:
-    """Read-through view onto the order book + trade tape."""
+    """Read-through view onto order book, tape, and microstructure hub."""
 
     def __init__(
         self,
         books: OrderBookStore,
         tape: TradeTape,
         settings: Settings,
+        hub: MicrostructureHub | None = None,
     ) -> None:
         self._books = books
         self._tape = tape
         self._top_n = settings.imbalance_top_n
+        self._hub = hub or MicrostructureHub(books, tape, settings)
+        self._settings = settings
 
     def apply_settings(self, settings: Settings) -> None:
+        self._settings = settings
         self._top_n = settings.imbalance_top_n
+        self._hub.apply_settings(settings)
 
-    def snapshot(self, symbol: str) -> Features:
+    @property
+    def hub(self) -> MicrostructureHub:
+        return self._hub
+
+    def snapshot(
+        self,
+        symbol: str,
+        *,
+        own: OwnBookState | None = None,
+        position_qty: float = 0.0,
+        equity: float = 0.0,
+    ) -> Features:
+        own_bid_q = own.own_bid_qty if own else 0.0
+        own_ask_q = own.own_ask_qty if own else 0.0
+        ms = self._hub.snapshot(symbol, own_bid_qty=own_bid_q, own_ask_qty=own_ask_q)
         book = self._books.get(symbol)
-        stats = self._tape.stats(symbol, now=time())
+        mid = book.mid() if book.ready() else None
+
+        feat = Features(
+            symbol=symbol,
+            bid_hit_ratio=ms.tape.bid_hit_ratio,
+            ask_hit_ratio=ms.tape.ask_hit_ratio,
+            tape_bid_hit_count=ms.tape.bid_hit_count,
+            tape_ask_hit_count=ms.tape.ask_hit_count,
+            last_price=ms.tape.last_price,
+            mid_return_1s_bps=ms.mid.return_1s_bps,
+            vol_ewma_bps=ms.mid.vol_ewma_bps,
+            jump_active=ms.mid.jump_active,
+            vpin=ms.tape.vpin,
+            tape_velocity=ms.tape.trades_per_sec,
+            large_trade_share=ms.tape.large_trade_share,
+            markout_adverse_ewma_bps=ms.markout.adverse_ewma_bps,
+            toxicity_score=ms.toxicity.toxicity_score,
+            is_toxic=ms.toxicity.is_toxic,
+            toxicity_flow_direction=ms.toxicity.flow_direction,
+            bid_depth_ratio=ms.depletion.bid_depth_ratio,
+            ask_depth_ratio=ms.depletion.ask_depth_ratio,
+            bid_depletion_score=ms.depletion.bid_depletion_score,
+            ask_depletion_score=ms.depletion.ask_depletion_score,
+            depth_depletion_asym=ms.depletion.depth_depletion_asym,
+        )
 
         if not book.ready():
-            return Features(
-                symbol=symbol,
-                bid_hit_ratio=stats.bid_hit_ratio,
-                ask_hit_ratio=stats.ask_hit_ratio,
-                tape_bid_hit_count=stats.bid_hit_count,
-                tape_ask_hit_count=stats.ask_hit_count,
+            return feat
+
+        feat.mid = mid
+        feat.spread_bps = book.spread_bps()
+        feat.micro_price = book.micro_price(top_n=1)
+        feat.imbalance_topn = book.imbalance(self._top_n)
+        feat.best_bid = book.best_bid()
+        feat.best_ask = book.best_ask()
+
+        if own is not None and mid and mid > 0:
+            feat.own_bid_price = own.own_bid.price if own.own_bid else None
+            feat.own_ask_price = own.own_ask.price if own.own_ask else None
+            feat.own_bid_qty = own_bid_q
+            feat.own_ask_qty = own_ask_q
+            feat.entry_mid = own.ledger.entry_mid
+            feat.unrealized_pnl_bps = unrealized_pnl_bps(own.ledger.entry_mid, mid, position_qty)
+            feat.inventory_ratio = _inventory_ratio(
+                position_qty,
+                mid,
+                equity,
+                self._settings,
+                own_bid_q,
+                own_ask_q,
             )
 
-        return Features(
-            symbol=symbol,
-            mid=book.mid(),
-            spread_bps=book.spread_bps(),
-            micro_price=book.micro_price(top_n=1),
-            imbalance_topn=book.imbalance(self._top_n),
-            bid_hit_ratio=stats.bid_hit_ratio,
-            ask_hit_ratio=stats.ask_hit_ratio,
-            tape_bid_hit_count=stats.bid_hit_count,
-            tape_ask_hit_count=stats.ask_hit_count,
-            best_bid=book.best_bid(),
-            best_ask=book.best_ask(),
-        )
+        return feat
+
+
+def unrealized_pnl_bps(entry_mid: float, mid: float, position_qty: float) -> float:
+    if entry_mid <= 0 or mid <= 0 or abs(position_qty) < 1e-12:
+        return 0.0
+    if position_qty > 0:
+        return (mid - entry_mid) / entry_mid * 10_000.0
+    return (entry_mid - mid) / entry_mid * 10_000.0
+
+
+def _inventory_ratio(
+    position_qty: float,
+    mid: float,
+    equity: float,
+    settings: Settings,
+    own_bid_qty: float,
+    own_ask_qty: float,
+) -> float:
+    notional_cap = float(settings.mm_max_inventory_notional)
+    if notional_cap <= 0 and equity > 0:
+        notional_cap = equity * float(settings.max_symbol_notional_pct)
+    if notional_cap <= 0 or mid <= 0:
+        return 0.0
+    qty = position_qty
+    if settings.mm_inventory_include_working:
+        qty += own_bid_qty - own_ask_qty
+    return (qty * mid) / notional_cap

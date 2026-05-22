@@ -86,6 +86,12 @@ class OrderBook:
             return None
         return (ba - bb) / bb * 10_000.0
 
+    def depth_sum(self, top_n: int) -> tuple[float, float]:
+        """Return (bid_qty, ask_qty) summed over top-N levels."""
+        bid_vol = sum(lvl.qty for lvl in self.bids[:top_n]) if self.bids else 0.0
+        ask_vol = sum(lvl.qty for lvl in self.asks[:top_n]) if self.asks else 0.0
+        return bid_vol, ask_vol
+
     def imbalance(self, top_n: int) -> float:
         """Top-N depth imbalance in [-1, +1].
 

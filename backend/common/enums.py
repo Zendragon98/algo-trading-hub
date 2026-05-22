@@ -96,6 +96,7 @@ class LogLevel(str, Enum):
     signal so the UI can colour those lines distinctly from `INFO`.
     """
 
+    DEBUG = "debug"
     INFO = "info"
     WARN = "warn"
     ERROR = "error"

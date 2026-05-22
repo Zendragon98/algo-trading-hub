@@ -67,6 +67,12 @@ class ExecutionQualityGuard:
         avg = sum(abs(r.slippage_bps) for r in sample) / len(sample)
         if avg <= self._kill_bps:
             return
+        logger.warning(
+            "exec quality breach avg_slip=%.1fbps > kill=%.1fbps (window=%d)",
+            avg,
+            self._kill_bps,
+            len(sample),
+        )
         self._breaker.trip(
             Breach(
                 code="exec_quality",
