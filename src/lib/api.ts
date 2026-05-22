@@ -426,6 +426,13 @@ export const api = {
     }),
   backtestRuns: () => request<BacktestResultSummaryDTO[]>("/api/backtest/runs"),
   backtestRunById: (runId: string) => request<BacktestResultDTO>(`/api/backtest/runs/${runId}`),
+
+  mmUniverseReport: () => request<MmUniverseScanReportDTO | null>("/api/analytics/mm-universe"),
+  mmUniverseScan: (body: { sample?: boolean; settings_overrides?: Record<string, unknown> } = {}) =>
+    request<BacktestJobAcceptedDTO>("/api/analytics/mm-universe/scan", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 export type WsEvent =
@@ -682,6 +689,27 @@ export type BacktestResultSummaryDTO = {
 export type BacktestJobAcceptedDTO = {
   job_id: string;
   status: string;
+};
+
+export type MmUniverseRankingDTO = {
+  symbol: string;
+  quote_volume_24h: number;
+  last_price: number;
+  median_spread_bps: number;
+  spread_cv: number;
+  mid_vol_bps: number;
+  edge_bps: number;
+  score: number;
+  eligible: boolean;
+  reject_reason: string | null;
+};
+
+export type MmUniverseScanReportDTO = {
+  generated_at: string;
+  recommended: string[];
+  candidates_scanned: number;
+  sample_rounds: number;
+  rankings: MmUniverseRankingDTO[];
 };
 
 export type AnalyticsJobDTO = {

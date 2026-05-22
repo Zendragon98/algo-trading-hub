@@ -374,3 +374,29 @@ class BacktestResultSummaryDTO(BaseModel):
     bar_count: int
     total_return_pct: float
     saved_at: str | None = None
+
+
+class MmUniverseRankingDTO(BaseModel):
+    symbol: str
+    quote_volume_24h: float = 0.0
+    last_price: float = 0.0
+    median_spread_bps: float = 0.0
+    spread_cv: float = 0.0
+    mid_vol_bps: float = 0.0
+    edge_bps: float = 0.0
+    score: float = 0.0
+    eligible: bool = False
+    reject_reason: str | None = None
+
+
+class MmUniverseScanReportDTO(BaseModel):
+    generated_at: str
+    recommended: list[str]
+    candidates_scanned: int = 0
+    sample_rounds: int = 0
+    rankings: list[MmUniverseRankingDTO] = Field(default_factory=list)
+
+
+class MmUniverseScanRequestDTO(BaseModel):
+    sample: bool = True
+    settings_overrides: dict[str, object] = Field(default_factory=dict)

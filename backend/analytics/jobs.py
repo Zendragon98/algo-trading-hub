@@ -21,7 +21,7 @@ from analytics.kline_store import backend_data_root
 
 logger = logging.getLogger(__name__)
 
-JobType = Literal["backtest_run", "kline_download", "report_build"]
+JobType = Literal["backtest_run", "kline_download", "report_build", "mm_universe_scan"]
 JobStatus = Literal["pending", "running", "done", "failed"]
 
 
@@ -164,6 +164,8 @@ def execute_job(record: JobRecord) -> dict[str, Any]:
         return _run_download_job(record.payload)
     if record.type == "report_build":
         return _run_report_job(record.payload)
+    if record.type == "mm_universe_scan":
+        return _run_mm_universe_scan_job(record.payload)
     raise ValueError(f"unknown job type: {record.type}")
 
 
@@ -229,6 +231,42 @@ def _run_download_job(payload: dict[str, Any]) -> dict[str, Any]:
             {"symbol": r.symbol, "interval": r.interval, "rows": r.rows, "path": r.path}
             for r in results
         ],
+    }
+
+
+def _run_mm_universe_scan_job(payload: dict[str, Any]) -> dict[str, Any]:
+    import asyncio
+
+    from analytics.mm_universe_scanner import scan_mm_universe, write_mm_universe_report
+    from common.config import get_settings
+
+    settings = get_settings()
+    overrides = payload.get("settings_overrides") or {}
+    if overrides:
+        settings = settings.model_copy(update=overrides)
+    report = asyncio.run(
+        scan_mm_universe(
+            settings,
+            sample=bool(payload.get("sample", True)),
+        ),
+    )
+    path = write_mm_universe_report(report)
+    top = [
+        {
+            "symbol": r.symbol,
+            "score": r.score,
+            "eligible": r.eligible,
+            "median_spread_bps": r.median_spread_bps,
+            "spread_cv": r.spread_cv,
+            "reject_reason": r.reject_reason,
+        }
+        for r in sorted(report.rankings, key=lambda x: x.score, reverse=True)[:30]
+    ]
+    return {
+        "path": str(path),
+        "recommended": report.recommended,
+        "candidates_scanned": report.candidates_scanned,
+        "top_rankings": top,
     }
 
 

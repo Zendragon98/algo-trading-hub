@@ -1,0 +1,128 @@
+"""MM universe scoring and report helpers."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from analytics.mm_universe_scanner import (
+    MmSymbolScore,
+    MmUniverseReport,
+    load_mm_universe_report,
+    report_is_fresh,
+    score_mm_candidate,
+    write_mm_universe_report,
+)
+from common.config import Settings
+
+
+def test_score_rejects_low_volume() -> None:
+    score, ok, reason = score_mm_candidate(
+        quote_volume=1_000.0,
+        median_spread_bps=5.0,
+        spread_cv=0.1,
+        mid_vol_bps=2.0,
+        min_volume=5_000_000.0,
+        min_spread_bps=0.8,
+        max_spread_bps=20.0,
+        max_spread_cv=0.45,
+        max_mid_vol_bps=15.0,
+        min_edge_bps=4.0,
+    )
+    assert score == 0.0
+    assert not ok
+    assert reason == "low_volume"
+
+
+def test_score_accepts_stable_liquid_market() -> None:
+    score, ok, reason = score_mm_candidate(
+        quote_volume=50_000_000.0,
+        median_spread_bps=6.0,
+        spread_cv=0.12,
+        mid_vol_bps=3.0,
+        min_volume=5_000_000.0,
+        min_spread_bps=0.8,
+        max_spread_bps=20.0,
+        max_spread_cv=0.45,
+        max_mid_vol_bps=15.0,
+        min_edge_bps=4.0,
+    )
+    assert ok
+    assert reason is None
+    assert score > 50.0
+
+
+def test_score_rejects_insufficient_edge() -> None:
+    _, ok, reason = score_mm_candidate(
+        quote_volume=50_000_000.0,
+        median_spread_bps=2.0,
+        spread_cv=0.1,
+        mid_vol_bps=2.0,
+        min_volume=5_000_000.0,
+        min_spread_bps=0.8,
+        max_spread_bps=20.0,
+        max_spread_cv=0.45,
+        max_mid_vol_bps=15.0,
+        min_edge_bps=4.0,
+    )
+    assert not ok
+    assert reason == "insufficient_edge"
+
+
+def test_report_roundtrip(tmp_path: Path) -> None:
+    report = MmUniverseReport(
+        generated_at="2026-05-22T12:00:00+00:00",
+        recommended=["SOLUSDT", "BNBUSDT"],
+        rankings=[
+            MmSymbolScore(
+                symbol="SOLUSDT",
+                quote_volume_24h=1e8,
+                last_price=150.0,
+                median_spread_bps=4.0,
+                spread_cv=0.1,
+                mid_vol_bps=2.0,
+                edge_bps=1.0,
+                score=80.0,
+                eligible=True,
+            ),
+        ],
+        candidates_scanned=10,
+        sample_rounds=5,
+    )
+    path = write_mm_universe_report(report, tmp_path / "mm_universe_scan.json")
+    loaded = load_mm_universe_report(path)
+    assert loaded is not None
+    assert loaded.recommended == ["SOLUSDT", "BNBUSDT"]
+    assert loaded.rankings[0].symbol == "SOLUSDT"
+
+
+def test_report_freshness() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    recent = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+    report = MmUniverseReport(
+        generated_at=recent,
+        recommended=["BTCUSDT"],
+        rankings=[],
+        candidates_scanned=1,
+        sample_rounds=1,
+    )
+    assert report_is_fresh(report, 3600.0)
+    old = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    stale_report = MmUniverseReport(
+        generated_at=old,
+        recommended=["BTCUSDT"],
+        rankings=[],
+        candidates_scanned=1,
+        sample_rounds=1,
+    )
+    assert not report_is_fresh(stale_report, 3600.0)
+
+
+def test_min_edge_from_settings() -> None:
+    from analytics.mm_universe_scanner import _min_edge_bps
+
+    s = Settings(mm_auto_min_edge_bps=0.0, mm2_maker_fee_bps=2.0, mm2_spread_buffer_bps=2.0)
+    assert _min_edge_bps(s) == pytest.approx(6.0)

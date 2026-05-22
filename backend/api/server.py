@@ -23,6 +23,7 @@ from common.events import EventBus
 from common.logging import flush_pending_bus_logs
 
 from .routes import (
+    analytics,
     backtest,
     control,
     execution,
@@ -123,6 +124,7 @@ def create_app(
     app.include_router(health.router)
     app.include_router(status.router)
     app.include_router(reports.router)
+    app.include_router(analytics.router)
     app.include_router(backtest.router)
     app.include_router(positions.router)
     app.include_router(trades.router)

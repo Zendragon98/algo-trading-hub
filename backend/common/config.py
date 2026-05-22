@@ -369,8 +369,7 @@ class Settings(BaseSettings):
     blend_scan_log_interval_sec: float = 60.0
 
     # --- Market-making tilt strategy (skew + imbalance + tape) ---
-    # MM_SYMBOLS: CSV list, or ``AUTO`` for the full engine ``SYMBOLS`` universe.
-    # Default is a small liquid set so MM does not inherit the full pairs AUTO list.
+    # MM_SYMBOLS: CSV list, or ``AUTO`` to run analytics mm_universe_scanner at boot.
     mm_symbols: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "BTCUSDT",
@@ -401,6 +400,19 @@ class Settings(BaseSettings):
     mm_cooldown_sec: float = 20.0
     # Cap new MM entries per engine tick (exits are not capped). 0 = unlimited.
     mm_max_entries_per_tick: int = 1
+    # MM_SYMBOLS=AUTO: analytics scan for liquid, stable-spread markets (see mm_universe_scanner).
+    mm_auto_max_symbols: int = 12
+    mm_auto_prefilter_top_volume: int = 60
+    mm_auto_sample_rounds: int = 20
+    mm_auto_sample_interval_sec: float = 1.0
+    mm_auto_min_quote_volume: float = 5_000_000.0
+    mm_auto_min_mid_price: float = 0.05
+    mm_auto_min_spread_bps: float = 0.8
+    mm_auto_max_spread_bps: float = 20.0
+    mm_auto_max_spread_cv: float = 0.45
+    mm_auto_max_mid_vol_bps: float = 15.0
+    mm_auto_min_edge_bps: float = 0.0  # 0 = 2× maker fee + spread buffer
+    mm_auto_scan_ttl_sec: float = 3600.0
 
     # --- Market-making 2.0 (fee-aware fade; skew + imbalance + tape) ---
     mm2_symbols: Annotated[list[str], NoDecode] = Field(

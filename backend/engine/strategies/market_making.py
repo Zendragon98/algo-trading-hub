@@ -63,8 +63,17 @@ class MarketMakingStrategy(StrategyBase):
         configured = [s.strip().upper() for s in (settings.mm_symbols or []) if s.strip()]
         if configured:
             if len(configured) == 1 and configured[0] == "AUTO":
-                return MarketMakingStrategy._engine_symbol_universe(settings)
+                return MarketMakingStrategy._auto_universe(settings)
             return sorted(set(configured))
+        return MarketMakingStrategy._auto_universe(settings)
+
+    @staticmethod
+    def _auto_universe(settings: Settings) -> list[str]:
+        from analytics.mm_universe_scanner import load_mm_universe_report
+
+        report = load_mm_universe_report()
+        if report is not None and report.recommended:
+            return list(report.recommended)
         return MarketMakingStrategy._engine_symbol_universe(settings)
 
     @staticmethod

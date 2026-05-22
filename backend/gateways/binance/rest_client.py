@@ -260,6 +260,16 @@ class BinanceRestClient:
             params["endTime"] = end_ms
         return await self._get(f"{_FAPI}/aggTrades", params=params, signed=False)
 
+    async def book_ticker(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        """Best bid/ask for one symbol or the full venue (unsigned)."""
+        params: dict[str, Any] = {}
+        if symbol is not None:
+            params["symbol"] = symbol.upper()
+        result = await self._get(f"{_FAPI}/ticker/bookTicker", params=params, signed=False)
+        if isinstance(result, dict):
+            return [result]
+        return result
+
     async def ticker_24hr(self, symbol: str | None = None) -> list[dict[str, Any]]:
         """Return 24h rolling window stats for one or every symbol.
 

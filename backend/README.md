@@ -717,7 +717,9 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `BALANCE_RESYNC_SEC`         | `0`                                  | Extra GET `/account` cadence (0 = off; balances still refresh on `RECONCILE_INTERVAL_SEC` + WS) |
 | `SMA_SYMBOLS`                | `AUTO`                               | Universe for the SMA scanner. CSV or `AUTO` to pull every USDT perp; empty falls back to `SMA_SYMBOL` |
 | `SMA_MAX_SYMBOLS`            | `20`                                 | Cap when `SMA_SYMBOLS=AUTO` (top N by 24h volume) |
-| `MM_SYMBOLS`                 | `AUTO`                               | Market-making universe (CSV or `AUTO` → `SYMBOLS`) |
+| `MM_SYMBOLS`                 | `AUTO`                               | MM universe (CSV or `AUTO` → `mm_universe_scanner` analytics) |
+| `MM_AUTO_MAX_SYMBOLS`        | `12`                                 | Top-N symbols from scan when `MM_SYMBOLS=AUTO` |
+| `MM_AUTO_MIN_QUOTE_VOLUME`   | `5000000`                            | Min 24h USDT quote volume for scan candidates |
 | `MM_SIGNAL_MODE`             | `fade`                               | `fade` \| `follow` — mean-reversion vs continuation |
 | `MM_ENTRY_TILT` / `MM_EXIT_TILT` | `8.0` / `0`                      | Entry threshold; exit = 35% of entry when exit is `0` |
 | `MM_SKEW_WINDOW_SEC`         | `300`                                | Rolling window for micro-price skew average |
