@@ -67,6 +67,40 @@ def test_mm2_fee_floor_gate_allows_tight_spread_with_rebate() -> None:
     assert strat.on_tick_quotes(feat)[0].reason != "mm2_spread_gate"
 
 
+def test_quote_inside_touch_pegs_one_tick_inside_spread() -> None:
+    feat = Features(
+        symbol="BTCUSDT",
+        mid=100.0,
+        best_bid=99.8,
+        best_ask=100.2,
+        spread_bps=4.0,
+        jump_active=False,
+        is_toxic=False,
+        bid_depth_ratio=1.0,
+        ask_depth_ratio=1.0,
+    )
+    own = OwnBookState(symbol="BTCUSDT")
+    s = Settings(
+        symbol_calibration_path="",
+        mm_spread_calibration_path="",
+        mm_quote_at_touch=False,
+        mm_quote_inside_touch_ticks=1,
+        mm_quote_half_spread_bps=5.0,
+        mm_quote_use_venue_spread_floor=False,
+    )
+    intent = mm_core.compute_quote_intent(
+        feat=feat,
+        settings=s,
+        own=own,
+        position_qty=0.0,
+        equity=10_000.0,
+        skew_avg=0.0,
+        strategy_name="market_making",
+    )
+    assert intent.bid_price == 99.81
+    assert intent.ask_price == 100.19
+
+
 def test_quote_at_touch_pegs_to_best_bid_ask() -> None:
     feat = Features(
         symbol="BTCUSDT",

@@ -228,6 +228,8 @@ class Settings(BaseSettings):
     post_only_enabled: bool = False
     # Peg MM entry quotes at venue best bid / best ask (passive touch).
     mm_quote_at_touch: bool = False
+    # When >0 and MM_QUOTE_AT_TOUCH=false, peg bid at best_bid + N*tick and ask at best_ask - N*tick.
+    mm_quote_inside_touch_ticks: int = 1
     per_symbol_submit_rate: float = 0.0  # 0 = global only; else max submits/sec per symbol
     md_stale_resnapshot_sec: float = 30.0
     md_crossed_book_breaker: bool = True
@@ -456,9 +458,11 @@ class Settings(BaseSettings):
     # MM2_SYMBOLS: CSV list, or ``AUTO`` (empty = AUTO); shares MM scanner when AUTO.
     mm2_symbols: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
+            "BTCUSDT",
+            "ETHUSDT",
             "SOLUSDT",
-            "AVAXUSDT",
-            "ARBUSDT",
+            "BNBUSDT",
+            "XRPUSDT",
         ],
     )
     mm2_skew_window_sec: float = 180.0
@@ -468,6 +472,8 @@ class Settings(BaseSettings):
     mm2_min_tape_trades: int = 5
     mm2_min_skew_bps: float = 1.0
     mm2_tape_confirm: float = 0.08  # require tape + imbalance to align before quoting a side
+    # Classic MM: always rest bid+ask when flat; skew/tape tilt prices only (no entry gates).
+    mm2_two_sided_always: bool = False
     mm2_taker_fee_bps: float = 4.5
     # Per-leg maker fee (bps); negative = rebate received per fill.
     mm2_maker_fee_bps: float = 2.0
@@ -477,8 +483,9 @@ class Settings(BaseSettings):
     mm2_spread_buffer_bps: float = 2.0
     mm2_min_spread_bps: float = 0.0
     mm2_min_edge_bps: float = 0.0
-    # standard = calibrated min spread; fee_floor = fees+buffer only; off = any positive spread
-    mm2_spread_gate_mode: str = "standard"
+    # calibrated = per-symbol min_spread_bps (+ fee floor); standard = max(cal, 2×half);
+    # fee_floor = fees+buffer only; off = any positive spread (not for production)
+    mm2_spread_gate_mode: str = "calibrated"
     mm2_min_exit_profit_bps: float = 4.0
     mm2_max_hold_sec: float = 60.0
     mm2_market_exit_loss_bps: float = 12.0
@@ -494,7 +501,15 @@ class Settings(BaseSettings):
     mm2_quote_during_warmup: bool = False
     mm2_risk_per_trade_pct: float = 0.008
     mm2_max_inventory_notional: float = 300.0
-    mm2_max_concurrent_positions: int = 2
+    # Sum of |position| notionals across MM2 symbols; blocks new flat entries when exceeded.
+    mm2_max_inventory_notional_total: float = 600.0
+    mm2_max_concurrent_positions: int = 3
+    # On moderate risk (elevated toxicity/markout/depletion): widen half-spread and damp size.
+    mm2_risk_widen_multiplier: float = 2.0
+    mm2_risk_size_damp: float = 0.5
+    mm2_toxicity_moderate: float = 0.45
+    mm2_toxicity_extreme: float = 0.85
+    mm2_markout_moderate_frac: float = 0.75
     mm2_max_consecutive_same_side_fills: int = 2
     mm2_side_halt_sec: float = 120.0
     mm2_vol_regime_spike_mult: float = 1.8

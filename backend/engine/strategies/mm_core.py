@@ -238,6 +238,88 @@ def compute_quote_pricing(
     )
 
 
+def _default_tick_for_price(price: float) -> float:
+    if price >= 50_000:
+        return 0.1
+    if price >= 50:
+        return 0.01
+    if price >= 1:
+        return 0.001
+    return 0.0001
+
+
+def infer_price_tick(feat: Features) -> float:
+    """Estimate venue price tick from touch or mid (for inside-spread pegging)."""
+    bid = feat.best_bid
+    ask = feat.best_ask
+    mid = float(feat.mid or 0.0)
+    ref = bid if bid is not None and bid > 0 else mid
+    tick = _default_tick_for_price(ref)
+    if bid is not None and ask is not None and ask > bid > 0:
+        book_spread = ask - bid
+        if book_spread <= tick * 1.05:
+            return tick
+        if mid > 0 and feat.spread_bps is not None and float(feat.spread_bps) > 0:
+            implied = mid * float(feat.spread_bps) / 10_000.0
+            if implied > 0 and book_spread <= implied * 1.05:
+                return book_spread
+        return tick
+    if mid > 0 and feat.spread_bps is not None and float(feat.spread_bps) > 0:
+        return mid * float(feat.spread_bps) / 10_000.0
+    return tick
+
+
+def entry_risk_tier(
+    feat: Features,
+    settings: Settings,
+    *,
+    own: OwnBookState | None = None,
+    now: float | None = None,
+) -> str:
+    """``none`` | ``moderate`` | ``hard`` — hard suppresses; moderate widens/damps."""
+    if own is not None and now is not None and now < own.vol_regime_halt_until:
+        return "hard"
+    if feat.jump_active:
+        return "hard"
+    sym = feat.symbol
+    depletion_breaker = mm_float(
+        sym,
+        settings,
+        "mm_depletion_breaker_ratio",
+        cal_attr="depletion_breaker_ratio",
+    )
+    if depletion_breaker > 0 and (
+        feat.bid_depth_ratio < depletion_breaker
+        or feat.ask_depth_ratio < depletion_breaker
+    ):
+        return "hard"
+    markout_cap = mm_float(
+        sym, settings, "mm_max_adverse_markout_bps", cal_attr="max_adverse_markout_bps"
+    )
+    if markout_cap > 0 and feat.markout_adverse_ewma_bps >= markout_cap:
+        return "hard"
+    extreme_tox = float(getattr(settings, "mm2_toxicity_extreme", 0.85))
+    if feat.toxicity_score >= extreme_tox:
+        return "hard"
+    if feat.is_toxic:
+        return "hard"
+    moderate_frac = float(getattr(settings, "mm2_markout_moderate_frac", 0.75))
+    if markout_cap > 0 and feat.markout_adverse_ewma_bps >= markout_cap * moderate_frac:
+        return "moderate"
+    moderate_tox = float(getattr(settings, "mm2_toxicity_moderate", 0.45))
+    tox_thresh = mm_float(
+        sym, settings, "mm_toxicity_threshold", cal_attr="toxicity_threshold"
+    )
+    if moderate_tox < tox_thresh and moderate_tox <= feat.toxicity_score < tox_thresh:
+        return "moderate"
+    pull = mm_float(sym, settings, "mm_depletion_pull_ratio", cal_attr="depletion_pull_ratio")
+    if pull > 0 and (
+        feat.bid_depth_ratio < pull or feat.ask_depth_ratio < pull
+    ):
+        return "moderate"
+    return "none"
+
+
 def entry_blocked(
     feat: Features,
     settings: Settings,
@@ -246,21 +328,40 @@ def entry_blocked(
     own: OwnBookState | None = None,
     now: float | None = None,
 ) -> str | None:
-    if own is not None and now is not None and now < own.vol_regime_halt_until:
-        return "vol_regime"
-    if feat.jump_active:
-        return "jump"
-    if feat.is_toxic:
-        flow = feat.toxicity_flow_direction
-        if want_long and flow > 0.2:
+    tier = entry_risk_tier(feat, settings, own=own, now=now)
+    if tier == "hard":
+        if own is not None and now is not None and now < own.vol_regime_halt_until:
+            return "vol_regime"
+        if feat.jump_active:
+            return "jump"
+        depletion_breaker = mm_float(
+            feat.symbol,
+            settings,
+            "mm_depletion_breaker_ratio",
+            cal_attr="depletion_breaker_ratio",
+        )
+        if depletion_breaker > 0 and (
+            feat.bid_depth_ratio < depletion_breaker
+            or feat.ask_depth_ratio < depletion_breaker
+        ):
+            return "book_depleted"
+        markout_cap = mm_float(
+            feat.symbol,
+            settings,
+            "mm_max_adverse_markout_bps",
+            cal_attr="max_adverse_markout_bps",
+        )
+        if markout_cap > 0 and feat.markout_adverse_ewma_bps >= markout_cap:
+            return "markout"
+        if feat.is_toxic:
+            flow = feat.toxicity_flow_direction
+            if want_long and flow > 0.2:
+                return "toxic"
+            if not want_long and flow < -0.2:
+                return "toxic"
             return "toxic"
-        if not want_long and flow < -0.2:
+        if feat.toxicity_score >= float(getattr(settings, "mm2_toxicity_extreme", 0.85)):
             return "toxic"
-    markout_cap = mm_float(
-        feat.symbol, settings, "mm_max_adverse_markout_bps", cal_attr="max_adverse_markout_bps"
-    )
-    if feat.markout_adverse_ewma_bps > markout_cap:
-        return "markout"
     hard = float(settings.mm_inventory_hard_ratio)
     if hard > 0:
         if want_long and feat.inventory_ratio >= hard:
@@ -268,6 +369,40 @@ def entry_blocked(
         if not want_long and feat.inventory_ratio <= -hard:
             return "inventory"
     return None
+
+
+def apply_quote_pegs(
+    bid_price: float | None,
+    ask_price: float | None,
+    feat: Features,
+    settings: Settings,
+) -> tuple[float | None, float | None]:
+    """Peg passive entry prices at touch or N ticks inside the spread."""
+    at_touch = bool(getattr(settings, "mm_quote_at_touch", False))
+    inside_ticks = int(getattr(settings, "mm_quote_inside_touch_ticks", 0) or 0)
+    if not at_touch and inside_ticks <= 0:
+        return bid_price, ask_price
+    touch_bid = feat.best_bid
+    touch_ask = feat.best_ask
+    if touch_bid is None or touch_ask is None or touch_bid <= 0 or touch_ask <= 0:
+        return bid_price, ask_price
+    tick = infer_price_tick(feat)
+    if at_touch:
+        if bid_price is not None:
+            bid_price = touch_bid
+        if ask_price is not None:
+            ask_price = touch_ask
+    else:
+        step = tick * inside_ticks
+        inside_bid = touch_bid + step
+        inside_ask = touch_ask - step
+        if inside_ask <= inside_bid:
+            return None, None
+        if bid_price is not None:
+            bid_price = inside_bid
+        if ask_price is not None:
+            ask_price = inside_ask
+    return bid_price, ask_price
 
 
 def update_vol_regime_halt(
@@ -558,6 +693,7 @@ def compute_quote_intent(
         own_bid_qty=own.own_bid_qty,
         own_ask_qty=own.own_ask_qty,
     )
+    risk_tier = entry_risk_tier(feat, settings, own=own, now=tick_now)
     params = resolve_mm_params(sym, settings, feat)
     pricing = compute_quote_pricing(
         feat=feat,
@@ -566,14 +702,29 @@ def compute_quote_intent(
         inv_ratio=inv,
         params=params,
     )
-    bid_price = pricing.bid_price
-    ask_price = pricing.ask_price
+    bid_half = pricing.bid_half_bps
+    ask_half = pricing.ask_half_bps
+    if risk_tier == "moderate":
+        widen = float(getattr(settings, "mm2_risk_widen_multiplier", 1.0))
+        if widen > 1.0:
+            bid_half *= widen
+            ask_half *= widen
+        bid_price, ask_price = quote_prices_from_reservation(
+            pricing.reservation_mid, bid_half, ask_half
+        )
+    else:
+        bid_price = pricing.bid_price
+        ask_price = pricing.ask_price
 
     pull = mm_float(sym, settings, "mm_depletion_pull_ratio", cal_attr="depletion_pull_ratio")
-    if feat.bid_depth_ratio < pull or feat.jump_active:
+    if feat.jump_active:
         bid_price = None
-    if feat.ask_depth_ratio < pull or feat.jump_active:
         ask_price = None
+    elif risk_tier != "hard":
+        if pull > 0 and feat.bid_depth_ratio < pull:
+            bid_price = None
+        if pull > 0 and feat.ask_depth_ratio < pull:
+            ask_price = None
 
     hard = float(settings.mm_inventory_hard_ratio)
     if hard > 0 and inv >= hard:
@@ -592,13 +743,7 @@ def compute_quote_intent(
     if ask_blocked:
         ask_price = None
 
-    if bool(getattr(settings, "mm_quote_at_touch", False)):
-        touch_bid = feat.best_bid
-        touch_ask = feat.best_ask
-        if touch_bid is not None and touch_bid > 0 and bid_price is not None:
-            bid_price = touch_bid
-        if touch_ask is not None and touch_ask > 0 and ask_price is not None:
-            ask_price = touch_ask
+    bid_price, ask_price = apply_quote_pegs(bid_price, ask_price, feat, settings)
 
     size_pct = params.size_pct if params.size_pct is not None else float(settings.mm_quote_size_pct)
     size_notional = equity * size_pct if equity > 0 else 0.0
@@ -606,6 +751,10 @@ def compute_quote_intent(
         size_notional = float(settings.mm_qty) * venue_mid
     base_qty = size_notional / venue_mid if venue_mid > 0 else float(settings.mm_qty)
     damp = float(settings.mm_inventory_size_damp)
+    if risk_tier == "moderate":
+        risk_damp = float(getattr(settings, "mm2_risk_size_damp", 1.0))
+        if 0.0 < risk_damp < 1.0:
+            base_qty *= risk_damp
     bid_qty = base_qty * max(0.0, 1.0 - damp * max(0.0, inv)) * (
         1.0 - float(settings.mm_depletion_size_damp) * feat.bid_depletion_score
     )
@@ -619,11 +768,11 @@ def compute_quote_intent(
 
     reason = (
         f"mm_quote {params.symbol} venue_mid={pricing.venue_mid:.4f} "
-        f"res_mid={pricing.reservation_mid:.4f} inv={inv:.3f} "
+        f"res_mid={pricing.reservation_mid:.4f} inv={inv:.3f} risk={risk_tier} "
         f"half_spread={params.half_spread_bps:.2f} "
         f"venue_floor={params.venue_half_floor_bps:.2f} "
         f"micro_bps={pricing.micro_shift_bps:.2f} inv_bps={pricing.inventory_shift_bps:.2f} "
-        f"bid_half={pricing.bid_half_bps:.2f} ask_half={pricing.ask_half_bps:.2f} "
+        f"bid_half={bid_half:.2f} ask_half={ask_half:.2f} "
         f"pnl_bps={pnl_bps:.2f} fee_rt={fee_round_trip_bps:.1f}"
     )
     return QuoteIntent(
@@ -639,7 +788,7 @@ def compute_quote_intent(
         venue_mid=pricing.venue_mid,
         reservation_mid=pricing.reservation_mid,
         inventory_ratio=inv,
-        bid_half_bps=pricing.bid_half_bps,
-        ask_half_bps=pricing.ask_half_bps,
+        bid_half_bps=bid_half,
+        ask_half_bps=ask_half,
         unrealized_pnl_bps=pnl_bps,
     )

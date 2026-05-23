@@ -127,8 +127,9 @@ def test_plan_exit_reason_adverse_fill_before_profit() -> None:
     own.ledger = EntryLedger(entry_mid=99.5, opened_ts=time.time() - 5.0)
     own.last_fill_adverse_bps = 5.0
     s = Settings(
+        symbol_calibration_path="",
         mm_scratch_loss_bps=3.0,
-        mm_min_exit_profit_bps=1.0,
+        mm_min_exit_profit_bps=100.0,
         mm_market_exit_loss_bps=50.0,
     )
     reason = mm_core.plan_exit_reason(
@@ -160,6 +161,41 @@ def test_plan_exit_reason_jump_before_market_loss() -> None:
         mid=100.0,
     )
     assert reason == "mm_market_exit jump_flatten"
+
+
+def test_entry_risk_moderate_widens_half_spread() -> None:
+    feat = Features(
+        symbol="BTCUSDT",
+        mid=100.0,
+        spread_bps=20.0,
+        toxicity_score=0.5,
+        markout_adverse_ewma_bps=0.0,
+        jump_active=False,
+        is_toxic=False,
+        bid_depth_ratio=1.0,
+        ask_depth_ratio=1.0,
+    )
+    own = OwnBookState(symbol="BTCUSDT")
+    s = Settings(
+        mm2_toxicity_moderate=0.45,
+        mm_toxicity_threshold=0.65,
+        mm2_risk_widen_multiplier=2.0,
+        mm2_risk_size_damp=0.5,
+        mm_quote_use_venue_spread_floor=False,
+    )
+    assert mm_core.entry_risk_tier(feat, s, own=own, now=time.time()) == "moderate"
+    intent = mm_core.compute_quote_intent(
+        feat=feat,
+        settings=s,
+        own=own,
+        position_qty=0.0,
+        equity=10_000.0,
+        skew_avg=0.0,
+        strategy_name="market_making",
+    )
+    assert intent.bid_price is not None
+    assert "risk=moderate" in intent.reason
+    assert intent.bid_half_bps > 3.0
 
 
 def test_plan_exit_reason_market_when_deep_loss() -> None:

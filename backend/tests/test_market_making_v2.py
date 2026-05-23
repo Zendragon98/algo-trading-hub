@@ -11,11 +11,26 @@ from engine.market_data.own_quote_book import OwnBookState  # noqa: E402
 from engine.strategies.market_making_v2 import MarketMakingV2Strategy  # noqa: E402
 
 
+def _gate_test_settings(**overrides: object) -> Settings:
+    """Isolate gate tests from repo .env (two-sided / spread-gate overrides)."""
+    base: dict[str, object] = {
+        "binance_api_key": "x",
+        "binance_api_secret": "y",
+        "symbol_calibration_path": "",
+        "mm_spread_calibration_path": "",
+        "mm2_two_sided_always": False,
+        "mm2_spread_gate_mode": "standard",
+        "mm2_tape_confirm": 0.0,
+        "mm2_assume_maker_rebate": True,
+        "mm2_spread_buffer_bps": 0.0,
+    }
+    base.update(overrides)
+    return Settings(**base)
+
+
 def test_mm2_spread_gate_pulls_quotes() -> None:
     strat = MarketMakingV2Strategy(
-        Settings(
-            binance_api_key="x",
-            binance_api_secret="y",
+        _gate_test_settings(
             mm2_symbols=["BTCUSDT"],
             mm2_min_spread_bps=50.0,
             mm2_min_samples=1,
@@ -38,13 +53,13 @@ def test_mm2_spread_gate_pulls_quotes() -> None:
 
 def test_mm2_spread_gate_uses_dynamic_quote_width() -> None:
     strat = MarketMakingV2Strategy(
-        Settings(
-            binance_api_key="x",
-            binance_api_secret="y",
+        _gate_test_settings(
             mm2_symbols=["BTCUSDT"],
             mm2_min_spread_bps=0.0,
             mm2_min_skew_bps=0.0,
             mm2_min_samples=1,
+            mm2_assume_maker_rebate=False,
+            mm2_spread_buffer_bps=2.0,
             post_only_enabled=True,
             mm_quote_use_venue_spread_floor=True,
         )
@@ -62,7 +77,7 @@ def test_mm2_spread_gate_uses_dynamic_quote_width() -> None:
         "BTCUSDT": Features(
             symbol="BTCUSDT",
             mid=100.0,
-            spread_bps=5.0,
+            spread_bps=4.0,
             micro_price=100.0,
         )
     }
@@ -77,9 +92,7 @@ def test_mm2_gate_summary_logs(caplog) -> None:
 
     caplog.set_level(logging.INFO)
     strat = MarketMakingV2Strategy(
-        Settings(
-            binance_api_key="x",
-            binance_api_secret="y",
+        _gate_test_settings(
             mm2_symbols=["BTCUSDT"],
             mm2_min_spread_bps=50.0,
             mm2_scan_log_interval_sec=-1.0,
@@ -128,12 +141,11 @@ def test_mm2_quote_during_warmup_uses_tape_path() -> None:
 
 def test_mm2_skew_warmup_suppresses_quotes() -> None:
     strat = MarketMakingV2Strategy(
-        Settings(
-            binance_api_key="x",
-            binance_api_secret="y",
+        _gate_test_settings(
             mm2_symbols=["BTCUSDT"],
             mm2_min_spread_bps=0.0,
             mm2_min_samples=50,
+            mm2_quote_during_warmup=False,
         )
     )
     strat.attach_own_book_provider(lambda _s: OwnBookState(symbol="BTCUSDT"))
@@ -151,11 +163,77 @@ def test_mm2_skew_warmup_suppresses_quotes() -> None:
     assert intents[0].ask_qty == 0.0
 
 
-def test_mm2_skew_gate_pulls_quotes() -> None:
+def test_mm2_two_sided_always_quotes_despite_low_skew() -> None:
     strat = MarketMakingV2Strategy(
         Settings(
             binance_api_key="x",
             binance_api_secret="y",
+            symbol_calibration_path="",
+            mm_spread_calibration_path="",
+            mm2_symbols=["BTCUSDT"],
+            mm2_min_spread_bps=0.0,
+            mm2_min_skew_bps=5.0,
+            mm2_min_samples=1,
+            mm2_two_sided_always=True,
+            mm2_spread_gate_mode="off",
+            mm_quote_use_venue_spread_floor=False,
+        )
+    )
+    strat.attach_own_book_provider(lambda _s: OwnBookState(symbol="BTCUSDT"))
+    feat = {
+        "BTCUSDT": Features(
+            symbol="BTCUSDT",
+            mid=100.0,
+            spread_bps=20.0,
+            micro_price=100.0,
+            best_bid=99.9,
+            best_ask=100.1,
+            bid_depth_ratio=1.0,
+            ask_depth_ratio=1.0,
+            jump_active=False,
+            is_toxic=False,
+        )
+    }
+    intent = strat.on_tick_quotes(feat)[0]
+    assert intent.reason != "mm2_skew_gate"
+    assert intent.bid_price is not None
+    assert intent.ask_price is not None
+
+
+def test_mm2_calibrated_spread_gate_uses_tier_floor() -> None:
+    strat = MarketMakingV2Strategy(
+        _gate_test_settings(
+            mm2_symbols=["BTCUSDT"],
+            mm2_spread_gate_mode="calibrated",
+            mm2_min_spread_bps=0.0,
+            mm2_min_samples=1,
+            mm_quote_use_venue_spread_floor=False,
+        )
+    )
+    strat.attach_own_book_provider(lambda _s: OwnBookState(symbol="BTCUSDT"))
+    ok = {
+        "BTCUSDT": Features(
+            symbol="BTCUSDT",
+            mid=100.0,
+            spread_bps=0.6,
+            micro_price=100.0,
+        )
+    }
+    tight = {
+        "BTCUSDT": Features(
+            symbol="BTCUSDT",
+            mid=100.0,
+            spread_bps=0.3,
+            micro_price=100.0,
+        )
+    }
+    assert strat.on_tick_quotes(ok)[0].reason != "mm2_spread_gate"
+    assert strat.on_tick_quotes(tight)[0].reason == "mm2_spread_gate"
+
+
+def test_mm2_skew_gate_pulls_quotes() -> None:
+    strat = MarketMakingV2Strategy(
+        _gate_test_settings(
             mm2_symbols=["BTCUSDT"],
             mm2_min_spread_bps=0.0,
             mm2_min_skew_bps=5.0,

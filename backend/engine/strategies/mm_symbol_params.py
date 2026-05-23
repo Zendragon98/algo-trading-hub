@@ -13,6 +13,21 @@ from ..market_data.feature_store import Features
 from ..market_data.symbol_calibration import SymbolCalibration, load_symbol_calibration
 from .mm_calibrated import calibration_path, mm2_fee_edge_floor_bps
 
+# Fallback min venue spread (bps) when calibration has no min_spread_bps (MM2_SPREAD_GATE_MODE=calibrated).
+_SYMBOL_CLASS_MIN_SPREAD_BPS: dict[str, float] = {
+    "BTCUSDT": 0.5,
+    "ETHUSDT": 0.5,
+    "SOLUSDT": 1.0,
+    "BNBUSDT": 1.0,
+    "XRPUSDT": 1.0,
+    "ARBUSDT": 2.0,
+    "AVAXUSDT": 2.0,
+    "OPUSDT": 2.0,
+}
+
+_MIDCAP_MIN_SPREAD_BPS = 2.0
+_ALTCOIN_MIN_SPREAD_BPS = 3.0
+
 _OVERRIDE_ALIASES: dict[str, str] = {
 
     "half_spread_bps": "half_spread_bps",
@@ -290,6 +305,24 @@ def resolve_mm_params(
     )
 
 
+def symbol_class_min_spread_bps(symbol: str) -> float | None:
+    """Tiered physical-quote floor when calibration omits min_spread_bps."""
+    sym = symbol.upper()
+    if sym in _SYMBOL_CLASS_MIN_SPREAD_BPS:
+        return _SYMBOL_CLASS_MIN_SPREAD_BPS[sym]
+    base = sym.replace("USDT", "").replace("USDC", "")
+    majors = frozenset({"BTC", "ETH"})
+    large = frozenset({"SOL", "BNB", "XRP"})
+    midcaps = frozenset({"ARB", "AVAX", "OP", "LINK", "DOT", "MATIC", "POL", "ADA", "DOGE"})
+    if base in majors:
+        return 0.5
+    if base in large:
+        return 1.0
+    if base in midcaps:
+        return _MIDCAP_MIN_SPREAD_BPS
+    return _ALTCOIN_MIN_SPREAD_BPS
+
+
 def required_min_spread_bps(
     symbol: str,
     settings: Settings,
@@ -297,12 +330,15 @@ def required_min_spread_bps(
     *,
     explicit_min_spread_bps: float = 0.0,
     explicit_min_edge_bps: float = 0.0,
+    calibrated_only: bool = False,
 ) -> float:
     """Minimum venue spread (bps) before posting two-sided MM quotes.
 
-    Aligns the spread gate with ``resolve_mm_params`` / quote pricing: requires the
-  book to be at least as wide as ``2 * half_spread_bps`` (incl. venue floor), with
-    fee + buffer as a hard floor.
+    When ``calibrated_only`` is True (MM2_SPREAD_GATE_MODE=calibrated), uses
+    per-symbol ``min_spread_bps`` from calibration/overrides/tier defaults plus
+    fee floor — not ``2 × half_spread_bps``.
+
+    Otherwise aligns the spread gate with quote width: ``max(fee, 2 × half_spread)``.
     """
     fee_floor = mm2_fee_edge_floor_bps(symbol, settings)
     params = resolve_mm_params(symbol, settings, feat)
@@ -310,6 +346,11 @@ def required_min_spread_bps(
         return max(fee_floor, params.min_spread_bps)
     if explicit_min_spread_bps > 0:
         return max(fee_floor, explicit_min_spread_bps)
+    if calibrated_only:
+        tier = symbol_class_min_spread_bps(symbol)
+        if tier is not None:
+            return max(fee_floor, tier)
+        return fee_floor
     if explicit_min_edge_bps > 0:
         return max(fee_floor, explicit_min_edge_bps)
     quote_width = 2.0 * params.half_spread_bps

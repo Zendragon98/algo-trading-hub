@@ -552,7 +552,7 @@ Live logs emit `venue=`, `res=`, `inv=`, `pnl_bps=` on each quote refresh (SIG l
 
 **Key settings:** `MM_QUOTE_*`, `MM_RESERVATION_INVENTORY_BPS`, `MM_INVENTORY_SPREAD_SKEW_BPS`, `MM_INVENTORY_*`, `MM_JUMP_*`, `MM_DEPLETION_*`, `MM_TOXICITY_THRESHOLD`. `MM_SKEW_*` / `MM_TAPE_*` feed the micro shift into reservation mid.
 
-`market_making_v2` spread gate uses the same half-spread resolution as quoting (`max(fee_rt + buffer, 2 × half_spread_bps)` with venue floor). Override via `MM2_MIN_SPREAD_BPS` or per-symbol `min_spread_bps` in calibration. Cancels quotes when skew is below `MM2_MIN_SKEW_BPS` or during skew warmup (`MM2_QUOTE_DURING_WARMUP=false`, default). Logs gate suppressions every `MM2_SCAN_LOG_INTERVAL_SEC`. Hot-swap: `POST /api/control/strategy { "name": "market_making_v2" }`.
+`market_making_v2` spread gate: `MM2_SPREAD_GATE_MODE=calibrated` (default) uses per-symbol `min_spread_bps` from `SYMBOL_CALIBRATION_PATH` plus tier fallbacks; `standard` also requires `2 × half_spread_bps`. Post-only entries peg `MM_QUOTE_INSIDE_TOUCH_TICKS` inside the touch (not `MM_QUOTE_AT_TOUCH`). Hard risk pauses (vol regime, jump, book depletion, extreme toxicity/markout) suppress quotes; moderate signals widen via `MM2_RISK_WIDEN_MULTIPLIER` / `MM2_RISK_SIZE_DAMP`. Portfolio cap: `MM2_MAX_INVENTORY_NOTIONAL_TOTAL`. With `MM2_TWO_SIDED_ALWAYS=true`, skew gates are off but spread gate and risk pauses remain. Logs gate suppressions every `MM2_SCAN_LOG_INTERVAL_SEC`. Hot-swap: `POST /api/control/strategy { "name": "market_making_v2" }`.
 
 Pair **exits** (`pairs_close` / `pairs_stop`) emit `reduce_only=True` on both legs so kill-switch / entry breakers do not block basis unwinds.
 

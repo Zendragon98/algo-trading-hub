@@ -35,7 +35,7 @@ class _SymbolState:
 class MarketMakingV2Strategy(StrategyBase):
     name = "market_making_v2"
     display_label = "Market making 2.0 (quotes + fees)"
-    description = "Asymmetric microstructure MM: tape-confirmed one-sided quotes, tiered exits"
+    description = "Microstructure MM: two-sided liquidity or tape-confirmed one-sided mode"
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -90,12 +90,28 @@ class MarketMakingV2Strategy(StrategyBase):
                 n += 1
         return n
 
+    def _total_inventory_notional(self, features: dict[str, Features]) -> float:
+        total = 0.0
+        for sym in self._symbols:
+            qty = self._position_qty(sym)
+            if abs(qty) < 1e-8:
+                continue
+            feat = features.get(sym)
+            mid = float(feat.mid) if feat is not None and feat.mid is not None else 0.0
+            if mid > 0:
+                total += abs(qty) * mid
+        return total
+
     def on_tick_quotes(self, features: dict[str, Features]) -> list[QuoteIntent]:
         equity = self._equity()
         intents: list[QuoteIntent] = []
         now = time.time()
         open_positions = self._open_position_count()
         max_concurrent = int(self._settings.mm2_max_concurrent_positions)
+        total_inv_cap = float(self._settings.mm2_max_inventory_notional_total)
+        total_inv_notional = (
+            self._total_inventory_notional(features) if total_inv_cap > 0 else 0.0
+        )
         for symbol in self._symbols:
             feat = features.get(symbol)
             if feat is None or feat.mid is None:
@@ -116,19 +132,20 @@ class MarketMakingV2Strategy(StrategyBase):
                         self._suppressed_intent(symbol, "mm2_skew_warmup", feat)
                     )
                     continue
-            min_skew = mm_float(
-                symbol,
-                self._settings,
-                "mm2_min_skew_bps",
-                cal_attr="min_skew_bps",
-            )
-            if abs(skew_avg) < min_skew:
-                intents.append(
-                    self._suppressed_intent(
-                        symbol, "mm2_skew_gate", feat, skew_avg=skew_avg
-                    )
+            if not self._settings.mm2_two_sided_always:
+                min_skew = mm_float(
+                    symbol,
+                    self._settings,
+                    "mm2_min_skew_bps",
+                    cal_attr="min_skew_bps",
                 )
-                continue
+                if abs(skew_avg) < min_skew:
+                    intents.append(
+                        self._suppressed_intent(
+                            symbol, "mm2_skew_gate", feat, skew_avg=skew_avg
+                        )
+                    )
+                    continue
             own = self._own(symbol)
             pos_qty = self._position_qty(symbol)
             s = _Mm2SettingsAdapter(self._settings)
@@ -142,6 +159,17 @@ class MarketMakingV2Strategy(StrategyBase):
                 intents.append(
                     self._suppressed_intent(
                         symbol, "mm2_max_concurrent", feat, skew_avg=skew_avg
+                    )
+                )
+                continue
+            if (
+                abs(pos_qty) < 1e-8
+                and total_inv_cap > 0
+                and total_inv_notional >= total_inv_cap
+            ):
+                intents.append(
+                    self._suppressed_intent(
+                        symbol, "mm2_inventory_total", feat, skew_avg=skew_avg
                     )
                 )
                 continue
@@ -181,20 +209,24 @@ class MarketMakingV2Strategy(StrategyBase):
                 fee_round_trip_bps=mm2_fee_round_trip_bps(symbol, self._settings),
             )
             tape_p: float | None = None
-            tape_thr = float(self._settings.mm2_tape_confirm)
-            if tape_thr > 0:
-                tape_p = mm_core.tape_pressure(feat, s)
-                if not _tape_confirms(skew_avg, tape_p, tape_thr):
-                    intent.bid_price = None
-                    intent.ask_price = None
-                    intent.bid_qty = 0.0
-                    intent.ask_qty = 0.0
-                    intent.reason = f"{intent.reason} | mm2_tape_gate"
-                    self._bump_gate(symbol, "mm2_tape_gate")
+            if not self._settings.mm2_two_sided_always:
+                tape_thr = float(self._settings.mm2_tape_confirm)
+                if tape_thr > 0:
+                    tape_p = mm_core.tape_pressure(feat, s)
+                    if not _tape_confirms(skew_avg, tape_p, tape_thr):
+                        intent.bid_price = None
+                        intent.ask_price = None
+                        intent.bid_qty = 0.0
+                        intent.ask_qty = 0.0
+                        intent.reason = f"{intent.reason} | mm2_tape_gate"
+                        self._bump_gate(symbol, "mm2_tape_gate")
             if intent.reason.startswith("mm_entry_blocked"):
                 self._bump_gate(symbol, "mm_entry_blocked")
-            direction = mm_core.micro_direction(feat, s, skew_avg)
-            mm_core.apply_asymmetric_quotes(intent, direction=direction, position_qty=pos_qty)
+            if not self._settings.mm2_two_sided_always:
+                direction = mm_core.micro_direction(feat, s, skew_avg)
+                mm_core.apply_asymmetric_quotes(
+                    intent, direction=direction, position_qty=pos_qty
+                )
             if mm_core.symbol_quoting_halted(
                 own,
                 want_bid=intent.bid_price is not None,
@@ -232,12 +264,14 @@ class MarketMakingV2Strategy(StrategyBase):
             if explicit > 0:
                 required = max(required, explicit)
             return spread >= required
+        calibrated_only = mode in ("calibrated", "calibration")
         required = required_min_spread_bps(
             feat.symbol,
             self._settings,
             feat,
             explicit_min_spread_bps=float(self._settings.mm2_min_spread_bps),
             explicit_min_edge_bps=float(self._settings.mm2_min_edge_bps),
+            calibrated_only=calibrated_only,
         )
         return spread >= required
 
@@ -378,7 +412,10 @@ _MM2_FIELD_MAP = {
     "mm_exit_stale_sec": "mm2_exit_stale_sec",
     "mm_exit_scratch_bps": "mm2_exit_scratch_bps",
     "mm_max_inventory_notional": "mm2_max_inventory_notional",
+    "mm_max_inventory_notional_total": "mm2_max_inventory_notional_total",
     "mm_max_concurrent_positions": "mm2_max_concurrent_positions",
+    "mm_risk_widen_multiplier": "mm2_risk_widen_multiplier",
+    "mm_risk_size_damp": "mm2_risk_size_damp",
     "mm_max_consecutive_same_side_fills": "mm2_max_consecutive_same_side_fills",
     "mm_side_halt_sec": "mm2_side_halt_sec",
     "mm_vol_regime_spike_mult": "mm2_vol_regime_spike_mult",
