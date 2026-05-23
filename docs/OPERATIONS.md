@@ -163,6 +163,19 @@ Define **retention** (e.g. 30/90 days) per your policy. JSONL is suitable for ba
 
 ---
 
-## 8. Escalation
+## 8. Market making v2 — post-paper calibration (5+ days)
+
+After at least five days of paper trading with `STRATEGY=market_making_v2`:
+
+1. **Universe / spreads** — Run `python -m analytics.mm_spread_pipeline --from-mm-symbols --minutes 15` (or your MM2 symbol list). Confirm calibrated `half_spread_bps` per symbol matches median venue spreads in logs (`spread_bps=` on quote lines).
+2. **Markout** — Search logs for `MM markout` at 30s horizon. Target: signed markout &lt; 1 bps adverse on average. If `markout_adverse_ewma_bps` in features is consistently &gt; 2 bps, raise `MM2_MIN_SKEW_BPS` or `MM2_TAPE_CONFIRM`.
+3. **Fill rate** — Compare fills to quote refreshes per symbol. &lt; 20% suggests half-spread too wide; &gt; 60% suggests too tight (adverse selection).
+4. **Gate rates** — Every `MM2_SCAN_LOG_INTERVAL_SEC`, review `MM2 gates {symbol}` lines. Spread-gate share should stay &lt; ~20% on normal days; frequent `mm2_vol_regime` may need a longer `MM2_VOL_REGIME_PAUSE_SEC`.
+5. **Exits** — Count `MM2 exit` lines by `type=profit|aggressive|market`. Target: majority profit/aggressive; market loss exits &lt; 10% of closes.
+6. **Fees** — Verify your Binance VIP tier and set `MM2_MAKER_FEE_BPS` / `MM2_TAKER_FEE_BPS` accordingly (`MM2_MIN_SPREAD_BPS=0` lets the fee floor drive the spread gate).
+
+---
+
+## 9. Escalation
 
 Document **internal** escalation (desk → tech → risk) and **exchange** escalation (API support, account freezes) per your organisation. This repository does not provide vendor SLAs.

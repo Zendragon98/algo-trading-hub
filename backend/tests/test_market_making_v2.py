@@ -72,6 +72,85 @@ def test_mm2_spread_gate_uses_dynamic_quote_width() -> None:
     assert gated.venue_mid == 100.0
 
 
+def test_mm2_gate_summary_logs(caplog) -> None:
+    import logging
+
+    caplog.set_level(logging.INFO)
+    strat = MarketMakingV2Strategy(
+        Settings(
+            binance_api_key="x",
+            binance_api_secret="y",
+            mm2_symbols=["BTCUSDT"],
+            mm2_min_spread_bps=50.0,
+            mm2_scan_log_interval_sec=-1.0,
+        )
+    )
+    strat.attach_own_book_provider(lambda _s: OwnBookState(symbol="BTCUSDT"))
+    feat = {
+        "BTCUSDT": Features(
+            symbol="BTCUSDT",
+            mid=100.0,
+            spread_bps=2.0,
+            micro_price=100.0,
+        )
+    }
+    strat.on_tick_quotes(feat)
+    assert any("MM2 gates BTCUSDT" in r.message for r in caplog.records)
+
+
+def test_mm2_quote_during_warmup_uses_tape_path() -> None:
+    strat = MarketMakingV2Strategy(
+        Settings(
+            binance_api_key="x",
+            binance_api_secret="y",
+            mm2_symbols=["BTCUSDT"],
+            mm2_min_spread_bps=0.0,
+            mm2_min_skew_bps=0.0,
+            mm2_min_samples=50,
+            mm2_quote_during_warmup=True,
+            mm2_tape_confirm=0.0,
+        )
+    )
+    strat.attach_own_book_provider(lambda _s: OwnBookState(symbol="BTCUSDT"))
+    feat = {
+        "BTCUSDT": Features(
+            symbol="BTCUSDT",
+            mid=100.0,
+            spread_bps=20.0,
+            micro_price=100.05,
+            bid_hit_ratio=0.5,
+            ask_hit_ratio=0.5,
+        )
+    }
+    intents = strat.on_tick_quotes(feat)
+    assert intents[0].reason != "mm2_skew_warmup"
+
+
+def test_mm2_skew_warmup_suppresses_quotes() -> None:
+    strat = MarketMakingV2Strategy(
+        Settings(
+            binance_api_key="x",
+            binance_api_secret="y",
+            mm2_symbols=["BTCUSDT"],
+            mm2_min_spread_bps=0.0,
+            mm2_min_samples=50,
+        )
+    )
+    strat.attach_own_book_provider(lambda _s: OwnBookState(symbol="BTCUSDT"))
+    feat = {
+        "BTCUSDT": Features(
+            symbol="BTCUSDT",
+            mid=100.0,
+            spread_bps=20.0,
+            micro_price=100.05,
+        )
+    }
+    intents = strat.on_tick_quotes(feat)
+    assert intents[0].reason == "mm2_skew_warmup"
+    assert intents[0].bid_qty == 0.0
+    assert intents[0].ask_qty == 0.0
+
+
 def test_mm2_skew_gate_pulls_quotes() -> None:
     strat = MarketMakingV2Strategy(
         Settings(

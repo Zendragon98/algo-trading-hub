@@ -82,7 +82,6 @@ from ..risk.risk_manager import ExitIntent, RiskManager
 from ..risk.stop_loss import StopLossMonitor
 from ..risk.venue_sizing import venue_cap_qty, venue_min_qty, venue_qty_in_bounds
 from ..strategies import mm_core
-from ..strategies.market_making import MarketMakingStrategy
 from ..strategies.market_making_v2 import MarketMakingV2Strategy
 from ..strategies.signal_netter import NettedSignal, net_strategy_signals
 from ..strategies.strategy_base import StrategyBase
@@ -691,7 +690,7 @@ class Engine:
             return self._own_book.sync_working(sym_u, list(children))
 
         for strat in self._strategies:
-            if isinstance(strat, MarketMakingStrategy | MarketMakingV2Strategy):
+            if isinstance(strat, MarketMakingV2Strategy):
                 strat.attach_position_provider(
                     lambda s, pos=self._positions: (
                         pos.get(s).qty if pos.get(s) is not None else 0.0
@@ -2474,13 +2473,22 @@ class Engine:
             return
         for intent in intents:
             if intent.reservation_mid > 0 or intent.reason:
+                obs: list[str] = []
+                if intent.spread_bps is not None:
+                    obs.append(f"spread_bps={intent.spread_bps:.2f}")
+                if intent.skew_avg_bps is not None:
+                    obs.append(f"skew_bps={intent.skew_avg_bps:.2f}")
+                if intent.tape_pressure is not None:
+                    obs.append(f"tape_p={intent.tape_pressure:+.3f}")
+                obs_suffix = f" {' '.join(obs)}" if obs else ""
                 signal_log_emit(
                     logger,
                     (
                         f"MM {intent.symbol} venue={intent.venue_mid:.4f} "
                         f"res={intent.reservation_mid:.4f} inv={intent.inventory_ratio:+.3f} "
+                        f"bid_half={intent.bid_half_bps:.2f} ask_half={intent.ask_half_bps:.2f} "
                         f"bid={intent.bid_price} ask={intent.ask_price} "
-                        f"pnl_bps={intent.unrealized_pnl_bps:.1f}"
+                        f"pnl_bps={intent.unrealized_pnl_bps:.1f}{obs_suffix}"
                     ),
                     reason=intent.reason,
                 )
@@ -2491,6 +2499,8 @@ class Engine:
         symbol_union: set[str] = set()
         alpha_strategies: list[StrategyBase] = []
         for strat in self._strategies:
+            if strat.name == "market_making":
+                continue
             if mm_core.is_mm_strategy(strat.name):
                 await self._evaluate_mm_quotes(strat)
             else:

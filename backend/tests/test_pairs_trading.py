@@ -34,8 +34,19 @@ def _features(prices: dict[str, float]) -> dict[str, Features]:
     }
 
 
-def _settings() -> Settings:
-    return Settings(binance_api_key="x", binance_api_secret="y", symbols=PAIR_SYMBOLS)
+def _settings(**overrides: object) -> Settings:
+    base = dict(
+        binance_api_key="x",
+        binance_api_secret="y",
+        symbols=PAIR_SYMBOLS,
+        pair_bar_sec=0,
+        pair_reference_mode="weighted",
+        pair_max_leg_notional=0,
+        pair_max_leg_loss_usd=0,
+        pair_max_hold_sec=0,
+    )
+    base.update(overrides)
+    return Settings(**base)  # type: ignore[arg-type]
 
 
 def test_strategy_subscribes_to_all_legs() -> None:
@@ -50,8 +61,7 @@ def test_single_pair_emits_no_signal() -> None:
     with one pair the deviation collapses to zero so the strategy must
     return early rather than blindly trading its own spread.
     """
-    settings = Settings(binance_api_key="x", binance_api_secret="y",
-                        symbols=["BTCUSDT", "BTCUSDC"])
+    settings = _settings(symbols=["BTCUSDT", "BTCUSDC"])
     strat = PairsTradingStrategy(settings)
     for _ in range(80):
         signals = list(strat.on_tick(_features({"BTCUSDT": 100.0, "BTCUSDC": 100.0})))
@@ -119,8 +129,7 @@ def test_size_pair_uses_stop_loss_budget() -> None:
     it, a 0.5% stop fires for ~`risk_per_trade_pct` of equity loss
     regardless of the underlying's price.
     """
-    settings = Settings(
-        binance_api_key="x", binance_api_secret="y", symbols=PAIR_SYMBOLS,
+    settings = _settings(
         risk_per_trade_pct=0.005, default_stop_loss_pct=0.005,
     )
     equity = 10_000.0
@@ -131,8 +140,7 @@ def test_size_pair_uses_stop_loss_budget() -> None:
     qty = strat._size_pair(usdt_mid=100.0, usdc_mid=100.0)  # type: ignore[attr-defined]
     assert qty == 100.0
 
-    settings2 = Settings(
-        binance_api_key="x", binance_api_secret="y", symbols=PAIR_SYMBOLS,
+    settings2 = _settings(
         risk_per_trade_pct=0.005, default_stop_loss_pct=0.0025,
     )
     strat2 = PairsTradingStrategy(settings2, equity_provider=lambda: equity)
@@ -145,12 +153,7 @@ def test_loads_pair_calibration_json(tmp_path) -> None:
         '{"base": "BTC", "suggested_entry_z": 2.5, "suggested_exit_z": 0.4}',
         encoding="utf-8",
     )
-    settings = Settings(
-        binance_api_key="x",
-        binance_api_secret="y",
-        symbols=PAIR_SYMBOLS,
-        pair_calibration_path=str(cal),
-    )
+    settings = _settings(pair_calibration_path=str(cal))
     strat = PairsTradingStrategy(settings)
     btc = next(p for p in strat._pairs if p.usdt_symbol == "BTCUSDT")  # type: ignore[attr-defined]
     assert btc.entry_z == 2.5
@@ -158,12 +161,7 @@ def test_loads_pair_calibration_json(tmp_path) -> None:
 
 
 def test_partial_pending_emits_reduce_only_abort() -> None:
-    settings = Settings(
-        binance_api_key="x",
-        binance_api_secret="y",
-        symbols=PAIR_SYMBOLS,
-        pair_partial_fill_abort_sec=1,
-    )
+    settings = _settings(pair_partial_fill_abort_sec=1)
     strat = PairsTradingStrategy(settings, equity_provider=lambda: 10_000.0)
     key = "BTCUSDT|BTCUSDC"
     stats = strat._stats[key]  # type: ignore[attr-defined]
@@ -193,8 +191,7 @@ def test_pair_unwinds_when_basis_diverges_past_stop_z() -> None:
     pair risk in z-space. Per-leg fixed-% stops are bypassed for these
     symbols (see `manages_own_risk`).
     """
-    settings = Settings(
-        binance_api_key="x", binance_api_secret="y", symbols=PAIR_SYMBOLS,
+    settings = _settings(
         pair_entry_z=2.0, pair_exit_z=0.5, pair_stop_z=3.0,
     )
     strat = PairsTradingStrategy(settings, equity_provider=lambda: 10_000.0)
@@ -243,8 +240,7 @@ def test_pair_take_profit_on_convergence_uses_pairs_close_reason() -> None:
     """Convergence (|z| <= exit_z) is the basis-spread take-profit. The
     reason should be tagged distinctly from the stop so the audit trail
     shows the trade closed in profit, not got stopped out."""
-    settings = Settings(
-        binance_api_key="x", binance_api_secret="y", symbols=PAIR_SYMBOLS,
+    settings = _settings(
         pair_entry_z=2.0, pair_exit_z=0.5, pair_stop_z=4.0,
     )
     strat = PairsTradingStrategy(settings, equity_provider=lambda: 10_000.0)
@@ -316,8 +312,7 @@ def test_volume_weight_pulls_reference_toward_liquid_pair() -> None:
 
 def test_size_pair_hybrid_scale_grows_with_z() -> None:
     """|z| above entry_z scales the leg notional linearly up to the cap."""
-    settings = Settings(
-        binance_api_key="x", binance_api_secret="y", symbols=PAIR_SYMBOLS,
+    settings = _settings(
         risk_per_trade_pct=0.005, default_stop_loss_pct=0.005,
         pair_size_scale_cap=2.0,
     )
@@ -339,8 +334,7 @@ def test_size_pair_hybrid_scale_grows_with_z() -> None:
 
 def test_size_pair_below_entry_uses_floor() -> None:
     """The hybrid scale never shrinks the trade below the floor."""
-    settings = Settings(
-        binance_api_key="x", binance_api_secret="y", symbols=PAIR_SYMBOLS,
+    settings = _settings(
         risk_per_trade_pct=0.005, default_stop_loss_pct=0.005,
         pair_size_scale_cap=2.0,
     )
@@ -350,3 +344,128 @@ def test_size_pair_below_entry_uses_floor() -> None:
     qty = strat._size_pair(usdt_mid=100.0, usdc_mid=100.0,
                             abs_z=1.0, entry_z=2.0)  # type: ignore[attr-defined]
     assert qty == 100.0
+
+
+def test_btc_anchor_reference_uses_btc_basis_only() -> None:
+    strat = PairsTradingStrategy(_settings(pair_reference_mode="btc_anchor"))
+    bases = {"BTCUSDT|BTCUSDC": 0.02, "ETHUSDT|ETHUSDC": 0.10}
+    ref = strat._compute_reference(bases, {})  # type: ignore[attr-defined]
+    assert ref == pytest.approx(0.02)
+
+
+def test_pending_timeout_refreshes_cooldown(monkeypatch) -> None:
+    settings = _settings(pair_pending_timeout_sec=10, pair_cooldown_sec=90)
+    strat = PairsTradingStrategy(settings, equity_provider=lambda: 10_000.0)
+    key = "BTCUSDT|BTCUSDC"
+    stats = strat._stats[key]  # type: ignore[attr-defined]
+    pair = strat._pairs[0]  # type: ignore[attr-defined]
+    stats.pending_fills_remaining = 2
+    stats.pending_since_ts = 0.0
+    stats.last_action_ts = 0.0
+    now = 100.0
+    monkeypatch.setattr("engine.strategies.pairs_trading.time.time", lambda: now)
+    out = list(strat._evaluate(  # type: ignore[attr-defined]
+        pair, stats, z=3.0, basis=0.01, reference=0.0,
+        usdt_mid=100.0, usdc_mid=100.0,
+    ))
+    assert out == []
+    assert stats.pending_fills_remaining == 0
+    assert stats.last_action_ts == now
+
+
+def test_size_pair_respects_max_leg_notional() -> None:
+    settings = _settings(
+        risk_per_trade_pct=0.005,
+        default_stop_loss_pct=0.005,
+        pair_max_leg_notional=500.0,
+        pair_size_scale_cap=3.0,
+    )
+    strat = PairsTradingStrategy(settings, equity_provider=lambda: 10_000.0)
+    qty = strat._size_pair(  # type: ignore[attr-defined]
+        usdt_mid=100.0, usdc_mid=100.0, abs_z=10.0, entry_z=2.0,
+    )
+    assert qty == pytest.approx(5.0)
+
+
+def test_bar_aggregation_pushes_only_on_bar_close(monkeypatch) -> None:
+    settings = _settings(pair_bar_sec=60)
+    strat = PairsTradingStrategy(settings)
+    key = "BTCUSDT|BTCUSDC"
+    stats = strat._stats[key]  # type: ignore[attr-defined]
+    base = {"BTCUSDT": 100.0, "BTCUSDC": 100.0, "ETHUSDT": 50.0, "ETHUSDC": 50.0}
+
+    monkeypatch.setattr("engine.strategies.pairs_trading.time.time", lambda: 0.0)
+    list(strat.on_tick(_features(base)))
+    assert len(stats.samples) == 0
+
+    monkeypatch.setattr("engine.strategies.pairs_trading.time.time", lambda: 61.0)
+    list(strat.on_tick(_features(base)))
+    assert len(stats.samples) == 1
+
+
+def test_flat_entries_skipped_between_bars(monkeypatch) -> None:
+    """With bar aggregation, new entries are only evaluated on bar close."""
+    settings = _settings(
+        pair_bar_sec=60,
+        pair_entry_z=1.0,
+        pair_min_z_samples=5,
+    )
+    strat = PairsTradingStrategy(settings, equity_provider=lambda: 10_000.0)
+    key = "BTCUSDT|BTCUSDC"
+    stats = strat._stats[key]  # type: ignore[attr-defined]
+    base = {"BTCUSDT": 100.0, "BTCUSDC": 100.0, "ETHUSDT": 50.0, "ETHUSDC": 50.0}
+    diverged = base | {"BTCUSDC": 110.0}
+
+    monkeypatch.setattr("engine.strategies.pairs_trading.time.time", lambda: 0.0)
+    for _ in range(10):
+        list(strat.on_tick(_features(base)))
+    monkeypatch.setattr("engine.strategies.pairs_trading.time.time", lambda: 61.0)
+    for _ in range(10):
+        list(strat.on_tick(_features(diverged)))
+    assert stats.open_side == 0
+
+
+def test_stop_extends_cooldown(monkeypatch) -> None:
+    settings = _settings(
+        pair_cooldown_sec=90,
+        pair_stop_cooldown_sec=300,
+        pair_entry_z=2.0,
+        pair_exit_z=0.5,
+        pair_stop_z=3.0,
+        pair_min_hold_sec=0,
+    )
+    strat = PairsTradingStrategy(settings, equity_provider=lambda: 10_000.0)
+    key = "BTCUSDT|BTCUSDC"
+    stats = strat._stats[key]  # type: ignore[attr-defined]
+    pair = strat._pairs[0]  # type: ignore[attr-defined]
+    stats.open_side = +1
+    stats.open_qty = 0.05
+    stats.open_usdt_mid = 100.0
+    stats.open_usdc_mid = 100.0
+    now = 1_000.0
+    monkeypatch.setattr("engine.strategies.pairs_trading.time.time", lambda: now)
+    list(strat._evaluate(  # type: ignore[attr-defined]
+        pair, stats, z=4.0, basis=0.01, reference=0.0,
+        usdt_mid=100.0, usdc_mid=100.2,
+    ))
+    assert stats.last_action_ts == now + (300.0 - 90.0)
+
+
+def test_time_stop_emits_pairs_time_reason(monkeypatch) -> None:
+    settings = _settings(pair_max_hold_sec=60, pair_min_hold_sec=0)
+    strat = PairsTradingStrategy(settings, equity_provider=lambda: 10_000.0)
+    key = "BTCUSDT|BTCUSDC"
+    stats = strat._stats[key]  # type: ignore[attr-defined]
+    pair = strat._pairs[0]  # type: ignore[attr-defined]
+    stats.open_side = +1
+    stats.open_qty = 0.05
+    stats.open_ts = 50.0
+    stats.open_usdt_mid = 100.0
+    stats.open_usdc_mid = 100.0
+    monkeypatch.setattr("engine.strategies.pairs_trading.time.time", lambda: 120.0)
+    sigs = list(strat._evaluate(  # type: ignore[attr-defined]
+        pair, stats, z=1.0, basis=0.0, reference=0.0,
+        usdt_mid=100.0, usdc_mid=100.0,
+    ))
+    assert len(sigs) == 2
+    assert all("pairs_time" in s.reason for s in sigs)

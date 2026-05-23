@@ -8,6 +8,20 @@ from engine.market_data.own_quote_book import EntryLedger, OwnBookState
 from engine.strategies import mm_core
 
 
+def test_entry_blocked_vol_regime() -> None:
+    feat = Features(
+        symbol="BTCUSDT",
+        mid=100.0,
+        jump_active=False,
+        is_toxic=False,
+    )
+    own = OwnBookState(symbol="BTCUSDT")
+    own.vol_regime_halt_until = time.time() + 60.0
+    s = Settings()
+    assert mm_core.entry_blocked(feat, s, want_long=True, own=own, now=time.time()) == "vol_regime"
+    assert mm_core.entry_blocked(feat, s, want_long=False, own=own, now=time.time()) == "vol_regime"
+
+
 def test_inventory_blocks_long_when_full() -> None:
     feat = Features(
         symbol="BTCUSDT",
@@ -105,6 +119,47 @@ def test_exit_limit_price_ramps_toward_touch_when_long_losing() -> None:
     )
     assert mild > deep
     assert deep < 99.95
+
+
+def test_plan_exit_reason_adverse_fill_before_profit() -> None:
+    feat = Features(symbol="BTCUSDT", mid=100.0, inventory_ratio=0.0)
+    own = OwnBookState(symbol="BTCUSDT")
+    own.ledger = EntryLedger(entry_mid=99.5, opened_ts=time.time() - 5.0)
+    own.last_fill_adverse_bps = 5.0
+    s = Settings(
+        mm_scratch_loss_bps=3.0,
+        mm_min_exit_profit_bps=1.0,
+        mm_market_exit_loss_bps=50.0,
+    )
+    reason = mm_core.plan_exit_reason(
+        feat=feat,
+        settings=s,
+        own=own,
+        position_qty=1.0,
+        mid=100.0,
+    )
+    assert reason is not None
+    assert reason.startswith("mm_aggressive_exit adverse_fill")
+
+
+def test_plan_exit_reason_jump_before_market_loss() -> None:
+    feat = Features(
+        symbol="BTCUSDT",
+        mid=100.0,
+        inventory_ratio=0.0,
+        jump_active=True,
+    )
+    own = OwnBookState(symbol="BTCUSDT")
+    own.ledger = EntryLedger(entry_mid=100.5, opened_ts=time.time() - 5.0)
+    s = Settings(mm_jump_flatten=True, mm_market_exit_loss_bps=1.0)
+    reason = mm_core.plan_exit_reason(
+        feat=feat,
+        settings=s,
+        own=own,
+        position_qty=1.0,
+        mid=100.0,
+    )
+    assert reason == "mm_market_exit jump_flatten"
 
 
 def test_plan_exit_reason_market_when_deep_loss() -> None:

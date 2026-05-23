@@ -37,6 +37,10 @@ LIQUID_SYMBOLS = [
 ]
 
 CYCLE_BASE_PATCH: dict[str, object] = {
+    "default_stop_loss_pct": 0.02,
+    "default_take_profit_pct": 0.06,
+    "max_risk_pct": 1.0,
+    "max_symbol_notional_pct": 1.0,
     "risk_per_trade_pct": 0.001,
     "max_consecutive_losses": 20,
     "consecutive_loss_min_abs_usd": 2.0,
@@ -53,36 +57,38 @@ CYCLE_BASE_PATCH: dict[str, object] = {
 
 STRATEGY_PATCHES: dict[str, dict[str, object]] = {
     "pairs_trading_usdt_usdc": {
-        "symbols": LIQUID_SYMBOLS[:4],
+        "symbols": LIQUID_SYMBOLS[:6],
         "pair_calibration_path": "",
-        "pair_entry_z": 3.8,
-        "pair_exit_z": 0.3,
-        "pair_stop_z": 4.5,
+        "pair_reference_mode": "btc_anchor",
+        "pair_bar_sec": 60,
+        "pair_entry_z": 2.5,
+        "pair_exit_z": 0.4,
+        "pair_stop_z": 3.5,
         "pair_cooldown_sec": 120,
+        "pair_stop_cooldown_sec": 300,
         "pair_min_hold_sec": 90,
-        "pair_size_scale_cap": 1.0,
+        "pair_size_scale_cap": 2.0,
+        "pair_max_leg_notional": 500.0,
         "pair_max_new_entries_per_tick": 1,
-        "pair_min_mid_price": 0.001,
+        "pair_min_mid_price": 0.01,
     },
     "sma_crossover": {
-        "sma_symbols": LIQUID_SYMBOLS,
-        "sma_bar_interval_sec": 60.0,
+        "sma_symbols": ["BTCUSDT", "ETHUSDT"],
+        "sma_bar_interval_sec": 900.0,
         "sma_fast_window": 10,
         "sma_slow_window": 30,
-        "sma_max_symbols": 6,
         "sma_cooldown_sec": 90,
-        "sma_risk_per_trade_pct": 0.0008,
+        "sma_risk_per_trade_pct": 0.12,
         "sma_max_entries_per_tick": 1,
         "sma_min_mid_price": 0.05,
     },
     "blended_signals": {
-        "blend_symbols": LIQUID_SYMBOLS,
-        "blend_max_symbols": 6,
-        "blend_bar_interval_sec": 300.0,
-        "blend_entry_threshold": 0.35,
-        "blend_min_confirming_votes": 3,
+        "blend_symbols": ["BTCUSDT", "ETHUSDT"],
+        "blend_bar_interval_sec": 900.0,
+        "blend_entry_threshold": 0.50,
+        "blend_min_confirming_votes": 2,
         "blend_cooldown_sec": 120.0,
-        "blend_risk_per_trade_pct": 0.0008,
+        "blend_risk_per_trade_pct": 0.12,
         "blend_max_entries_per_tick": 1,
     },
     "market_making": {
@@ -126,7 +132,6 @@ _MARKER_COUNTS: dict[str, re.Pattern[str]] = {
 # Liquid / low-flatten-cost legs first; pairs (74 symbols) last to limit slippage.
 STRATEGY_ORDER = [
     "market_making_v2",
-    "market_making",
     "blended_signals",
     "sma_crossover",
     "pairs_trading_usdt_usdc",

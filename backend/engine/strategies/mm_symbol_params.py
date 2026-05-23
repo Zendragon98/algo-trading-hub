@@ -304,14 +304,14 @@ def required_min_spread_bps(
   book to be at least as wide as ``2 * half_spread_bps`` (incl. venue floor), with
     fee + buffer as a hard floor.
     """
+    fee_floor = mm2_fee_edge_floor_bps(symbol, settings)
     params = resolve_mm_params(symbol, settings, feat)
     if params.min_spread_bps is not None:
-        return params.min_spread_bps
+        return max(fee_floor, params.min_spread_bps)
     if explicit_min_spread_bps > 0:
-        return explicit_min_spread_bps
+        return max(fee_floor, explicit_min_spread_bps)
     if explicit_min_edge_bps > 0:
-        return explicit_min_edge_bps
-    fee_floor = mm2_fee_edge_floor_bps(symbol, settings)
+        return max(fee_floor, explicit_min_edge_bps)
     quote_width = 2.0 * params.half_spread_bps
     return max(fee_floor, quote_width)
 

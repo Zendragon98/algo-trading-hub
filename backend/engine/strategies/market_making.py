@@ -106,8 +106,9 @@ class MarketMakingStrategy(StrategyBase):
             if feat is None or feat.mid is None:
                 continue
             state = self._state_for(symbol)
-            self._record_skew(state, feat, time.time())
-            skew_avg = self._skew_mean(state, time.time())
+            now = time.time()
+            self._record_skew(state, feat, now)
+            skew_avg = self._skew_mean(state, now)
             own = self._own(symbol)
             pos_qty = self._position_qty(symbol)
             exit_reason = mm_core.plan_exit_reason(

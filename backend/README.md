@@ -435,14 +435,20 @@ deviation_i = basis_i - reference
 z_i         = (deviation_i - rolling_mean(deviation_i)) / rolling_std
 ```
 
-When the volume cache is empty (boot, REST hiccup) the `+1.0` floor collapses to equal weights, so cold-start behaviour matches the unweighted strategy.
+`reference` is set by `PAIR_REFERENCE_MODE` (default `btc_anchor` = BTC basis only;
+`weighted` = 24h-volume mean; `independent` = each coin z-scores raw basis).
+`PAIR_BAR_SEC` (default 60) pushes one deviation sample per closed bar; with bars on,
+`PAIR_Z_WINDOW_SEC` is interpreted as bar count (600 bars × 60s ≈ 10h).
 
 Trade rule per coin:
 
-- `z_i >= +entry_z` (default `2.0`) → USDC leg unusually rich → **SHORT coinUSDC, LONG coinUSDT**
+- `z_i >= +entry_z` (default `2.5`) → USDC leg unusually rich → **SHORT coinUSDC, LONG coinUSDT**
 - `z_i <= -entry_z`                  → USDT leg unusually rich → **LONG  coinUSDC, SHORT coinUSDT**
-- `|z_i| <= exit_z` (default `0.5`)  → **take profit** on convergence
-- `|z_i| >= stop_z` (default `4.0`) against the open direction → **stop loss** on basis divergence
+- `|z_i| <= exit_z` (default `0.4`)  → **take profit** on convergence
+- `|z_i| >= stop_z` (default `3.5`) against the open direction → **stop loss** on basis divergence
+
+Additional guardrails: `PAIR_MAX_LEG_NOTIONAL`, `PAIR_MAX_LEG_LOSS_USD`, `PAIR_MAX_HOLD_SEC`,
+`PAIR_STOP_COOLDOWN_SEC`, and pending-timeout cooldown refresh.
 
 The pair's risk lives in basis-spread space, not in either leg's absolute price move. A normal correlated tick (both coins drop 0.5%) leaves the basis untouched and the trade healthy, so the strategy bypasses the engine's per-leg fixed-% `StopLossMonitor` (`StrategyBase.manages_own_risk()` returns True) and is responsible for emitting its own SL/TP exits — both keyed off `z`. Portfolio-level safeguards (drawdown kill-switch, gross/per-trade notional caps) still apply.
 
@@ -503,7 +509,7 @@ Sizing is equity-budgeted: each entry risks `SMA_RISK_PER_TRADE_PCT` of equity, 
 
 Unlike pairs trading, the SMA strategy does **not** manage its own SL/TP — `manages_own_risk()` returns False so the engine's per-leg `StopLossMonitor` stays armed for every coin it trades. Strategy hot-swap (`POST /api/control/strategy { name: "sma_crossover" }`) atomically rotates the externally-managed set: pairs symbols stop bypassing the bracket and SMA symbols pick up a fresh per-leg stop on the next tick.
 
-With `SMA_BAR_INTERVAL_SEC=0` (default), windows count **engine ticks** (~1 Hz), not minutes — set e.g. `300` for 5-minute bars if you want intraday-style SMAs.
+Default `SMA_BAR_INTERVAL_SEC=900` (15m closed bars). Windows count **bars**, not engine ticks.
 
 ### Strategy — `engine/strategies/blended_signals.py`
 
@@ -515,13 +521,15 @@ Multi-indicator ensemble for single-leg crypto: **EMA trend**, **MACD momentum**
 - **Universe:** `BLEND_SYMBOLS` (CSV or `AUTO` / empty for top-N USDT perps by 24h volume, capped by `BLEND_MAX_SYMBOLS`, default 10).
 - **Sizing / risk:** same equity-budget pattern as SMA (`BLEND_RISK_PER_TRADE_PCT` split across `BLEND_SYMBOLS`); engine per-leg SL/TP stays armed (`manages_own_risk()` is False).
 
-### Strategy — `engine/strategies/market_making.py` (+ `market_making_v2.py`)
+### Strategy — `engine/strategies/market_making_v2.py` (+ legacy `market_making.py`)
 
 Institutional **two-sided market making** posts standing post-only bid/ask quotes via `QuoteExecutor` — **not** the VWAP wheel. Alpha strategies (`pairs_trading`, `sma_crossover`, `blended_signals`) still route `Signal` → `ExecutionRouter` → `VwapExecutor`.
 
+**Use `market_making_v2` only.** `market_making` (v1) is deprecated: it lacks spread/skew/tape/vol-regime gates and is not registered in `main.py` / `engine/main_engine.py` or run in `STRATEGY=all`. The v1 module remains for universe helpers and unit tests.
+
 | Path | Execution |
 |------|-----------|
-| `market_making`, `market_making_v2` | `QuoteIntent` → `QuoteExecutor` (cancel/replace LIMIT children, parent id `Q-{symbol}-…`) |
+| `market_making_v2` | `QuoteIntent` → `QuoteExecutor` (cancel/replace LIMIT children, parent id `Q-{symbol}-…`) |
 | Alpha + operator flatten (non-MM) | VWAP / market slicer |
 
 **Microstructure** (`engine/market_data/microstructure_hub.py`): mid-return jump latch, extended `TradeTape` (VPIN, velocity, large-trade share), effective book depth minus own quotes (`BookDepletionTracker`), post-fill markouts (`MarkoutTracker`), composite toxicity (`ToxicityScorer`). Snapshots land in `FeatureStore` / `Features` for quoting.
@@ -544,7 +552,7 @@ Live logs emit `venue=`, `res=`, `inv=`, `pnl_bps=` on each quote refresh (SIG l
 
 **Key settings:** `MM_QUOTE_*`, `MM_RESERVATION_INVENTORY_BPS`, `MM_INVENTORY_SPREAD_SKEW_BPS`, `MM_INVENTORY_*`, `MM_JUMP_*`, `MM_DEPLETION_*`, `MM_TOXICITY_THRESHOLD`. `MM_SKEW_*` / `MM_TAPE_*` feed the micro shift into reservation mid.
 
-`market_making_v2` spread gate uses the same half-spread resolution as quoting (`max(fee_rt + buffer, 2 × half_spread_bps)` with venue floor). Override via `MM2_MIN_SPREAD_BPS` or per-symbol `min_spread_bps` in calibration. Cancels quotes when skew is below `MM2_MIN_SKEW_BPS`. Hot-swap: `POST /api/control/strategy { "name": "market_making" }`.
+`market_making_v2` spread gate uses the same half-spread resolution as quoting (`max(fee_rt + buffer, 2 × half_spread_bps)` with venue floor). Override via `MM2_MIN_SPREAD_BPS` or per-symbol `min_spread_bps` in calibration. Cancels quotes when skew is below `MM2_MIN_SKEW_BPS` or during skew warmup (`MM2_QUOTE_DURING_WARMUP=false`, default). Logs gate suppressions every `MM2_SCAN_LOG_INTERVAL_SEC`. Hot-swap: `POST /api/control/strategy { "name": "market_making_v2" }`.
 
 Pair **exits** (`pairs_close` / `pairs_stop`) emit `reduce_only=True` on both legs so kill-switch / entry breakers do not block basis unwinds.
 
@@ -706,8 +714,10 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `LEVERAGE_BRACKET_CACHE_TTL_SEC` | `0`                               | Seconds before refetching brackets (`0` = only refresh when cache missing or `BINANCE_REST_BASE` changes) |
 | `MAX_GROSS_NOTIONAL`         | `100000`                             | Hard cap on total open notional |
 | `MAX_DRAWDOWN_PCT`           | `0.10`                               | Drawdown that trips the kill switch |
-| `DEFAULT_STOP_LOSS_PCT`      | `0.005`                              | Per-position SL distance (also the sizing denominator) |
-| `DEFAULT_TAKE_PROFIT_PCT`    | `0.010`                              | Per-position TP distance |
+| `DEFAULT_STOP_LOSS_PCT`      | `0.02`                               | Per-position SL distance (also the sizing denominator) |
+| `DEFAULT_TAKE_PROFIT_PCT`    | `0.06`                               | Per-position TP distance |
+| `MAX_RISK_PCT`               | `1.0`                                | Per-leg notional cap (% equity); raised for paper OMS stress |
+| `MAX_SYMBOL_NOTIONAL_PCT`    | `1.0`                                | Per-symbol exposure cap (% equity) |
 | `PAIR_ENTRY_Z` / `PAIR_EXIT_Z` / `PAIR_STOP_Z` | `2.0` / `0.5` / `4.0`     | Pairs entry / take-profit / stop thresholds in z-space |
 | `PAIR_SIZE_SCALE_CAP`        | `2.0`                                | Hybrid sizing ceiling: scale floor by `min(\|z\|/entry_z, cap)` |
 | `PRIME_WS_TIMEOUT_SEC`       | `10.0`                               | Boot: wait for `bookTicker` mids this long before REST `/depth` fallback per symbol |
@@ -730,8 +740,10 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `MM_RISK_PER_TRADE_PCT` / `MM_QTY` / `MM_COOLDOWN_SEC` | `0.005` / `0.001` / `12` | Sizing + per-symbol cooldown |
 | `MM_MAX_ENTRIES_PER_TICK`    | `4`                                  | Max new MM entries per 1 Hz tick (by score); exits uncapped |
 | `SMA_FAST_WINDOW` / `SMA_SLOW_WINDOW` | `10` / `30`                | Fast / slow SMA windows (sample count; see `SMA_BAR_INTERVAL_SEC`) |
-| `SMA_BAR_INTERVAL_SEC`       | `0`                                  | Bar length in seconds for each SMA sample (`0` = one sample per ~1s heartbeat); e.g. `300` = 5m bars |
-| `SMA_RISK_PER_TRADE_PCT`     | `0.005`                              | Equity slice per SMA entry (uses `DEFAULT_STOP_LOSS_PCT` as the sizing denominator) |
+| `SMA_BAR_INTERVAL_SEC`       | `900`                                | Closed-bar length (seconds); `900` = 15m bars |
+| `SMA_RISK_PER_TRADE_PCT`     | `0.12`                               | Equity slice per SMA entry (uses `DEFAULT_STOP_LOSS_PCT` as the sizing denominator) |
+| `BLEND_RISK_PER_TRADE_PCT`   | `0.12`                               | Same sizing pattern as SMA (split across `BLEND_SYMBOLS`) |
+| `BLEND_BAR_INTERVAL_SEC`     | `900`                                | 15m closed bars (required; no tick mode) |
 | `SMA_QTY` / `SMA_COOLDOWN_SEC` | `0.001` / `15`                     | Static fallback qty + per-symbol cooldown |
 | `VWAP_DURATION_SEC`          | `60`                                 | Parent-order duration |
 | `VWAP_NUM_SLICES`            | `6`                                  | Children per parent |

@@ -100,12 +100,14 @@ class Settings(BaseSettings):
     # equity the engine is willing to lose if `default_stop_loss_pct` is
     # hit. Position size is then `(equity * risk_per_trade_pct) / stop_pct`,
     # which is the canonical "size by stop" rule traders use on futures.
-    max_risk_pct: float = 0.35
+    # Paper OMS stress: 12% risk / 2% stop => 6× equity target notional before caps;
+    # max_risk_pct and max_symbol_notional_pct at 1.0 allow up to 1× equity per leg.
+    max_risk_pct: float = 1.0
     risk_per_trade_pct: float = 0.003
-    max_gross_notional: float = 100_000.0
+    max_gross_notional: float = 500_000.0
     max_drawdown_pct: float = 0.10
-    default_stop_loss_pct: float = 0.005
-    default_take_profit_pct: float = 0.010
+    default_stop_loss_pct: float = 0.02
+    default_take_profit_pct: float = 0.06
 
     # --- Failsafes (circuit breakers) ---
     # Pre-trade gates
@@ -133,7 +135,7 @@ class Settings(BaseSettings):
     )
     # Per-symbol notional cap (% equity). RiskManager sizes trades to
     # min(max_risk_pct, remaining headroom here) so this need not equal max_risk_pct.
-    max_symbol_notional_pct: float = 0.20   # per-symbol exposure cap
+    max_symbol_notional_pct: float = 1.0   # per-symbol exposure cap (% equity)
     # Coarse pre-trade headroom: requires (1 - (gross+add)/equity) >= this.
     # On leveraged futures, gross_notional often exceeds equity, so any value
     # > 0 vetoes most entries; use 0 (default) and rely on max_risk_pct /
@@ -242,28 +244,43 @@ class Settings(BaseSettings):
     # `engine.risk.stop_loss.StopLossMonitor` and
     # `engine.strategies.strategy_base.StrategyBase.manages_own_risk`.
     pair_calibration_path: str = ""  # optional JSON from analytics.pair_analyzer
-    pair_entry_z: float = 3.0
-    pair_exit_z: float = 0.35
-    pair_stop_z: float = 4.0
-    # Rolling window for historical z-score estimation (seconds).
+    pair_entry_z: float = 2.5
+    pair_exit_z: float = 0.4
+    pair_stop_z: float = 3.5
+    # Rolling window for z-score history. With ``pair_bar_sec > 0`` this is
+    # interpreted as *bar count* (e.g. 600 bars × 60s = 10h); otherwise seconds.
     pair_z_window_sec: int = 600
+    # Reference basis: ``btc_anchor`` (BTC basis only), ``weighted`` (24h vol
+    # mean across coins), or ``independent`` (each coin z-scores raw basis).
+    pair_reference_mode: str = "btc_anchor"
+    # Bar-aggregate deviation samples (0 = every tick). 60 = one sample/min.
+    pair_bar_sec: int = 60
     # Anti-churn guards. These exist to prevent "flip-flop" trading when z
     # oscillates around the entry/exit thresholds or when partial fills arrive
     # across multiple ticks.
     pair_min_hold_sec: int = 75
-    pair_cooldown_sec: int = 90
+    pair_cooldown_sec: int = 120
+    # Longer cooldown after a basis stop-out (seconds until re-entry allowed).
+    pair_stop_cooldown_sec: int = 300
     pair_pending_timeout_sec: int = 120
+    # Force-unwind open pairs held longer than this (0 = disabled).
+    pair_max_hold_sec: int = 1800
     # Hybrid-sizing ceiling for pairs entries. The strategy scales qty
     # linearly with |z|/entry_z above the entry floor, capped at this
     # multiplier so a transient z-spike can't blow up the leg notional.
-    pair_size_scale_cap: float = 1.15
+    pair_size_scale_cap: float = 2.0
+    # Hard USD notional cap per leg (0 = disabled).
+    pair_max_leg_notional: float = 500.0
+    # Per-leg absolute loss cap in USD while open (0 = disabled).
+    pair_max_leg_loss_usd: float = 25.0
     # Cap new pair opens per tick (exits/partials are not capped). 0 = unlimited.
     pair_max_new_entries_per_tick: int = 2
-    # Minimum deviation samples before z-score is trusted (1Hz ticks ≈ seconds).
+    # Minimum deviation samples before z-score is trusted. With 60s bars,
+    # 30 samples ≈ 30 minutes warmup.
     pair_min_z_samples: int = 30
     # Skip pairs where either leg mid is below this (avoids sub-$0.001 memes
     # that often trip MIN_NOTIONAL / tick-size quirks on testnet).
-    pair_min_mid_price: float = 0.001
+    pair_min_mid_price: float = 0.01
     # Abort a one-legged pending open after this many seconds (reduce-only unwind).
     pair_partial_fill_abort_sec: int = 90
     # Signal.score floor on pair entries so the router uses urgent slicing.
@@ -306,22 +323,19 @@ class Settings(BaseSettings):
     # SMA_SYMBOL is kept as a backwards-compat shim — when sma_symbols is
     # empty, main.py falls back to a single-symbol list of [sma_symbol].
     sma_symbols: Annotated[list[str], NoDecode] = Field(
-        default_factory=list,
+        default_factory=lambda: ["BTCUSDT", "ETHUSDT"],
     )
     sma_symbol: str = "BTCUSDT"
-    sma_fast_window: int = 8
-    sma_slow_window: int = 24
-    # When >0, each SMA sample is one *closed bar* of this length (seconds),
-    # using the last mid seen in that bar as the close — windows are then in
-    # bar count (intraday-style). When 0, one sample per engine heartbeat (~1Hz),
-    # so SMA_FAST_WINDOW/SMA_SLOW_WINDOW count ticks (e.g. 8/24 ≈ 8–24s), not minutes.
-    sma_bar_interval_sec: float = Field(default=0.0)
+    sma_fast_window: int = 10
+    sma_slow_window: int = 30
+    # Closed-bar sampling (seconds). 900 = 15m bars; windows count bars, not ticks.
+    sma_bar_interval_sec: float = Field(default=900.0)
     # Skip symbols below this mid (stops cannot resolve on sub-tick alts).
     sma_min_mid_price: float = 0.01
     # Portfolio risk budget per round-trip (split evenly across ``sma_symbols``).
     # Falls back to ``sma_qty`` when equity is unavailable (e.g. boot
     # before the first ``fetch_balance`` lands).
-    sma_risk_per_trade_pct: float = 0.002
+    sma_risk_per_trade_pct: float = 0.12
     sma_qty: float = 0.001
     sma_cooldown_sec: int = 45
     sma_max_entries_per_tick: int = 2
@@ -330,42 +344,40 @@ class Settings(BaseSettings):
     # Cap SMA_SYMBOLS=AUTO to the top-N USDT perps by 24h quote volume (0 = full universe).
     sma_max_symbols: int = 10
 
-    # --- Blended multi-indicator strategy (EMA + MACD + RSI + BB + micro) ---
-    # BLEND_SYMBOLS: CSV list or ``AUTO`` (empty = AUTO) for top-N USDT perps at boot.
-    blend_symbols: Annotated[list[str], NoDecode] = Field(default_factory=list)
-    # Cap BLEND_SYMBOLS=AUTO to the top-N USDT perps by 24h quote volume (0 = full universe).
+    # --- Blended multi-indicator strategy (ADX-gated, closed-bar only) ---
+    blend_symbols: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["BTCUSDT", "ETHUSDT"]
+    )
     blend_max_symbols: int = 10
     blend_symbol: str = "BTCUSDT"
-    blend_bar_interval_sec: float = 300.0
-    blend_ema_fast: int = 9
-    blend_ema_slow: int = 21
+    blend_bar_interval_sec: float = 900.0
+    blend_adx_period: int = 14
+    blend_adx_trend_threshold: float = 20.0
+    blend_adx_strong_threshold: float = 30.0
+    blend_ema_fast: int = 12
+    blend_ema_slow: int = 26
+    blend_ema_min_gap_bps: float = 5.0
     blend_macd_fast: int = 12
     blend_macd_slow: int = 26
     blend_macd_signal: int = 9
     blend_rsi_period: int = 14
-    blend_rsi_long_low: float = 45.0
-    blend_rsi_long_high: float = 70.0
-    blend_rsi_short_low: float = 30.0
-    blend_rsi_short_high: float = 55.0
-    blend_rsi_overbought: float = 75.0
-    blend_rsi_oversold: float = 25.0
+    blend_rsi_oversold: float = 30.0
+    blend_rsi_overbought: float = 70.0
+    blend_rsi_extreme_oversold: float = 25.0
+    blend_rsi_extreme_overbought: float = 75.0
     blend_bb_period: int = 20
     blend_bb_std: float = 2.0
-    blend_bb_long_pct: float = 0.2
-    blend_bb_short_pct: float = 0.8
-    blend_weight_ema: float = 1.0
-    blend_weight_macd: float = 1.0
-    blend_weight_rsi: float = 0.8
-    blend_weight_bb: float = 0.7
-    blend_weight_micro: float = 0.5
-    blend_micro_imbalance_scale: float = 4.0
-    blend_micro_tape_scale: float = 6.0
-    blend_micro_threshold: float = 0.12
-    blend_entry_threshold: float = 0.35
-    blend_exit_threshold: float = 0.1
-    blend_min_confirming_votes: int = 3
+    blend_bb_lower_threshold: float = 0.05
+    blend_bb_upper_threshold: float = 0.95
+    blend_micro_threshold: float = 0.15
+    blend_micro_window_sec: float = 120.0
+    blend_entry_threshold: float = 0.50
+    blend_exit_threshold: float = 0.15
+    blend_min_confirming_votes: int = 2
+    blend_regime_flip_exit: bool = True
+    blend_regime_flip_adx_buffer: float = 2.0
     blend_min_mid_price: float = 0.01
-    blend_risk_per_trade_pct: float = 0.002
+    blend_risk_per_trade_pct: float = 0.12
     blend_qty: float = 0.001
     blend_cooldown_sec: float = 60.0
     blend_max_entries_per_tick: int = 2
@@ -429,11 +441,9 @@ class Settings(BaseSettings):
             "SOLUSDT",
             "AVAXUSDT",
             "ARBUSDT",
-            "APTUSDT",
-            "OPUSDT",
         ],
     )
-    mm2_skew_window_sec: float = 300.0
+    mm2_skew_window_sec: float = 180.0
     mm2_skew_scale: float = 1.0
     mm2_imbalance_scale: float = 8.0
     mm2_tape_scale: float = 12.0
@@ -446,10 +456,10 @@ class Settings(BaseSettings):
     mm2_spread_buffer_bps: float = 2.0
     mm2_min_spread_bps: float = 0.0
     mm2_min_edge_bps: float = 0.0
-    mm2_min_exit_profit_bps: float = 5.0
-    mm2_max_hold_sec: float = 45.0
-    mm2_market_exit_loss_bps: float = 10.0
-    mm2_aggressive_exit_loss_bps: float = 5.0
+    mm2_min_exit_profit_bps: float = 4.0
+    mm2_max_hold_sec: float = 60.0
+    mm2_market_exit_loss_bps: float = 12.0
+    mm2_aggressive_exit_loss_bps: float = 8.0
     mm2_exit_inside_touch_bps: float = 1.0
     mm2_exit_stale_sec: float = 20.0
     mm2_exit_scratch_bps: float = 0.0
@@ -457,14 +467,15 @@ class Settings(BaseSettings):
     mm2_exit_loss_ramp_bps: float = 20.0
     mm2_exit_cross_touch: bool = True
     mm2_early_loss_hold_frac: float = 0.0
-    mm2_min_samples: int = 5
+    mm2_min_samples: int = 60
+    mm2_quote_during_warmup: bool = False
     mm2_risk_per_trade_pct: float = 0.008
-    mm2_max_inventory_notional: float = 400.0
-    mm2_max_concurrent_positions: int = 3
+    mm2_max_inventory_notional: float = 300.0
+    mm2_max_concurrent_positions: int = 2
     mm2_max_consecutive_same_side_fills: int = 2
     mm2_side_halt_sec: float = 120.0
-    mm2_vol_regime_spike_mult: float = 2.0
-    mm2_vol_regime_pause_sec: float = 600.0
+    mm2_vol_regime_spike_mult: float = 1.8
+    mm2_vol_regime_pause_sec: float = 90.0
     mm2_qty: float = 0.001
     mm2_cooldown_sec: float = 25.0
     mm2_max_entries_per_tick: int = 1

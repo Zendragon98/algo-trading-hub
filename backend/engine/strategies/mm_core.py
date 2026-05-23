@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 from common.config import Settings
@@ -237,7 +238,16 @@ def compute_quote_pricing(
     )
 
 
-def entry_blocked(feat: Features, settings: Settings, *, want_long: bool) -> str | None:
+def entry_blocked(
+    feat: Features,
+    settings: Settings,
+    *,
+    want_long: bool,
+    own: OwnBookState | None = None,
+    now: float | None = None,
+) -> str | None:
+    if own is not None and now is not None and now < own.vol_regime_halt_until:
+        return "vol_regime"
     if feat.jump_active:
         return "jump"
     if feat.is_toxic:
@@ -355,33 +365,41 @@ def plan_exit_reason(
 ) -> str | None:
     if abs(position_qty) < 1e-12:
         return None
-    import time as _time
 
-    now = _time.time()
+    now = time.time()
     pnl_bps = _pnl_bps(own.ledger, mid, position_qty)
-    stale_sec = float(settings.mm_exit_stale_sec)
-    if own.exit_limit_since > 0 and stale_sec > 0 and now - own.exit_limit_since >= stale_sec:
-        return f"mm_market_exit stale_limit pnl_bps={pnl_bps:.2f}"
+    sym = feat.symbol
+
+    if feat.jump_active and settings.mm_jump_flatten:
+        return "mm_market_exit jump_flatten"
+
+    scratch = mm_float(sym, settings, "mm_scratch_loss_bps", cal_attr="scratch_loss_bps")
+    if own.last_fill_adverse_bps >= scratch:
+        return f"mm_aggressive_exit adverse_fill bps={own.last_fill_adverse_bps:.2f}"
+
+    market_bps = mm_float(
+        sym, settings, "mm_market_exit_loss_bps", cal_attr="market_exit_loss_bps"
+    )
+    if market_bps > 0 and pnl_bps <= -market_bps:
+        return f"mm_market_exit pnl_bps={pnl_bps:.2f}"
 
     max_hold = float(settings.mm_max_hold_sec)
     elapsed = now - own.ledger.opened_ts if own.ledger.opened_ts > 0 else 0.0
     if max_hold > 0 and elapsed >= max_hold:
         return f"mm_market_exit max_hold pnl_bps={pnl_bps:.2f}"
 
-    market_bps = mm_float(
-        feat.symbol, settings, "mm_market_exit_loss_bps", cal_attr="market_exit_loss_bps"
-    )
-    if market_bps > 0 and pnl_bps <= -market_bps:
-        return f"mm_market_exit pnl_bps={pnl_bps:.2f}"
+    stale_sec = float(settings.mm_exit_stale_sec)
+    if own.exit_limit_since > 0 and stale_sec > 0 and now - own.exit_limit_since >= stale_sec:
+        return f"mm_market_exit stale_limit pnl_bps={pnl_bps:.2f}"
 
-    min_profit = mm_float(
-        feat.symbol, settings, "mm_min_exit_profit_bps", cal_attr="min_exit_profit_bps"
+    markout_cap = mm_float(
+        sym, settings, "mm_max_adverse_markout_bps", cal_attr="max_adverse_markout_bps"
     )
-    if min_profit > 0 and pnl_bps >= min_profit:
-        return f"mm_profit_exit pnl_bps={pnl_bps:.2f}"
+    if pnl_bps < 0 and markout_cap > 0 and feat.markout_adverse_ewma_bps >= markout_cap * 0.75:
+        return f"mm_aggressive_exit markout pnl_bps={pnl_bps:.2f}"
 
     aggressive_bps = mm_float(
-        feat.symbol, settings, "mm_aggressive_exit_loss_bps", cal_attr="aggressive_exit_loss_bps"
+        sym, settings, "mm_aggressive_exit_loss_bps", cal_attr="aggressive_exit_loss_bps"
     )
     if aggressive_bps > 0 and pnl_bps <= -aggressive_bps:
         return f"mm_aggressive_exit pnl_bps={pnl_bps:.2f}"
@@ -390,18 +408,11 @@ def plan_exit_reason(
     if exit_ratio > 0 and abs(feat.inventory_ratio) >= exit_ratio:
         return f"mm_inventory_exit inv={feat.inventory_ratio:.3f} pnl_bps={pnl_bps:.2f}"
 
-    if feat.jump_active and settings.mm_jump_flatten:
-        return "mm_market_exit jump_flatten"
-
-    scratch = mm_float(feat.symbol, settings, "mm_scratch_loss_bps", cal_attr="scratch_loss_bps")
-    if own.last_fill_adverse_bps >= scratch:
-        return f"mm_aggressive_exit adverse_fill bps={own.last_fill_adverse_bps:.2f}"
-
-    markout_cap = mm_float(
-        feat.symbol, settings, "mm_max_adverse_markout_bps", cal_attr="max_adverse_markout_bps"
+    min_profit = mm_float(
+        sym, settings, "mm_min_exit_profit_bps", cal_attr="min_exit_profit_bps"
     )
-    if pnl_bps < 0 and markout_cap > 0 and feat.markout_adverse_ewma_bps >= markout_cap * 0.75:
-        return f"mm_aggressive_exit markout pnl_bps={pnl_bps:.2f}"
+    if min_profit > 0 and pnl_bps >= min_profit:
+        return f"mm_profit_exit pnl_bps={pnl_bps:.2f}"
 
     return None
 
@@ -438,10 +449,8 @@ def build_exit_quote_intent(
             unrealized_pnl_bps=pnl_bps,
         )
 
-    import time as _time
-
     if own.exit_limit_since <= 0:
-        own.exit_limit_since = _time.time()
+        own.exit_limit_since = time.time()
 
     if reason.startswith("mm_profit_exit"):
         price = mid
@@ -520,6 +529,27 @@ def compute_quote_intent(
     fee_round_trip_bps: float = 0.0,
 ) -> QuoteIntent:
     venue_mid = float(feat.mid or 0.0)
+    sym = feat.symbol
+    tick_now = time.time()
+    bid_blocked = entry_blocked(
+        feat, settings, want_long=True, own=own, now=tick_now
+    )
+    ask_blocked = entry_blocked(
+        feat, settings, want_long=False, own=own, now=tick_now
+    )
+    if bid_blocked and ask_blocked:
+        block = bid_blocked or ask_blocked
+        return QuoteIntent(
+            symbol=sym,
+            bid_price=None,
+            ask_price=None,
+            bid_qty=0.0,
+            ask_qty=0.0,
+            reason=f"mm_entry_blocked {block}",
+            strategy_name=strategy_name,
+            venue_mid=venue_mid,
+        )
+
     inv = inventory_ratio(
         position_qty,
         venue_mid,
@@ -528,7 +558,7 @@ def compute_quote_intent(
         own_bid_qty=own.own_bid_qty,
         own_ask_qty=own.own_ask_qty,
     )
-    params = resolve_mm_params(feat.symbol, settings, feat)
+    params = resolve_mm_params(sym, settings, feat)
     pricing = compute_quote_pricing(
         feat=feat,
         settings=settings,
@@ -539,9 +569,7 @@ def compute_quote_intent(
     bid_price = pricing.bid_price
     ask_price = pricing.ask_price
 
-    pull = mm_float(
-        feat.symbol, settings, "mm_depletion_pull_ratio", cal_attr="depletion_pull_ratio"
-    )
+    pull = mm_float(sym, settings, "mm_depletion_pull_ratio", cal_attr="depletion_pull_ratio")
     if feat.bid_depth_ratio < pull or feat.jump_active:
         bid_price = None
     if feat.ask_depth_ratio < pull or feat.jump_active:
@@ -553,17 +581,15 @@ def compute_quote_intent(
     if hard > 0 and inv <= -hard:
         ask_price = None
 
-    import time as _time
-
-    if _time.time() < own.markout_cooldown_until:
+    if tick_now < own.markout_cooldown_until:
         if own.last_fill_side == "buy":
             ask_price = None
         elif own.last_fill_side == "sell":
             bid_price = None
 
-    if entry_blocked(feat, settings, want_long=True):
+    if bid_blocked:
         bid_price = None
-    if entry_blocked(feat, settings, want_long=False):
+    if ask_blocked:
         ask_price = None
 
     size_pct = params.size_pct if params.size_pct is not None else float(settings.mm_quote_size_pct)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections import deque
+from collections import Counter, defaultdict, deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
@@ -46,6 +46,8 @@ class MarketMakingV2Strategy(StrategyBase):
         self._state: dict[str, _SymbolState] = {}
         self._equity_provider: EquityProvider | None = None
         self._own_provider: OwnBookProvider | None = None
+        self._gate_counts: dict[str, Counter[str]] = defaultdict(Counter)
+        self._last_gate_log_ts: float = 0.0
 
     def refresh_settings(self, settings: Settings) -> None:
         self._settings = settings
@@ -100,38 +102,30 @@ class MarketMakingV2Strategy(StrategyBase):
                 continue
             if not self._spread_ok(feat):
                 intents.append(
-                    QuoteIntent(
-                        symbol=symbol,
-                        bid_price=None,
-                        ask_price=None,
-                        bid_qty=0.0,
-                        ask_qty=0.0,
-                        reason="mm2_spread_gate",
-                        strategy_name=self.name,
-                        venue_mid=float(feat.mid or 0.0),
-                    )
+                    self._suppressed_intent(symbol, "mm2_spread_gate", feat)
                 )
                 continue
             state = self._state_for(symbol)
-            now = time.time()
             self._record_skew(state, feat, now)
             skew_avg = self._skew_mean(state, now)
+            if skew_avg is None:
+                if self._settings.mm2_quote_during_warmup:
+                    skew_avg = 0.0
+                else:
+                    intents.append(
+                        self._suppressed_intent(symbol, "mm2_skew_warmup", feat)
+                    )
+                    continue
             min_skew = mm_float(
                 symbol,
                 self._settings,
                 "mm2_min_skew_bps",
                 cal_attr="min_skew_bps",
             )
-            if skew_avg is not None and abs(skew_avg) < min_skew:
+            if abs(skew_avg) < min_skew:
                 intents.append(
-                    QuoteIntent(
-                        symbol=symbol,
-                        bid_price=None,
-                        ask_price=None,
-                        bid_qty=0.0,
-                        ask_qty=0.0,
-                        reason="mm2_skew_gate",
-                        strategy_name=self.name,
+                    self._suppressed_intent(
+                        symbol, "mm2_skew_gate", feat, skew_avg=skew_avg
                     )
                 )
                 continue
@@ -146,14 +140,8 @@ class MarketMakingV2Strategy(StrategyBase):
                 and open_positions >= max_concurrent
             ):
                 intents.append(
-                    QuoteIntent(
-                        symbol=symbol,
-                        bid_price=None,
-                        ask_price=None,
-                        bid_qty=0.0,
-                        ask_qty=0.0,
-                        reason="mm2_max_concurrent",
-                        strategy_name=self.name,
+                    self._suppressed_intent(
+                        symbol, "mm2_max_concurrent", feat, skew_avg=skew_avg
                     )
                 )
                 continue
@@ -174,6 +162,12 @@ class MarketMakingV2Strategy(StrategyBase):
                     strategy_name=self.name,
                 )
                 if intent is not None:
+                    hold_sec = (
+                        now - own.ledger.opened_ts if own.ledger.opened_ts > 0 else 0.0
+                    )
+                    intent.exit_hold_sec = hold_sec
+                    self._stamp_obs(intent, feat, skew_avg=skew_avg)
+                    self._log_exit(symbol, exit_reason, hold_sec, intent.unrealized_pnl_bps)
                     intents.append(intent)
                     continue
             intent = mm_core.compute_quote_intent(
@@ -186,15 +180,19 @@ class MarketMakingV2Strategy(StrategyBase):
                 strategy_name=self.name,
                 fee_round_trip_bps=mm2_fee_round_trip_bps(symbol, self._settings),
             )
+            tape_p: float | None = None
             tape_thr = float(self._settings.mm2_tape_confirm)
             if tape_thr > 0:
                 tape_p = mm_core.tape_pressure(feat, s)
-                if not _tape_confirms(skew_avg or 0.0, tape_p, tape_thr):
+                if not _tape_confirms(skew_avg, tape_p, tape_thr):
                     intent.bid_price = None
                     intent.ask_price = None
                     intent.bid_qty = 0.0
                     intent.ask_qty = 0.0
                     intent.reason = f"{intent.reason} | mm2_tape_gate"
+                    self._bump_gate(symbol, "mm2_tape_gate")
+            if intent.reason.startswith("mm_entry_blocked"):
+                self._bump_gate(symbol, "mm_entry_blocked")
             direction = mm_core.micro_direction(feat, s, skew_avg)
             mm_core.apply_asymmetric_quotes(intent, direction=direction, position_qty=pos_qty)
             if mm_core.symbol_quoting_halted(
@@ -208,13 +206,17 @@ class MarketMakingV2Strategy(StrategyBase):
                 intent.bid_qty = 0.0
                 intent.ask_qty = 0.0
                 intent.reason = f"{intent.reason} | mm2_side_halt"
+                self._bump_gate(symbol, "mm2_side_halt")
             if now < own.vol_regime_halt_until:
                 intent.bid_price = None
                 intent.ask_price = None
                 intent.bid_qty = 0.0
                 intent.ask_qty = 0.0
                 intent.reason = f"{intent.reason} | mm2_vol_regime"
+                self._bump_gate(symbol, "mm2_vol_regime")
+            self._stamp_obs(intent, feat, skew_avg=skew_avg, tape_p=tape_p)
             intents.append(intent)
+        self._maybe_log_gate_summary(now)
         return intents
 
     def _spread_ok(self, feat: Features) -> bool:
@@ -265,8 +267,95 @@ class MarketMakingV2Strategy(StrategyBase):
             self._state[symbol] = st
         return st
 
+    def _bump_gate(self, symbol: str, tag: str) -> None:
+        self._gate_counts[symbol][tag] += 1
+
+    def _maybe_log_gate_summary(self, now: float) -> None:
+        interval = float(self._settings.mm2_scan_log_interval_sec)
+        if not self._gate_counts:
+            return
+        if interval > 0 and self._last_gate_log_ts > 0 and now - self._last_gate_log_ts < interval:
+            return
+        self._last_gate_log_ts = now
+        for sym, counts in self._gate_counts.items():
+            if not counts:
+                continue
+            parts = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+            logger.info(
+                "MM2 gates %s last %.0fs: %s",
+                sym,
+                interval,
+                parts,
+            )
+        self._gate_counts.clear()
+
+    def _suppressed_intent(
+        self,
+        symbol: str,
+        gate_tag: str,
+        feat: Features,
+        *,
+        skew_avg: float | None = None,
+    ) -> QuoteIntent:
+        self._bump_gate(symbol, gate_tag)
+        intent = QuoteIntent(
+            symbol=symbol,
+            bid_price=None,
+            ask_price=None,
+            bid_qty=0.0,
+            ask_qty=0.0,
+            reason=gate_tag,
+            strategy_name=self.name,
+            venue_mid=float(feat.mid or 0.0),
+        )
+        self._stamp_obs(intent, feat, skew_avg=skew_avg)
+        return intent
+
+    @staticmethod
+    def _stamp_obs(
+        intent: QuoteIntent,
+        feat: Features,
+        *,
+        skew_avg: float | None = None,
+        tape_p: float | None = None,
+    ) -> None:
+        if feat.spread_bps is not None:
+            intent.spread_bps = float(feat.spread_bps)
+        if skew_avg is not None:
+            intent.skew_avg_bps = skew_avg
+        if tape_p is not None:
+            intent.tape_pressure = tape_p
+
+    @staticmethod
+    def _log_exit(
+        symbol: str,
+        exit_reason: str,
+        hold_sec: float,
+        pnl_bps: float,
+    ) -> None:
+        if exit_reason.startswith("mm_market_exit"):
+            exit_type = "market"
+        elif exit_reason.startswith("mm_profit_exit"):
+            exit_type = "profit"
+        elif exit_reason.startswith("mm_aggressive_exit"):
+            exit_type = "aggressive"
+        elif exit_reason.startswith("mm_inventory_exit"):
+            exit_type = "inventory"
+        else:
+            exit_type = "other"
+        logger.info(
+            "MM2 exit %s type=%s hold_sec=%.1f pnl_bps=%.2f %s",
+            symbol,
+            exit_type,
+            hold_sec,
+            pnl_bps,
+            exit_reason,
+        )
+
 
 _MM2_FIELD_MAP = {
+    "mm_min_skew_bps": "mm2_min_skew_bps",
+    "mm_tape_confirm": "mm2_tape_confirm",
     "mm_skew_scale": "mm2_skew_scale",
     "mm_imbalance_scale": "mm2_imbalance_scale",
     "mm_tape_scale": "mm2_tape_scale",

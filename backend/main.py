@@ -41,7 +41,6 @@ from engine.core.engine import ALL_STRATEGIES_MODE, Engine
 from engine.persistence.market_capture import create_capturer
 from engine.persistence.run_bootstrap import bootstrap_run, shutdown_bootstrap
 from engine.strategies.blended_signals import BlendedSignalsStrategy
-from engine.strategies.market_making import MarketMakingStrategy
 from engine.strategies.market_making_v2 import MarketMakingV2Strategy
 from engine.strategies.pairs_trading import PairsTradingStrategy
 from engine.strategies.sma_crossover import SmaCrossoverStrategy
@@ -113,7 +112,6 @@ async def _run() -> None:
         PairsTradingStrategy(settings),
         SmaCrossoverStrategy(settings),
         BlendedSignalsStrategy(settings),
-        MarketMakingStrategy(settings),
         MarketMakingV2Strategy(settings),
     ]
     known_names = {s.name for s in strategies} | {ALL_STRATEGIES_MODE}
@@ -163,6 +161,15 @@ async def _run() -> None:
 
         return provider
 
+    mm2_strat = next((s for s in strategies if isinstance(s, MarketMakingV2Strategy)), None)
+
+    def _mm2_symbols_for_blend() -> frozenset[str]:
+        if not engine.is_multi_strategy_mode():  # noqa: SLF001
+            return frozenset()
+        if mm2_strat is None:
+            return frozenset()
+        return frozenset(mm2_strat.symbols())
+
     for strat in strategies:
         if isinstance(strat, PairsTradingStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
@@ -170,7 +177,9 @@ async def _run() -> None:
         if isinstance(strat, (SmaCrossoverStrategy, BlendedSignalsStrategy)):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_position_provider(_position_qty_for(strat.name))
-        if isinstance(strat, (MarketMakingStrategy, MarketMakingV2Strategy)):
+        if isinstance(strat, BlendedSignalsStrategy):
+            strat.attach_mm2_active_symbols_provider(_mm2_symbols_for_blend)
+        if isinstance(strat, MarketMakingV2Strategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_position_provider(_position_qty_for(strat.name))
 

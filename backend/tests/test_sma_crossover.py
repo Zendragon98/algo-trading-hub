@@ -71,7 +71,7 @@ def test_sma_bar_interval_samples_once_per_bar(monkeypatch) -> None:
         binance_api_key="x",
         binance_api_secret="y",
         strategy="sma",
-        sma_symbol="BTCUSDT",
+        sma_symbols=["BTCUSDT"],
         sma_bar_interval_sec=100.0,
         sma_fast_window=2,
         sma_slow_window=3,
@@ -124,7 +124,7 @@ def test_sma_scan_heartbeat_logs_periodically(monkeypatch, caplog) -> None:
     settings = Settings(
         binance_api_key="x",
         binance_api_secret="y",
-        sma_symbol="BTCUSDT",
+        sma_symbols=["BTCUSDT"],
         sma_fast_window=2,
         sma_slow_window=3,
         sma_qty=1.0,
@@ -205,7 +205,7 @@ def test_sma_closes_long_before_short_entry() -> None:
     settings = Settings(
         binance_api_key="x",
         binance_api_secret="y",
-        sma_symbol="BTCUSDT",
+        sma_symbols=["BTCUSDT"],
         sma_fast_window=3,
         sma_slow_window=5,
         sma_qty=1.0,

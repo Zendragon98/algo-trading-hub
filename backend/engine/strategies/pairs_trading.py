@@ -8,15 +8,13 @@ every BTC, ETH, SOL ... pair quoted in *both* stables gives us an
     =>  USDT / USDC  =  BTCUSDC / BTCUSDT
     =>  log(USDT/USDC)  =  log(BTCUSDC) - log(BTCUSDT)
 
-We call this the per-coin "basis". Pooling the basis across every
-configured pair gives a reference rate that captures the actual
-USDT/USDC movement (the direction the user wants to track). Each
-individual coin's deviation from that consensus is the trade: when a
-coin's USDC leg trades unusually rich relative to peers, short USDC and
-long USDT — and vice versa.
+We call this the per-coin "basis". The reference is configurable
+(``pair_reference_mode``): BTC-anchored (default), volume-weighted mean,
+or independent per-coin basis. Deviation samples are bar-aggregated when
+``pair_bar_sec > 0`` so z-scores are not tick-noisy.
 
     basis_i      = log(coin_USDC) - log(coin_USDT)
-    reference    = SUM_i (w_i * basis_i) / SUM_i w_i
+    reference    = BTC basis (btc_anchor) | weighted mean | 0 (independent)
     deviation_i  = basis_i - reference
     z_i          = (deviation_i - rolling_mean) / rolling_std
 
@@ -59,6 +57,10 @@ from ..market_data.feature_store import Features
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger(__name__)
+
+_BTC_PAIR_KEY = "BTCUSDT|BTCUSDC"
+_ETH_PAIR_KEY = "ETHUSDT|ETHUSDC"
+_REFERENCE_LOG_INTERVAL_SEC = 10.0
 
 
 # Snapshot returned by the engine. We only need `.equity` so any object
@@ -104,6 +106,8 @@ class _DeviationStats:
         "open_side",
         "open_qty",
         "open_ts",
+        "open_usdt_mid",
+        "open_usdc_mid",
         "last_action_ts",
         "pending_side",
         "pending_qty",
@@ -113,6 +117,8 @@ class _DeviationStats:
         "pending_since_ts",
         "pending_is_close",
         "pending_filled_symbol",
+        "pending_entry_usdt_mid",
+        "pending_entry_usdc_mid",
         "min_samples",
     )
 
@@ -129,6 +135,8 @@ class _DeviationStats:
         # size and not a freshly-resized batch (which could leave dust).
         self.open_qty: float = 0.0
         self.open_ts: float = 0.0
+        self.open_usdt_mid: float = 0.0
+        self.open_usdc_mid: float = 0.0
         # Prevent churn: last time we emitted any order intent for this pair.
         self.last_action_ts: float = 0.0
 
@@ -142,6 +150,8 @@ class _DeviationStats:
         self.pending_since_ts: float = 0.0
         self.pending_is_close: bool = False
         self.pending_filled_symbol: str = ""
+        self.pending_entry_usdt_mid: float = 0.0
+        self.pending_entry_usdc_mid: float = 0.0
         self.min_samples = max(1, int(min_samples))
 
     def push(self, ts: float, value: float) -> None:
@@ -199,13 +209,17 @@ class PairsTradingStrategy(StrategyBase):
             for usdt, usdc in settings.pair_legs()
         ]
         min_samples = int(settings.pair_min_z_samples)
+        window_sec = self._effective_z_window_sec(settings)
         self._stats: dict[str, _DeviationStats] = {
-            self._key(p): _DeviationStats(window_sec=p.z_window_sec, min_samples=min_samples)
+            self._key(p): _DeviationStats(window_sec=window_sec, min_samples=min_samples)
             for p in self._pairs
         }
         # Reference series so we can log how far the cross-coin consensus
         # has drifted; useful when calibrating thresholds offline.
         self._reference_history: deque[float] = deque(maxlen=600)
+        self._bar_bucket: int | None = None
+        self._last_reference_log_ts: float = 0.0
+        self._bar_interval_sec = max(0, int(settings.pair_bar_sec or 0))
 
         self._load_calibration(settings)
 
@@ -213,12 +227,23 @@ class PairsTradingStrategy(StrategyBase):
             logger.warning(
                 "PairsTradingStrategy enabled but no USDT/USDC pairs found in SYMBOLS"
             )
-        elif len(self._pairs) < 2:
+        elif (
+            len(self._pairs) < 2
+            and (settings.pair_reference_mode or "").strip().lower() == "weighted"
+        ):
             logger.warning(
-                "Pairs trading needs >=2 matched USDT/USDC bases for a consensus "
-                "(got %d). Set SYMBOLS=AUTO or add more pairs.",
+                "Pairs trading needs >=2 matched USDT/USDC bases for a weighted "
+                "consensus (got %d). Set SYMBOLS=AUTO or add more pairs.",
                 len(self._pairs),
             )
+
+    @staticmethod
+    def _effective_z_window_sec(settings: Settings) -> int:
+        bar_sec = max(0, int(settings.pair_bar_sec or 0))
+        window = int(settings.pair_z_window_sec)
+        if bar_sec > 0:
+            return window * bar_sec
+        return window
 
     def refresh_settings(self, settings: Settings) -> None:
         self._settings = settings
@@ -233,15 +258,17 @@ class PairsTradingStrategy(StrategyBase):
             )
             for usdt, usdc in settings.pair_legs()
         ]
+        window_sec = self._effective_z_window_sec(settings)
+        self._bar_interval_sec = max(0, int(settings.pair_bar_sec or 0))
         new_stats: dict[str, _DeviationStats] = {}
         for p in self._pairs:
             key = self._key(p)
             prev = self._stats.get(key)
-            if prev is not None and prev.window_sec == p.z_window_sec:
+            if prev is not None and prev.window_sec == window_sec:
                 new_stats[key] = prev
             else:
                 new_stats[key] = _DeviationStats(
-                    window_sec=p.z_window_sec,
+                    window_sec=window_sec,
                     min_samples=int(settings.pair_min_z_samples),
                 )
         self._stats = new_stats
@@ -385,21 +412,19 @@ class PairsTradingStrategy(StrategyBase):
             bases[self._key(pair)] = _basis(usdc.mid, usdt.mid)
             mids_by_pair[self._key(pair)] = (usdt.mid, usdc.mid)
 
-        if len(bases) < 2:
-            # Need at least two coins to form a meaningful consensus.
-            # With one coin the deviation collapses to zero by definition.
+        min_bases = self._min_bases_required()
+        if len(bases) < min_bases:
             return []
 
-        # 2. Reference = volume-weighted mean across observed coins. We
-        #    use 24h notional volume on the venue as a market-cap proxy
-        #    so liquid coins (BTC, ETH) anchor the consensus and a
-        #    micro-cap basis blowing up doesn't drag the reference. The
-        #    weight cache is refreshed by the engine on its own cadence;
-        #    when empty we fall back to equal weights so cold-start
-        #    behaviour matches the unweighted strategy.
+        # 2. Reference basis (mode-dependent; see ``pair_reference_mode``).
         weights_by_symbol = self._fetch_weights()
         reference = self._compute_reference(bases, weights_by_symbol)
         self._reference_history.append(reference)
+        self._maybe_log_reference(now, reference, bases, weights_by_symbol)
+
+        push_sample = self._advance_bar(now)
+        ref_mode = (self._settings.pair_reference_mode or "btc_anchor").strip().lower()
+        use_reference = ref_mode != "independent"
 
         # 3. Per-pair deviation z-score and signal generation.
         signals: list[Signal] = []
@@ -408,21 +433,61 @@ class PairsTradingStrategy(StrategyBase):
             basis = bases.get(key)
             if basis is None:
                 continue
-            deviation = basis - reference
+            deviation = basis if not use_reference else basis - reference
             stats = self._stats[key]
-            stats.push(now, deviation)
+            if push_sample:
+                stats.push(now, deviation)
             z = stats.zscore(deviation)
             if z is None:
+                if push_sample:
+                    logger.debug(
+                        "[pairs] WARMUP %s samples=%d/%d reference_mode=%s",
+                        pair.usdt_symbol.removesuffix("USDT"),
+                        len(stats.samples),
+                        stats.min_samples,
+                        ref_mode,
+                    )
                 continue
 
             usdt_mid, usdc_mid = mids_by_pair[key]
             signals.extend(
                 self._check_partial_pending(pair, stats, now),
             )
-            signals.extend(
-                self._evaluate(pair, stats, z, basis, reference, usdt_mid, usdc_mid)
+            if stats.open_side != 0 and stats.pending_fills_remaining == 0:
+                signals.extend(
+                    self._check_leg_loss_cap(pair, stats, usdt_mid, usdc_mid, z),
+                )
+            # Flat entries only on bar close when bar aggregation is enabled.
+            should_evaluate = (
+                stats.open_side != 0
+                or push_sample
+                or self._bar_interval_sec <= 0
             )
+            if should_evaluate:
+                signals.extend(
+                    self._evaluate(pair, stats, z, basis, reference, usdt_mid, usdc_mid)
+                )
         return self._cap_new_entries(signals)
+
+    def _min_bases_required(self) -> int:
+        mode = (self._settings.pair_reference_mode or "btc_anchor").strip().lower()
+        if mode in ("independent", "btc_anchor"):
+            return 1
+        return 2
+
+    def _advance_bar(self, now: float) -> bool:
+        """Return True when a new bar closed and deviation samples should be pushed."""
+        interval = self._bar_interval_sec
+        if interval <= 0:
+            return True
+        bucket = int(now // interval)
+        if self._bar_bucket is None:
+            self._bar_bucket = bucket
+            return False
+        if bucket == self._bar_bucket:
+            return False
+        self._bar_bucket = bucket
+        return True
 
     def _cap_new_entries(self, signals: list[Signal]) -> list[Signal]:
         """Limit simultaneous new pair opens (by group_id) so flatten stays bounded."""
@@ -467,13 +532,17 @@ class PairsTradingStrategy(StrategyBase):
         bases: dict[str, float],
         weights_by_symbol: dict[str, float],
     ) -> float:
-        """Return the volume-weighted mean basis across observed pairs.
-
-        Per-pair weight is the sum of the USDT + USDC leg volumes —
-        rewarding pairs whose *total* venue activity is highest. Missing
-        symbols default to a small positive weight so a not-yet-cached
-        pair still contributes (just less than the liquid majors).
-        """
+        """Return the reference basis for deviation (mode from settings)."""
+        mode = (self._settings.pair_reference_mode or "btc_anchor").strip().lower()
+        if mode == "independent":
+            return 0.0
+        if mode == "btc_anchor":
+            if _BTC_PAIR_KEY in bases:
+                return bases[_BTC_PAIR_KEY]
+            if _ETH_PAIR_KEY in bases:
+                return bases[_ETH_PAIR_KEY]
+            return sum(bases.values()) / max(1, len(bases))
+        # ``weighted`` — volume-weighted mean across observed pairs.
         total_weight = 0.0
         weighted_sum = 0.0
         for pair in self._pairs:
@@ -483,17 +552,39 @@ class PairsTradingStrategy(StrategyBase):
                 continue
             usdt_vol = weights_by_symbol.get(pair.usdt_symbol, 0.0)
             usdc_vol = weights_by_symbol.get(pair.usdc_symbol, 0.0)
-            # ``+ 1.0`` floor keeps every observed pair in the consensus
-            # even before the volume cache lands, while still letting a
-            # well-known liquid pair dominate by orders of magnitude.
             weight = max(0.0, float(usdt_vol)) + max(0.0, float(usdc_vol)) + 1.0
             total_weight += weight
             weighted_sum += weight * basis
         if total_weight <= 0:
-            # Defensive: should never trigger because the +1.0 floor
-            # guarantees positivity, but keeps the divide safe.
             return sum(bases.values()) / max(1, len(bases))
         return weighted_sum / total_weight
+
+    def _maybe_log_reference(
+        self,
+        now: float,
+        reference: float,
+        bases: dict[str, float],
+        weights_by_symbol: dict[str, float],
+    ) -> None:
+        if now - self._last_reference_log_ts < _REFERENCE_LOG_INTERVAL_SEC:
+            return
+        self._last_reference_log_ts = now
+        weight_bits: list[str] = []
+        for pair in self._pairs:
+            key = self._key(pair)
+            if key not in bases:
+                continue
+            base = pair.usdt_symbol.removesuffix("USDT")
+            usdt_vol = weights_by_symbol.get(pair.usdt_symbol, 0.0)
+            usdc_vol = weights_by_symbol.get(pair.usdc_symbol, 0.0)
+            weight_bits.append(f"{base}:{usdt_vol + usdc_vol:.0f}")
+        logger.info(
+            "[pairs] reference=%.6f n_coins=%d mode=%s weights={%s}",
+            reference,
+            len(bases),
+            (self._settings.pair_reference_mode or "btc_anchor"),
+            ", ".join(weight_bits) if weight_bits else "equal",
+        )
 
     def on_fill(self, symbol: str, qty: float, side: str) -> None:
         # Strategy fill hook is best-effort and must remain cheap.
@@ -523,10 +614,16 @@ class PairsTradingStrategy(StrategyBase):
                 stats.open_side = 0
                 stats.open_qty = 0.0
                 stats.open_ts = 0.0
+                stats.open_usdt_mid = 0.0
+                stats.open_usdc_mid = 0.0
             else:
                 stats.open_side = stats.pending_side
                 stats.open_qty = stats.pending_qty
                 stats.open_ts = now
+                if stats.pending_entry_usdt_mid > 0:
+                    stats.open_usdt_mid = stats.pending_entry_usdt_mid
+                if stats.pending_entry_usdc_mid > 0:
+                    stats.open_usdc_mid = stats.pending_entry_usdc_mid
 
             stats.pending_side = 0
             stats.pending_qty = 0.0
@@ -535,6 +632,8 @@ class PairsTradingStrategy(StrategyBase):
             stats.pending_since_ts = 0.0
             stats.pending_is_close = False
             stats.pending_filled_symbol = ""
+            stats.pending_entry_usdt_mid = 0.0
+            stats.pending_entry_usdc_mid = 0.0
 
     # --- Read-only ---
 
@@ -552,6 +651,8 @@ class PairsTradingStrategy(StrategyBase):
         stats.pending_since_ts = 0.0
         stats.pending_is_close = False
         stats.pending_filled_symbol = ""
+        stats.pending_entry_usdt_mid = 0.0
+        stats.pending_entry_usdc_mid = 0.0
 
     def _check_partial_pending(
         self,
@@ -581,6 +682,7 @@ class PairsTradingStrategy(StrategyBase):
             reason="pairs_partial_abort",
         )
         self._clear_pending(stats)
+        stats.last_action_ts = now
         return [
             Signal(
                 symbol=filled,
@@ -602,6 +704,8 @@ class PairsTradingStrategy(StrategyBase):
         usdc_mid: float,
     ) -> Iterable[Signal]:
         now = time.time()
+        ref_mode = (self._settings.pair_reference_mode or "btc_anchor").strip().lower()
+        use_reference = ref_mode != "independent"
 
         # Pending order state: wait for fills (or time out) before emitting more.
         if stats.pending_fills_remaining > 0:
@@ -609,11 +713,26 @@ class PairsTradingStrategy(StrategyBase):
                 # Defensive: if we never got fills (disconnect/reject), allow the
                 # strategy to recover and try again later.
                 self._clear_pending(stats)
+                stats.last_action_ts = now
             else:
                 return []
 
         if now - stats.last_action_ts < float(self._settings.pair_cooldown_sec):
             return []
+
+        max_hold = float(getattr(self._settings, "pair_max_hold_sec", 0) or 0)
+        if (
+            max_hold > 0
+            and stats.open_side != 0
+            and stats.open_ts > 0
+            and now - stats.open_ts > max_hold
+        ):
+            return self._emit_unwind(
+                pair, stats, z, basis, reference, usdt_mid, usdc_mid, now,
+                reason_tag="pairs_time",
+                held_sec=now - stats.open_ts,
+                exit_reason="time",
+            )
 
         score = min(abs(z) / 4.0, 1.0)
         urgent_floor = float(self._settings.pair_urgent_score)
@@ -638,6 +757,14 @@ class PairsTradingStrategy(StrategyBase):
             if qty <= 0:
                 return []
 
+            scale = min(
+                max(1.0, float(self._settings.pair_size_scale_cap)),
+                max(1.0, abs(z) / pair.entry_z),
+            ) if pair.entry_z > 0 else 1.0
+            notional = qty * max(usdt_mid, usdc_mid)
+            dev = basis if not use_reference else basis - reference
+            stats.open_usdt_mid = usdt_mid
+            stats.open_usdc_mid = usdc_mid
             if z >= pair.entry_z:
                 stats.pending_side = +1
                 stats.pending_qty = qty
@@ -648,10 +775,13 @@ class PairsTradingStrategy(StrategyBase):
                 stats.pending_is_close = False
                 stats.pending_filled_symbol = ""
                 stats.last_action_ts = now
+                coin = pair.usdt_symbol.removesuffix("USDT")
                 signal_log_emit(
                     logger,
-                    f"PAIRS entry +z={z:.2f} short {pair.usdc_symbol}, "
-                    f"long {pair.usdt_symbol} qty={qty:.8f}",
+                    f"PAIRS ENTRY {coin} +z={z:.2f} basis={basis:.6f} ref={reference:.6f} "
+                    f"deviation={dev:.6f} open_mid_usdt={usdt_mid} "
+                    f"open_mid_usdc={usdc_mid} qty={qty:.6f} notional_usd={notional:.2f} "
+                    f"scale={scale:.2f}",
                     reason=reason_open,
                 )
                 return [
@@ -670,10 +800,13 @@ class PairsTradingStrategy(StrategyBase):
             stats.pending_is_close = False
             stats.pending_filled_symbol = ""
             stats.last_action_ts = now
+            coin = pair.usdt_symbol.removesuffix("USDT")
             signal_log_emit(
                 logger,
-                f"PAIRS entry -z={z:.2f} short {pair.usdt_symbol}, "
-                f"long {pair.usdc_symbol} qty={qty:.8f}",
+                f"PAIRS ENTRY {coin} -z={z:.2f} basis={basis:.6f} ref={reference:.6f} "
+                f"deviation={dev:.6f} open_mid_usdt={usdt_mid} "
+                f"open_mid_usdc={usdc_mid} qty={qty:.6f} notional_usd={notional:.2f} "
+                f"scale={scale:.2f}",
                 reason=reason_open,
             )
             return [
@@ -704,11 +837,39 @@ class PairsTradingStrategy(StrategyBase):
             if now - stats.open_ts < float(self._settings.pair_min_hold_sec):
                 return []
 
-        unwind_reason = "pairs_stop" if diverged else "pairs_close"
-        reason_text = f"{unwind_reason} z={z:.2f}"
+        exit_reason = "stop" if diverged else "close"
+        held = now - stats.open_ts if stats.open_ts > 0 else 0.0
+        return self._emit_unwind(
+            pair, stats, z, basis, reference, usdt_mid, usdc_mid, now,
+            reason_tag="pairs_stop" if diverged else "pairs_close",
+            held_sec=held,
+            exit_reason=exit_reason,
+            extend_stop_cooldown=diverged,
+        )
+
+    def _emit_unwind(
+        self,
+        pair: PairConfig,
+        stats: _DeviationStats,
+        z: float,
+        basis: float,
+        reference: float,
+        usdt_mid: float,
+        usdc_mid: float,
+        now: float,
+        *,
+        reason_tag: str,
+        held_sec: float = 0.0,
+        exit_reason: str = "close",
+        extend_stop_cooldown: bool = False,
+    ) -> list[Signal]:
+        if stats.pending_fills_remaining > 0:
+            return []
+        gid = self._key(pair)
+        reason_text = f"{reason_tag} z={z:.2f}"
+        pnl_bps = self._estimate_pnl_bps(stats, usdt_mid, usdc_mid)
         qty = stats.open_qty if stats.open_qty > 0 else self._FALLBACK_QTY
         if stats.open_side == +1:
-            # We were short USDC + long USDT. Reverse to flatten.
             unwind_usdc, unwind_usdt = Side.BUY, Side.SELL
         else:
             unwind_usdc, unwind_usdt = Side.SELL, Side.BUY
@@ -719,11 +880,26 @@ class PairsTradingStrategy(StrategyBase):
         stats.pending_fills_remaining = 2
         stats.pending_since_ts = now
         stats.pending_is_close = True
-        stats.last_action_ts = now
+        if extend_stop_cooldown:
+            stop_cd = float(self._settings.pair_stop_cooldown_sec)
+            normal_cd = float(self._settings.pair_cooldown_sec)
+            stats.last_action_ts = now + max(0.0, stop_cd - normal_cd)
+        else:
+            stats.last_action_ts = now
+        coin = pair.usdt_symbol.removesuffix("USDT")
+        if reason_tag == "pairs_time":
+            logger.warning(
+                "PAIRS time-stop %s held %.0fs > max %.0fs z=%.2f",
+                coin,
+                held_sec,
+                float(self._settings.pair_max_hold_sec),
+                z,
+            )
         signal_log_emit(
             logger,
-            f"PAIRS {unwind_reason} z={z:.2f} -> close "
-            f"{pair.usdt_symbol}/{pair.usdc_symbol} qty={qty:.8f}",
+            f"PAIRS EXIT {coin} reason={exit_reason} z={z:.2f} held={held_sec:.0f}s "
+            f"pnl_bps={pnl_bps:.1f} fill_usdt={pair.usdt_symbol} fill_usdc={pair.usdc_symbol} "
+            f"qty={qty:.8f} basis={basis:.6f} ref={reference:.6f}",
             reason=reason_text,
         )
         return [
@@ -744,6 +920,52 @@ class PairsTradingStrategy(StrategyBase):
                 reduce_only=True,
             ),
         ]
+
+    def _check_leg_loss_cap(
+        self,
+        pair: PairConfig,
+        stats: _DeviationStats,
+        usdt_mid: float,
+        usdc_mid: float,
+        z: float,
+    ) -> list[Signal]:
+        """Force-unwind when either leg's absolute PnL exceeds the USD cap."""
+        if stats.pending_fills_remaining > 0:
+            return []
+        max_loss = float(getattr(self._settings, "pair_max_leg_loss_usd", 0) or 0)
+        if max_loss <= 0 or stats.open_qty <= 0:
+            return []
+        if stats.open_usdt_mid <= 0 or stats.open_usdc_mid <= 0:
+            return []
+        qty = stats.open_qty
+        if stats.open_side == +1:
+            usdt_pnl = (usdt_mid - stats.open_usdt_mid) * qty
+            usdc_pnl = (stats.open_usdc_mid - usdc_mid) * qty
+        else:
+            usdt_pnl = (stats.open_usdt_mid - usdt_mid) * qty
+            usdc_pnl = (usdc_mid - stats.open_usdc_mid) * qty
+        if abs(usdt_pnl) <= max_loss and abs(usdc_pnl) <= max_loss:
+            return []
+        logger.warning(
+            "PAIRS leg-loss cap %s usdt_pnl=%.2f usdc_pnl=%.2f max=%.2f",
+            pair.usdt_symbol.removesuffix("USDT"),
+            usdt_pnl,
+            usdc_pnl,
+            max_loss,
+        )
+        return self._emit_unwind(
+            pair,
+            stats,
+            z,
+            _basis(usdc_mid, usdt_mid),
+            0.0,
+            usdt_mid,
+            usdc_mid,
+            time.time(),
+            reason_tag="pairs_leg_loss",
+            held_sec=time.time() - stats.open_ts if stats.open_ts > 0 else 0.0,
+            exit_reason="leg_loss",
+        )
 
     def _size_pair(
         self,
@@ -804,7 +1026,36 @@ class PairsTradingStrategy(StrategyBase):
         else:
             scale = 1.0
 
-        return (target_notional / ref_mid) * scale
+        qty = (target_notional / ref_mid) * scale
+        max_leg_notional = float(
+            getattr(self._settings, "pair_max_leg_notional", 0) or 0,
+        )
+        if max_leg_notional > 0:
+            qty = min(qty, max_leg_notional / ref_mid)
+        return qty
+
+    @staticmethod
+    def _estimate_pnl_bps(
+        stats: _DeviationStats,
+        usdt_mid: float,
+        usdc_mid: float,
+    ) -> float:
+        """Approximate combined leg PnL in basis points of entry notional."""
+        if stats.open_qty <= 0 or stats.open_usdt_mid <= 0 or stats.open_usdc_mid <= 0:
+            return 0.0
+        qty = stats.open_qty
+        if stats.open_side == +1:
+            usdt_pnl = (usdt_mid - stats.open_usdt_mid) * qty
+            usdc_pnl = (stats.open_usdc_mid - usdc_mid) * qty
+        elif stats.open_side == -1:
+            usdt_pnl = (stats.open_usdt_mid - usdt_mid) * qty
+            usdc_pnl = (usdc_mid - stats.open_usdc_mid) * qty
+        else:
+            return 0.0
+        notional = qty * (stats.open_usdt_mid + stats.open_usdc_mid) / 2.0
+        if notional <= 0:
+            return 0.0
+        return (usdt_pnl + usdc_pnl) / notional * 10_000.0
 
     @staticmethod
     def _key(pair: PairConfig) -> str:
