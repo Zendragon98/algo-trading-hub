@@ -179,6 +179,8 @@ class Settings(BaseSettings):
     reconcile_heal_on_mismatch: bool = True
     flatten_on_stop: bool = True            # market-out residuals on engine.stop()
     flatten_timeout_sec: float = 30.0
+    flatten_poll_sec: float = 2.0         # venue-flat poll interval during operator flatten
+    flatten_rounds: int = 2               # close attempts inside flatten() before wait-loop retries
     # Flatten execution: market for tiny/wide/retry; passive VWAP for large+tight;
     # aggressive VWAP (short schedule + market fallback) otherwise.
     flatten_market_max_notional_usd: float = 250.0
@@ -224,6 +226,8 @@ class Settings(BaseSettings):
     alert_webhook_url: str = ""
     alert_cooldown_sec: float = 60.0
     post_only_enabled: bool = False
+    # Peg MM entry quotes at venue best bid / best ask (passive touch).
+    mm_quote_at_touch: bool = False
     per_symbol_submit_rate: float = 0.0  # 0 = global only; else max submits/sec per symbol
     md_stale_resnapshot_sec: float = 30.0
     md_crossed_book_breaker: bool = True
@@ -420,6 +424,20 @@ class Settings(BaseSettings):
     mm_auto_vol_regime_mult: float = 1.25
     mm_auto_min_edge_bps: float = 0.0  # 0 = 2× maker fee + spread buffer
     mm_auto_scan_ttl_sec: float = 3600.0
+    # Tiered AUTO universe: always include maincaps, fill remainder from midcap scan.
+    mm_auto_pin_symbols: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "BTCUSDT",
+            "ETHUSDT",
+            "BNBUSDT",
+            "SOLUSDT",
+            "XRPUSDT",
+        ],
+    )
+    mm_auto_pin_min_quote_volume: float = 30_000_000.0
+    mm_auto_midcap_min_quote_volume: float = 8_000_000.0
+    mm_auto_pin_min_edge_bps: float = 2.0
+    mm_auto_pin_min_spread_bps: float = 0.4
     # Set at boot when MM_SYMBOLS/MM2_SYMBOLS were AUTO; enables live universe refresh.
     mm_universe_auto: bool = False
     mm2_universe_auto: bool = False
@@ -451,11 +469,16 @@ class Settings(BaseSettings):
     mm2_min_skew_bps: float = 1.0
     mm2_tape_confirm: float = 0.08  # require tape + imbalance to align before quoting a side
     mm2_taker_fee_bps: float = 4.5
+    # Per-leg maker fee (bps); negative = rebate received per fill.
     mm2_maker_fee_bps: float = 2.0
     mm2_fee_round_trip_bps: float = 0.0
+    # When True, spread gates do not require spread to cover fees (maker earns rebate).
+    mm2_assume_maker_rebate: bool = False
     mm2_spread_buffer_bps: float = 2.0
     mm2_min_spread_bps: float = 0.0
     mm2_min_edge_bps: float = 0.0
+    # standard = calibrated min spread; fee_floor = fees+buffer only; off = any positive spread
+    mm2_spread_gate_mode: str = "standard"
     mm2_min_exit_profit_bps: float = 4.0
     mm2_max_hold_sec: float = 60.0
     mm2_market_exit_loss_bps: float = 12.0
@@ -666,6 +689,7 @@ class Settings(BaseSettings):
         "blend_symbols",
         "mm_symbols",
         "mm2_symbols",
+        "mm_auto_pin_symbols",
         "mm_universe_regime_symbols",
         "cors_origins",
         mode="before",

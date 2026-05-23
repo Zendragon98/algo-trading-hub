@@ -346,6 +346,14 @@ class BinanceRestClient:
     async def cancel_order(self, **params: Any) -> dict[str, Any]:
         return await self._delete(f"{_FAPI}/order", params=params, signed=True)
 
+    async def cancel_all_open_orders(self, symbol: str) -> dict[str, Any]:
+        """Cancel every open order for ``symbol`` (one REST call per symbol)."""
+        return await self._delete(
+            f"{_FAPI}/allOpenOrders",
+            params={"symbol": symbol.upper()},
+            signed=True,
+        )
+
     async def open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
         params: dict[str, Any] = {}
         if symbol is not None:

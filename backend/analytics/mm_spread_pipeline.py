@@ -13,7 +13,11 @@ import logging
 from common.config import get_settings
 
 from .l2_loader import sample_l2
-from .symbol_calibrator import build_symbol_calibration, write_symbol_calibration
+from .symbol_calibrator import (
+    build_symbol_calibration_from_l2,
+    enrich_symbol_calibration_tape,
+    write_symbol_calibration,
+)
 
 
 async def run_pipeline(
@@ -25,7 +29,9 @@ async def run_pipeline(
 ) -> None:
     settings = get_settings()
     await sample_l2(symbols, minutes=minutes, interval_sec=interval_sec, settings=settings)
-    payloads = build_symbol_calibration(symbols, settings=settings, enrich_tape=enrich_tape)
+    payloads = build_symbol_calibration_from_l2(symbols, settings=settings)
+    if enrich_tape and payloads:
+        await enrich_symbol_calibration_tape(payloads, settings)
     path = write_symbol_calibration(payloads)
     logging.getLogger(__name__).info("pipeline done -> %s", path)
 
@@ -41,9 +47,27 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     settings = get_settings()
     if args.from_mm_symbols or (len(args.symbols) == 1 and args.symbols[0].upper() == "AUTO"):
-        syms = [s.strip().upper() for s in (settings.mm_symbols or []) if s.strip()]
+        from common.universe_bootstrap import is_auto_symbol_list
+
+        if settings.strategy == "market_making_v2":
+            raw = settings.mm2_symbols
+        else:
+            raw = settings.mm_symbols
+        if is_auto_symbol_list(raw):
+            from analytics.mm_universe_scanner import load_mm_universe_report
+
+            report = load_mm_universe_report()
+            syms = list(report.recommended) if report and report.recommended else []
+            if not syms:
+                from analytics.mm_universe_scanner import resolve_mm_universe
+
+                syms = asyncio.run(resolve_mm_universe(settings, force_rescan=True))
+        else:
+            syms = [s.strip().upper() for s in raw if s.strip()]
     else:
         syms = [s.strip().upper() for s in args.symbols if s.strip()]
+    if not syms:
+        raise SystemExit("no symbols to calibrate — run mm_universe_scanner or set MM2_SYMBOLS")
     asyncio.run(
         run_pipeline(
             syms,

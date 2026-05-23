@@ -200,7 +200,21 @@ class BinanceGateway(GatewayInterface):
         return _parse_open_order(row)
 
     async def cancel_all_open_orders(self) -> None:
-        await super().cancel_all_open_orders()
+        """One ``DELETE /allOpenOrders`` per symbol instead of per child order."""
+        orders = await self.fetch_open_orders()
+        if not orders:
+            return
+        for sym in sorted({o.symbol.upper() for o in orders}):
+            try:
+                await self._rest.cancel_all_open_orders(sym)
+            except BinanceRestError as exc:
+                logger.warning(
+                    "cancel_all_open_orders failed for %s: %s",
+                    sym,
+                    exc,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("cancel_all_open_orders failed for %s", sym)
 
     async def set_leverage(self, symbol: str, leverage: int) -> None:
         sym_u = symbol.upper()

@@ -182,7 +182,7 @@ function Index() {
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
-  const [controlPending, setControlPending] = useState<"start" | null>(null);
+  const [controlPending, setControlPending] = useState<"start" | "flatten" | null>(null);
 
   useEffect(() => {
     if (riskHydrated.current || maxRiskPct <= 0) return;
@@ -358,7 +358,15 @@ function Index() {
       await api.tripBreakers();
       await live.refresh();
     });
-  const onFlatten = () => handleControl(api.flatten);
+  const onFlatten = () => {
+    if (controlPending === "flatten") return;
+    setControlPending("flatten");
+    handleControl(() =>
+      api.flatten().finally(() => {
+        setControlPending(null);
+      }),
+    );
+  };
 
   // Push the slider's percentage (0-100) to the engine as a fraction.
   const onRiskCommit = (value: number[]) => {
@@ -595,10 +603,12 @@ function Index() {
 
               <Button
                 onClick={onFlatten}
+                disabled={!backendReachable || controlPending === "flatten"}
                 variant="outline"
                 className="w-full border-bear/40 text-bear hover:bg-bear/10 hover:text-bear"
               >
-                <AlertTriangle className="size-4" /> Flatten all positions
+                <AlertTriangle className="size-4" />
+                {controlPending === "flatten" ? "Flattening…" : "Flatten all positions"}
               </Button>
 
               <Button

@@ -15,7 +15,7 @@ from ..market_data.feature_store import Features
 from ..market_data.own_quote_book import OwnBookState
 from . import mm_core
 from .market_making import MarketMakingStrategy
-from .mm_calibrated import mm2_fee_round_trip_bps, mm_float
+from .mm_calibrated import mm2_fee_edge_floor_bps, mm2_fee_round_trip_bps, mm_float
 from .mm_symbol_params import required_min_spread_bps
 from .strategy_base import StrategyBase
 
@@ -221,8 +221,17 @@ class MarketMakingV2Strategy(StrategyBase):
 
     def _spread_ok(self, feat: Features) -> bool:
         spread = feat.spread_bps
-        if spread is None:
+        if spread is None or spread <= 0:
             return False
+        mode = (self._settings.mm2_spread_gate_mode or "standard").strip().lower()
+        if mode == "off":
+            return True
+        if mode == "fee_floor":
+            required = mm2_fee_edge_floor_bps(feat.symbol, self._settings)
+            explicit = float(self._settings.mm2_min_spread_bps)
+            if explicit > 0:
+                required = max(required, explicit)
+            return spread >= required
         required = required_min_spread_bps(
             feat.symbol,
             self._settings,

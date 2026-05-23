@@ -37,9 +37,13 @@ def mm_float(
 
 
 def mm2_fee_round_trip_bps(symbol: str, settings: Settings) -> float:
-    """Per-symbol fee RT from calibration fees section, else Settings."""
+    """Per-symbol fee RT from calibration fees section, else Settings.
+
+    Positive = cost to trade; negative = maker rebate (income) per round trip.
+    ``mm2_fee_round_trip_bps`` when non-zero overrides calibration and per-leg fees.
+    """
     explicit = float(settings.mm2_fee_round_trip_bps or 0.0)
-    if explicit > 0:
+    if explicit != 0.0:
         return explicit
     cal = get_symbol_calibration(symbol, settings)
     if cal is not None and cal.maker_fee_bps is not None and cal.taker_fee_bps is not None:
@@ -57,6 +61,13 @@ def mm2_fee_round_trip_bps(symbol: str, settings: Settings) -> float:
     return 2.0 * per_leg
 
 
+def mm2_spread_gate_fee_rt_bps(symbol: str, settings: Settings) -> float:
+    """Fee drag used only for spread / edge gates (0 when assuming maker rebate)."""
+    if bool(getattr(settings, "mm2_assume_maker_rebate", False)):
+        return 0.0
+    return mm2_fee_round_trip_bps(symbol, settings)
+
+
 def mm2_spread_buffer_bps(symbol: str, settings: Settings) -> float:
     return mm_float(
         symbol,
@@ -67,5 +78,7 @@ def mm2_spread_buffer_bps(symbol: str, settings: Settings) -> float:
 
 
 def mm2_fee_edge_floor_bps(symbol: str, settings: Settings) -> float:
-    """Round-trip fees + buffer; respects ``post_only_enabled`` and calibration."""
-    return mm2_fee_round_trip_bps(symbol, settings) + mm2_spread_buffer_bps(symbol, settings)
+    """Minimum spread (bps) from fee economics + buffer for spread gates."""
+    fee_rt = mm2_spread_gate_fee_rt_bps(symbol, settings)
+    buf = mm2_spread_buffer_bps(symbol, settings)
+    return max(0.0, fee_rt + buf)

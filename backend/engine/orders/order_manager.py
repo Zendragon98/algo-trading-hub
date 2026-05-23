@@ -21,6 +21,7 @@ from typing import Protocol
 from common.enums import EventType, OrderStatus
 from common.events import Event, EventBus
 from common.types import ChildOrder, Fill, ParentOrder
+from common.venue_errors import is_venue_throttle_error
 from engine.orders.order_state_machine import (
     TERMINAL_ORDER_STATUSES,
     WORKING_ORDER_STATUSES,
@@ -199,7 +200,7 @@ class OrderManager:
             if self._submit_guard is not None:
                 if code == -2022 and child.reduce_only:
                     self._submit_guard.clear_reject_streak(child.symbol)
-                else:
+                elif not is_venue_throttle_error(exc):
                     self._submit_guard.record_status(child.symbol, OrderStatus.REJECTED)
             await self._publish_order(child)
             raise
@@ -287,6 +288,24 @@ class OrderManager:
             *(self.cancel(c.id) for c in list(self._children.values())),
             return_exceptions=True,
         )
+
+    async def mark_working_cancelled(self) -> None:
+        """Mark working children cancelled without venue REST.
+
+        Used after a venue mass-cancel (``allOpenOrders``) so flatten/stop
+        does not re-issue one ``DELETE /order`` per local child.
+        """
+        updates: list[ChildOrder] = []
+        async with self._lock:
+            for child in list(self._children.values()):
+                if child.status not in WORKING_ORDER_STATUSES:
+                    continue
+                child.status = OrderStatus.CANCELLED
+                updates.append(child)
+        for child in updates:
+            if self._submit_guard is not None:
+                self._submit_guard.record_status(child.symbol, child.status)
+            await self._publish_order(child)
 
     # --- Read-only views ---
 

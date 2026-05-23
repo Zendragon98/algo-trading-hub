@@ -100,7 +100,6 @@ async def test_operator_halt_trips_breaker_and_flattens() -> None:
     assert engine.risk.kill_switch is True
     codes = {s.code for s in engine.risk.breaker.active()}
     assert "operator_halt" in codes
-    assert gateway.cancel_all_calls == 1
     engine.flatten.assert_awaited_once()  # type: ignore[attr-defined]
     assert engine._state.status.value == "paused"
 
@@ -168,5 +167,4 @@ async def test_trip_breakers_api() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert any(b["code"] == "operator_halt" for b in body["active"])
-    assert gateway.cancel_all_calls == 1
     engine.flatten.assert_awaited_once()  # type: ignore[attr-defined]

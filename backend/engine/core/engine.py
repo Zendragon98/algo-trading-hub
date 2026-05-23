@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from common.config import Settings, normalize_strategy_name
+from common.venue_errors import is_venue_throttle_error
 from common.enums import EngineStatus, EventType, OrderStatus, OrderType, Side, Urgency
 from common.events import Event, EventBus
 from common.logging import apply_log_level, group_signal_log, resolve_log_level, signal_log_emit
@@ -305,6 +306,7 @@ class Engine:
             cancel_orphans=settings.reconcile_cancel_orphans,
             on_mismatch=self._on_order_reconcile_mismatch,
             bus=bus,
+            skip_rest_poll=self._reconcile_should_skip_rest,
         )
         self._order_reconciler.apply_settings(settings)
 
@@ -370,6 +372,8 @@ class Engine:
         self._volume_weights: dict[str, float] = {}
         # Coalesces concurrent flatten() / _flatten_and_wait_for_flat() calls.
         self._flatten_task: asyncio.Task[None] | None = None
+        # True for the full operator flatten path (including venue poll loop).
+        self._flatten_op_active: bool = False
         # After a successful auto-flatten, MAJOR latched breaches persist until
         # re-arm; without this we'd re-run ``flatten()`` every heartbeat (spam
         # logs + venue churn). Cleared when ENGINE scope is no longer blocked.
@@ -392,6 +396,8 @@ class Engine:
         refresh :attr:`OrderManager.last_venue_truth_ts` for health/ready
         without suppressing this poll.
         """
+        if self._flatten_op_active or self._flatten_inflight():
+            return True
         if not self._settings.reconcile_skip_rest_when_user_data_fresh:
             return False
         ts = self._oms.last_ws_user_activity_ts
@@ -1015,6 +1021,30 @@ class Engine:
             return bool(fn(threshold_sec))
         return self.rest_backoff_remaining_sec() > threshold_sec
 
+    async def _sleep_through_rest_throttle(
+        self,
+        *,
+        reason: str,
+        chunk_cap_sec: float = 60.0,
+    ) -> float:
+        """Sleep in capped chunks while REST is globally throttled.
+
+        Returns total seconds slept so callers can extend flatten deadlines.
+        """
+        slept = 0.0
+        while self.rest_heavily_throttled():
+            remaining = self.rest_backoff_remaining_sec()
+            chunk = min(max(remaining, 0.5) + 0.5, chunk_cap_sec, 86_400.0)
+            logger.warning(
+                "%s: REST throttled ~%.0fs remaining (sleeping %.0fs)",
+                reason,
+                remaining,
+                chunk,
+            )
+            await asyncio.sleep(chunk)
+            slept += chunk
+        return slept
+
     def _flatten_inflight(self) -> bool:
         return self._flatten_task is not None and not self._flatten_task.done()
 
@@ -1102,11 +1132,7 @@ class Engine:
         await self._cancel_background_task("_gap_resync_task")
         await self._cancel_background_task("_capture_flush_task")
         await self._router.shutdown()
-        try:
-            await self._gateway.cancel_all_open_orders()
-        except Exception:  # noqa: BLE001
-            logger.exception("venue cancel_all_open_orders failed during stop")
-        await self._oms.cancel_all()
+        await self._mass_cancel_venue_orders()
         await self._gateway.disconnect()
         self._state.status = EngineStatus.STOPPED
         await self._publish_status()
@@ -1117,6 +1143,7 @@ class Engine:
         was_running = self._state.status is EngineStatus.RUNNING
         if was_running:
             await self.pause()
+        self._flatten_op_active = True
         try:
             local_open = [p for p in self._positions.all() if abs(p.qty) > 1e-12]
             if not local_open:
@@ -1137,13 +1164,20 @@ class Engine:
             base_timeout = float(getattr(self._settings, "flatten_timeout_sec", 30.0))
             loop = asyncio.get_event_loop()
             deadline = loop.time() + max(base_timeout, 15.0)
-            poll = 0.75
+            poll = max(1.0, float(getattr(self._settings, "flatten_poll_sec", 2.0)))
             while loop.time() < deadline:
-                if self.rest_heavily_throttled() and not [
-                    p for p in self._positions.all() if abs(p.qty) > 1e-12
-                ]:
-                    logger.info("flatten wait: locally flat during REST throttle; stopping poll")
-                    return
+                if self.rest_heavily_throttled():
+                    if not [
+                        p for p in self._positions.all() if abs(p.qty) > 1e-12
+                    ]:
+                        logger.info(
+                            "flatten wait: locally flat during REST throttle; stopping poll",
+                        )
+                        return
+                    deadline += await self._sleep_through_rest_throttle(
+                        reason="flatten wait",
+                    )
+                    continue
                 open_pos = await self._fetch_venue_open_positions()
                 await self._positions.sync_from_venue(open_pos)
                 if not open_pos:
@@ -1170,6 +1204,7 @@ class Engine:
                     ",".join(remaining),
                 )
         finally:
+            self._flatten_op_active = False
             try:
                 open_pos = await self._fetch_venue_open_positions()
                 await self._positions.sync_from_venue(open_pos)
@@ -1481,7 +1516,11 @@ class Engine:
         if self.rest_heavily_throttled():
             return [p for p in self._positions.all() if abs(p.qty) > 1e-12]
         try:
-            rows = await self._gateway.fetch_positions()
+            fetch_bp = getattr(self._gateway, "fetch_balances_and_positions", None)
+            if callable(fetch_bp):
+                _, rows = await fetch_bp()
+            else:
+                rows = await self._gateway.fetch_positions()
             return [p for p in rows if abs(p.qty) > 1e-12]
         except Exception as exc:  # noqa: BLE001
             if getattr(exc, "code", None) == -1003:
@@ -1490,6 +1529,15 @@ class Engine:
                 )
                 return [p for p in self._positions.all() if abs(p.qty) > 1e-12]
             raise
+
+    async def _mass_cancel_venue_orders(self) -> None:
+        """Cancel all venue working orders with minimal REST (mass cancel + local OMS)."""
+        try:
+            await self._gateway.cancel_all_open_orders()
+        except Exception:  # noqa: BLE001
+            logger.exception("venue cancel_all_open_orders failed")
+        self._quote_executor.clear_sessions()
+        await self._oms.mark_working_cancelled()
 
     async def _venue_position_qty(self, symbol: str) -> float | None:
         """Signed venue qty for ``symbol``, or ``None`` if the REST read failed."""
@@ -1552,6 +1600,12 @@ class Engine:
         *,
         retry: bool = False,
     ) -> None:
+        if self.rest_heavily_throttled():
+            logger.warning(
+                "flatten close skipped: REST throttled ~%.0fs",
+                self.rest_backoff_remaining_sec(),
+            )
+            return
         for position in positions:
             if abs(position.qty) <= 0:
                 continue
@@ -1635,6 +1689,13 @@ class Engine:
                 logger.info("flatten skip %s: already flat at venue", symbol)
                 await self._heal_symbol_after_venue_flat(symbol)
                 return
+            if is_venue_throttle_error(exc):
+                logger.warning(
+                    "flatten market deferred %s (REST throttled): %s",
+                    symbol,
+                    exc,
+                )
+                return
             logger.warning("flatten market failed %s: %s", symbol, exc)
 
     def _is_emergency_flatten_fill(self, fill: Fill) -> bool:
@@ -1662,7 +1723,6 @@ class Engine:
 
     async def flatten(self) -> None:
         """Cancel working orders + close all venue positions (market or VWAP)."""
-        await self._cancel_mm_quotes()
         if self._flatten_inflight():
             await self._flatten_task
             return
@@ -1679,18 +1739,13 @@ class Engine:
     async def _flatten_body(self) -> None:
         logger.warning("flattening all positions")
         try:
-            try:
-                await self._gateway.cancel_all_open_orders()
-            except Exception:  # noqa: BLE001
-                logger.exception("venue cancel_all_open_orders failed during flatten")
-            await self._oms.cancel_all()
-            if not self.rest_heavily_throttled():
-                try:
-                    await self._order_reconciler.reconcile_once(trip_on_mismatch=False)
-                except Exception:  # noqa: BLE001
-                    logger.exception("order reconcile after flatten failed")
-            rounds = max(3, int(getattr(self._settings, "flatten_rounds", 4)))
+            await self._mass_cancel_venue_orders()
+            rounds = max(1, int(getattr(self._settings, "flatten_rounds", 2)))
             for attempt in range(rounds):
+                if self.rest_heavily_throttled():
+                    await self._sleep_through_rest_throttle(
+                        reason=f"flatten attempt {attempt + 1}/{rounds}",
+                    )
                 try:
                     open_pos = await self._fetch_venue_open_positions()
                 except Exception:  # noqa: BLE001
@@ -1713,7 +1768,12 @@ class Engine:
                     open_pos,
                     retry=attempt > 0,
                 )
-                await asyncio.sleep(1.5)
+                if self.rest_heavily_throttled():
+                    await self._sleep_through_rest_throttle(
+                        reason=f"flatten post-attempt {attempt + 1}/{rounds}",
+                    )
+                else:
+                    await asyncio.sleep(1.5)
         except Exception:  # noqa: BLE001
             logger.exception("flatten body failed")
             raise
@@ -1737,10 +1797,6 @@ class Engine:
         )
         if flatten:
             try:
-                try:
-                    await self._gateway.cancel_all_open_orders()
-                except Exception:  # noqa: BLE001
-                    logger.exception("venue cancel_all before operator halt failed")
                 await self.flatten()
             except Exception:  # noqa: BLE001
                 logger.exception("operator halt flatten failed")

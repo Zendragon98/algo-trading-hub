@@ -1,10 +1,16 @@
-"""Reconcile local working orders against the venue open-order book."""
+"""Reconcile local working orders against the venue open-order book.
+
+When ``skip_rest_poll`` is set (engine wires user-data freshness), periodic
+passes trust ``ORDER_TRADE_UPDATE`` on the user-data WebSocket instead of
+``GET /fapi/v1/openOrders``. Startup and ``force_rest=True`` always pull REST.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import time as _time
+from collections.abc import Callable
 from typing import Any
 
 from common.config import Settings
@@ -34,6 +40,7 @@ class OrderReconciler:
         cancel_orphans: bool = False,
         on_mismatch: Any | None = None,
         bus: EventBus | None = None,
+        skip_rest_poll: Callable[[], bool] | None = None,
     ) -> None:
         self._gateway = gateway
         self._oms = oms
@@ -41,6 +48,7 @@ class OrderReconciler:
         self._cancel_orphans = cancel_orphans
         self._on_mismatch = on_mismatch
         self._bus = bus
+        self._skip_rest_poll = skip_rest_poll
         self._interval_sec = 60.0
         self._task: asyncio.Task[None] | None = None
         self.last_result: dict[str, object] = {"ok": True, "venue_only": 0, "local_only": 0, "ts": 0.0}
@@ -93,7 +101,7 @@ class OrderReconciler:
 
     async def sync_startup(self) -> None:
         """Align OMS with venue open orders after connect."""
-        await self.reconcile_once(trip_on_mismatch=False)
+        await self.reconcile_once(trip_on_mismatch=False, force_rest=True)
 
     async def _refresh_local_orphans_from_venue(
         self,
@@ -126,7 +134,22 @@ class OrderReconciler:
             )
             await self._oms.on_order_update(refreshed)
 
-    async def reconcile_once(self, *, trip_on_mismatch: bool = True) -> None:
+    async def reconcile_once(
+        self,
+        *,
+        trip_on_mismatch: bool = True,
+        force_rest: bool = False,
+    ) -> None:
+        if (
+            not force_rest
+            and self._skip_rest_poll is not None
+            and self._skip_rest_poll()
+        ):
+            logger.debug(
+                "order reconcile skipped (user-data WebSocket recently active; no REST openOrders)",
+            )
+            return
+
         try:
             venue_orders = await self._gateway.fetch_open_orders()
         except Exception:  # noqa: BLE001

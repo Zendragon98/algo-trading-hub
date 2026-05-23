@@ -83,12 +83,14 @@ def _calibrate_from_l2(
     skew_bps = float(np.std(df["mid"].pct_change().dropna()) * 10_000.0) if len(df) > 5 else 1.0
     min_skew = _clamp(skew_bps * 0.5, 0.3, 5.0)
 
+    min_spread = max(0.0, float(np.percentile(sp, 40)) * 0.65)
+
     return SymbolCalibrationPayload(
         symbol=symbol.upper(),
         samples=int(len(sp)),
         mm={
             "half_spread_bps": half,
-            "min_spread_bps": max(0.0, p50 * 0.85),
+            "min_spread_bps": min_spread,
             "reservation_inventory_bps": inv_bps,
             "inventory_spread_skew_bps": _clamp(p75 * 0.25, 2.0, 15.0),
             "toxic_widen_bps": _clamp(p75 * 0.5, 2.0, 20.0),
@@ -163,12 +165,12 @@ async def _enrich_tape_hit_ratio(
         await rest.close()
 
 
-def build_symbol_calibration(
+def build_symbol_calibration_from_l2(
     symbols: list[str],
     *,
     settings: Settings | None = None,
-    enrich_tape: bool = True,
 ) -> dict[str, SymbolCalibrationPayload]:
+    """Build calibration payloads from on-disk L2 parquet (no network)."""
     settings = settings or get_settings()
     min_samples = int(settings.mm_spread_calib_min_samples)
     out: dict[str, SymbolCalibrationPayload] = {}
@@ -176,8 +178,26 @@ def build_symbol_calibration(
         payload = _calibrate_from_l2(sym, settings, min_samples=min_samples)
         if payload is not None:
             out[payload.symbol] = payload
+    return out
+
+
+async def enrich_symbol_calibration_tape(
+    payloads: dict[str, SymbolCalibrationPayload],
+    settings: Settings | None = None,
+) -> None:
+    if payloads:
+        await _enrich_tape_hit_ratio(payloads, settings or get_settings())
+
+
+def build_symbol_calibration(
+    symbols: list[str],
+    *,
+    settings: Settings | None = None,
+    enrich_tape: bool = True,
+) -> dict[str, SymbolCalibrationPayload]:
+    out = build_symbol_calibration_from_l2(symbols, settings=settings)
     if enrich_tape and out:
-        asyncio.run(_enrich_tape_hit_ratio(out, settings))
+        asyncio.run(enrich_symbol_calibration_tape(out, settings))
     return out
 
 

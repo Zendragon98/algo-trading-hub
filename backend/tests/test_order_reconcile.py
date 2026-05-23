@@ -27,6 +27,7 @@ class _Gw(GatewayInterface):
     def __init__(self, open_orders: list[ChildOrder]) -> None:
         self._open = open_orders
         self.cancelled: list[str] = []
+        self.n_fetch_open_orders = 0
 
     async def connect(self) -> None: ...
     async def disconnect(self) -> None: ...
@@ -38,6 +39,7 @@ class _Gw(GatewayInterface):
         self.cancelled.append(client_order_id)
         self._open = [o for o in self._open if o.id != client_order_id]
     async def fetch_open_orders(self, symbol: str | None = None) -> list[ChildOrder]:
+        self.n_fetch_open_orders += 1
         return list(self._open)
     async def fetch_positions(self) -> list[Position]:
         return []
@@ -62,6 +64,28 @@ class _GwWithLookup(_Gw):
 
     async def fetch_order_by_client_id(self, symbol: str, client_order_id: str) -> ChildOrder | None:
         return self._lookups.get(client_order_id)
+
+
+@pytest.mark.asyncio
+async def test_order_reconcile_skips_rest_when_user_data_fresh() -> None:
+    bus = EventBus()
+    gw = _Gw(open_orders=[])
+    oms = OrderManager(gateway=gw, bus=bus)
+    oms.touch_ws_user_data_activity()
+    rec = OrderReconciler(gw, oms, CircuitBreaker(bus=bus), skip_rest_poll=lambda: True)
+    await rec.reconcile_once()
+    assert gw.n_fetch_open_orders == 0
+
+
+@pytest.mark.asyncio
+async def test_order_reconcile_force_rest_bypasses_skip() -> None:
+    bus = EventBus()
+    gw = _Gw(open_orders=[])
+    oms = OrderManager(gateway=gw, bus=bus)
+    oms.touch_ws_user_data_activity()
+    rec = OrderReconciler(gw, oms, CircuitBreaker(bus=bus), skip_rest_poll=lambda: True)
+    await rec.reconcile_once(force_rest=True, trip_on_mismatch=False)
+    assert gw.n_fetch_open_orders == 1
 
 
 @pytest.mark.asyncio

@@ -592,6 +592,14 @@ def compute_quote_intent(
     if ask_blocked:
         ask_price = None
 
+    if bool(getattr(settings, "mm_quote_at_touch", False)):
+        touch_bid = feat.best_bid
+        touch_ask = feat.best_ask
+        if touch_bid is not None and touch_bid > 0 and bid_price is not None:
+            bid_price = touch_bid
+        if touch_ask is not None and touch_ask > 0 and ask_price is not None:
+            ask_price = touch_ask
+
     size_pct = params.size_pct if params.size_pct is not None else float(settings.mm_quote_size_pct)
     size_notional = equity * size_pct if equity > 0 else 0.0
     if size_notional <= 0:

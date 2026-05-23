@@ -80,6 +80,14 @@ class QuoteExecutor:
                 if w is not None:
                     await self._om.cancel(w.child_id)
 
+    def clear_sessions(self, symbols: list[str] | None = None) -> None:
+        """Drop MM quote sessions without venue cancels (after mass cancel)."""
+        if symbols is None:
+            self._sessions.clear()
+            return
+        for sym in symbols:
+            self._sessions.pop(sym.upper(), None)
+
     async def _refresh_symbol(self, intent: QuoteIntent) -> bool:
         sym = intent.symbol.upper()
         sess = self._sessions.setdefault(sym, _SymbolSession())

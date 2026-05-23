@@ -227,6 +227,108 @@ def _min_edge_bps(settings: Settings) -> float:
     return mm2_fee_edge_floor_bps("BTCUSDT", settings)
 
 
+def _pin_symbols(settings: Settings) -> list[str]:
+    return [s.strip().upper() for s in (settings.mm_auto_pin_symbols or []) if s.strip()]
+
+
+def _ranking_by_symbol(rankings: list[MmSymbolScore]) -> dict[str, MmSymbolScore]:
+    return {r.symbol: r for r in rankings}
+
+
+def assemble_tiered_universe(
+    rankings: list[MmSymbolScore],
+    settings: Settings,
+    *,
+    ticker_by_sym: dict[str, TickerVolStats] | None = None,
+    sample_stats: dict[str, tuple[float, float, float]] | None = None,
+) -> list[str]:
+    """Build MM universe: pinned maincaps first, then top midcaps from scan."""
+    cap = int(settings.mm_auto_max_symbols)
+    if cap <= 0:
+        cap = 16
+    pins = _pin_symbols(settings)
+    pin_min_vol = float(settings.mm_auto_pin_min_quote_volume)
+    pin_min_edge = float(settings.mm_auto_pin_min_edge_bps)
+    pin_min_spread = float(settings.mm_auto_pin_min_spread_bps)
+    mid_min_vol = float(settings.mm_auto_midcap_min_quote_volume)
+    by_sym = _ranking_by_symbol(rankings)
+    ticker_by_sym = ticker_by_sym or {}
+    sample_stats = sample_stats or {}
+
+    selected: list[str] = []
+    seen: set[str] = set()
+
+    for sym in pins:
+        if len(selected) >= cap:
+            break
+        if sym in seen:
+            continue
+        row = by_sym.get(sym)
+        tv = ticker_by_sym.get(sym)
+        sampled = sample_stats.get(sym)
+        qv = tv.quote_volume if tv else (row.quote_volume_24h if row else 0.0)
+        if qv > 0 and qv < pin_min_vol:
+            logger.info("mm tier: skip pin %s (volume %.0f < %.0f)", sym, qv, pin_min_vol)
+            continue
+        if row is not None and row.eligible:
+            selected.append(sym)
+            seen.add(sym)
+            logger.info("mm tier: pinned maincap %s (scan eligible)", sym)
+            continue
+        if sampled is None:
+            logger.info("mm tier: skip pin %s (no spread samples)", sym)
+            continue
+        median_sp, _spread_cv, _mid_vol = sampled
+        if median_sp < pin_min_spread:
+            logger.info(
+                "mm tier: skip pin %s (spread %.2f < %.2f bps)",
+                sym,
+                median_sp,
+                pin_min_spread,
+            )
+            continue
+        # Maincaps: prioritize activity; edge vs fees is enforced at quote time.
+        edge = median_sp - pin_min_edge
+        if edge < 0:
+            logger.info(
+                "mm tier: pin %s tight edge (%.2f bps) — including for flow",
+                sym,
+                edge,
+            )
+        selected.append(sym)
+        seen.add(sym)
+        logger.info(
+            "mm tier: pinned maincap %s (spread=%.2f bps vol=%.0f)",
+            sym,
+            median_sp,
+            qv,
+        )
+
+    midcap_candidates = [
+        r
+        for r in rankings
+        if r.eligible and r.symbol not in seen and r.quote_volume_24h >= mid_min_vol
+    ]
+    midcap_candidates.sort(key=lambda r: r.score, reverse=True)
+    for row in midcap_candidates:
+        if len(selected) >= cap:
+            break
+        selected.append(row.symbol)
+        seen.add(row.symbol)
+
+    if not selected:
+        fallback = pins[: min(3, len(pins))] or ["BTCUSDT", "ETHUSDT"]
+        logger.warning("mm tiered universe empty; fallback=%s", fallback)
+        return fallback
+    logger.info(
+        "mm tiered universe (%d): pins=%s midcaps=%s",
+        len(selected),
+        [s for s in selected if s in pins],
+        [s for s in selected if s not in pins],
+    )
+    return selected
+
+
 def score_mm_candidate(
     *,
     quote_volume: float,
@@ -376,6 +478,9 @@ async def scan_mm_universe(
             candidates = candidates[:prefilter]
 
         sym_list = [c[0] for c in candidates]
+        for pin in _pin_symbols(settings):
+            if pin not in sym_list and pin in universe:
+                sym_list.append(pin)
         sample_stats: dict[str, tuple[float, float, float]] = {}
         if sample and sym_list:
             sample_stats = await _sample_spreads(
@@ -492,17 +597,12 @@ async def scan_mm_universe(
                 ),
             )
 
-        eligible = [r for r in rankings if r.eligible]
-        eligible.sort(key=lambda r: r.score, reverse=True)
-        cap = int(settings.mm_auto_max_symbols)
-        recommended = [r.symbol for r in eligible[:cap]] if cap > 0 else [r.symbol for r in eligible]
-        if not recommended:
-            fallback = ["BTCUSDT", "ETHUSDT"]
-            logger.warning(
-                "mm universe scan: no eligible symbols; falling back to %s",
-                fallback,
-            )
-            recommended = fallback
+        recommended = assemble_tiered_universe(
+            rankings,
+            settings,
+            ticker_by_sym=ticker_by_sym,
+            sample_stats=sample_stats,
+        )
 
         return MmUniverseReport(
             generated_at=datetime.now(UTC).isoformat(),

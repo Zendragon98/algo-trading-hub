@@ -9,6 +9,7 @@ import pytest
 from analytics.mm_universe_scanner import (
     MmSymbolScore,
     MmUniverseReport,
+    assemble_tiered_universe,
     derive_stability_thresholds,
     load_mm_universe_report,
     report_is_fresh,
@@ -166,3 +167,69 @@ def test_effective_mid_vol_uses_24h_range() -> None:
     eff, intra = _effective_mid_vol_bps(1.0, 200.0, sample_window_sec=20.0)
     assert intra > 1.0
     assert eff >= intra * 0.9
+
+
+def test_assemble_tiered_universe_pins_and_midcaps() -> None:
+    settings = Settings(
+        mm_auto_max_symbols=5,
+        mm_auto_pin_symbols=["BTCUSDT", "ETHUSDT"],
+        mm_auto_pin_min_quote_volume=1.0,
+        mm_auto_midcap_min_quote_volume=1.0,
+        mm_auto_pin_min_edge_bps=0.0,
+        mm_auto_pin_min_spread_bps=0.3,
+    )
+    rankings = [
+        MmSymbolScore(
+            symbol="BTCUSDT",
+            quote_volume_24h=1e9,
+            last_price=60_000.0,
+            median_spread_bps=1.0,
+            spread_cv=0.1,
+            mid_vol_bps=2.0,
+            edge_bps=0.0,
+            score=0.0,
+            eligible=False,
+            reject_reason="insufficient_edge",
+        ),
+        MmSymbolScore(
+            symbol="AVAXUSDT",
+            quote_volume_24h=50e6,
+            last_price=9.0,
+            median_spread_bps=6.0,
+            spread_cv=0.1,
+            mid_vol_bps=2.0,
+            edge_bps=2.0,
+            score=90.0,
+            eligible=True,
+        ),
+        MmSymbolScore(
+            symbol="ARBUSDT",
+            quote_volume_24h=40e6,
+            last_price=0.1,
+            median_spread_bps=5.0,
+            spread_cv=0.1,
+            mid_vol_bps=2.0,
+            edge_bps=1.0,
+            score=80.0,
+            eligible=True,
+        ),
+    ]
+    sample_stats = {
+        "BTCUSDT": (1.2, 0.1, 2.0),
+        "ETHUSDT": (1.5, 0.1, 2.0),
+    }
+    from analytics.mm_universe_scanner import TickerVolStats
+
+    tickers = {
+        "BTCUSDT": TickerVolStats(1e9, 60_000.0, 61_000.0, 59_000.0, 1.0, 50.0),
+        "ETHUSDT": TickerVolStats(5e8, 3_000.0, 3_100.0, 2_900.0, 1.0, 40.0),
+    }
+    selected = assemble_tiered_universe(
+        rankings,
+        settings,
+        ticker_by_sym=tickers,
+        sample_stats=sample_stats,
+    )
+    assert "BTCUSDT" in selected
+    assert "AVAXUSDT" in selected
+    assert selected.index("BTCUSDT") < selected.index("AVAXUSDT")

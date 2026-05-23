@@ -9,6 +9,7 @@ import pytest
 from common.enums import OrderStatus
 from engine.execution.submit_guard import SubmitGuard
 from engine.risk.circuit_breaker import BreakerScope, CircuitBreaker
+from gateways.binance.rest_client import BinanceRestError
 
 
 def _guard(
@@ -59,6 +60,19 @@ def test_repeat_rejects_trip_symbol_breaker() -> None:
     time.sleep(0.06)
     breaker.tick()
     assert not breaker.is_blocked(BreakerScope.SYMBOL, "BTCUSDT")
+
+
+def test_throttle_errors_classified_separately_from_trading_rejects() -> None:
+    """OMS skips record_status for throttle errors (see order_manager.submit_child)."""
+    from common.venue_errors import is_venue_throttle_error
+
+    err = BinanceRestError(418, -1003, "REST paused 3000s", retry_after_sec=3000.0)
+    assert is_venue_throttle_error(err)
+    guard, breaker = _guard(max_consecutive_rejects=3, reject_cooldown_sec=0.05)
+    # Only real venue trading rejects advance the streak.
+    for _ in range(3):
+        guard.record_status("CUSDT", OrderStatus.REJECTED)
+    assert breaker.is_blocked(BreakerScope.SYMBOL, "CUSDT")
 
 
 def test_successful_submit_resets_streak() -> None:
