@@ -130,3 +130,4 @@ class EventType(str, Enum):
     LOG = "log"                     # operator-visible log line
     STATUS = "status"               # engine status changed
     BREAKER = "breaker"             # circuit breaker tripped / cleared
+    MARKOUT = "markout"             # post-fill horizon markout (MM audit)

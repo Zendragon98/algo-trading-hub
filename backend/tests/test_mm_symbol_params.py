@@ -3,7 +3,7 @@
 from common.config import Settings
 from engine.market_data.feature_store import Features
 from engine.strategies.mm_core import compute_quote_pricing
-from engine.strategies.mm_symbol_params import resolve_mm_params
+from engine.strategies.mm_symbol_params import required_min_spread_bps, resolve_mm_params
 
 
 def test_per_symbol_half_spread_from_map() -> None:
@@ -35,6 +35,33 @@ def test_venue_spread_floor_widens_illiquid_symbol() -> None:
     p = resolve_mm_params("DOGEUSDT", s, feat)
     assert p.half_spread_bps >= 20.0
     assert p.venue_half_floor_bps >= 20.0
+
+
+def test_required_min_spread_tracks_venue_floor() -> None:
+    s = Settings(
+        mm_quote_half_spread_bps=3.0,
+        mm_quote_use_venue_spread_floor=True,
+        mm_quote_venue_spread_mult=1.0,
+        post_only_enabled=True,
+        mm2_maker_fee_bps=2.0,
+        mm2_spread_buffer_bps=2.0,
+    )
+    feat = Features(symbol="BTCUSDT", mid=100.0, spread_bps=14.0)
+    required = required_min_spread_bps("BTCUSDT", s, feat)
+    assert required == 14.0
+
+
+def test_required_min_spread_fee_floor_when_book_tighter_than_quotes() -> None:
+    s = Settings(
+        mm_quote_half_spread_bps=3.0,
+        mm_quote_use_venue_spread_floor=True,
+        post_only_enabled=False,
+        mm2_taker_fee_bps=4.0,
+        mm2_spread_buffer_bps=2.0,
+    )
+    feat = Features(symbol="BTCUSDT", mid=100.0, spread_bps=8.0)
+    required = required_min_spread_bps("BTCUSDT", s, feat)
+    assert required == 10.0
 
 
 def test_quote_pricing_uses_different_half_per_symbol() -> None:

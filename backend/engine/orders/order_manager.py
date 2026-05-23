@@ -53,9 +53,21 @@ def new_client_order_id(
     """Deterministic client order id for idempotent retries.
 
     Binance allows up to 36 chars, alphanumerics + `_-.`.
+
+    Uses the parent id's trailing unique token (e.g. uuid suffix on
+    ``Q-FILUSD-<uuid>``) so MM quotes for the same symbol do not all
+    collapse to one id when only the first 8 characters match.
     """
-    pid = parent_id.replace("P-", "")[:8]
-    return f"{prefix}-{pid}-{slice_index:02d}"
+    token = parent_id.replace("P-", "")
+    parts = token.split("-")
+    if len(parts) >= 2 and parts[-1]:
+        uniq = parts[-1]
+        tag = "".join(parts[:-1]).replace("-", "")[-6:]
+    else:
+        uniq = token
+        tag = token[:6]
+    body = f"{tag}{uniq}"[:26]
+    return f"{prefix}-{body}-{slice_index:02d}"
 
 
 class OrderManager:
@@ -155,6 +167,15 @@ class OrderManager:
             elif code == -4164:
                 logger.warning(
                     "place_order below min notional for %s (symbol=%s side=%s qty=%.10f): %s",
+                    child.id,
+                    child.symbol,
+                    child.side.value,
+                    child.qty,
+                    exc,
+                )
+            elif code in (-4116, -1003) or getattr(exc, "status", None) in (0, 418):
+                logger.warning(
+                    "place_order failed for %s (symbol=%s side=%s qty=%.10f): %s",
                     child.id,
                     child.symbol,
                     child.side.value,

@@ -1,8 +1,10 @@
 """mm_core inventory, reservation mid, and quote intent."""
 
+import time
+
 from common.config import Settings
 from engine.market_data.feature_store import Features
-from engine.market_data.own_quote_book import OwnBookState
+from engine.market_data.own_quote_book import EntryLedger, OwnBookState
 from engine.strategies import mm_core
 
 
@@ -74,3 +76,48 @@ def test_long_inventory_lowers_reservation_and_skews_spread() -> None:
     assert intent.inventory_ratio > 0.9
     assert intent.reservation_mid < intent.venue_mid
     assert intent.bid_half_bps > intent.ask_half_bps
+
+
+def test_exit_limit_price_ramps_toward_touch_when_long_losing() -> None:
+    feat = Features(
+        symbol="BTCUSDT",
+        mid=100.0,
+        best_bid=99.95,
+        best_ask=100.05,
+    )
+    mild = mm_core.exit_limit_price(
+        feat,
+        position_qty=1.0,
+        scratch_bps=5.0,
+        aggressive_bps=35.0,
+        pnl_bps=-5.0,
+        ramp_bps=20.0,
+        cross_touch=True,
+    )
+    deep = mm_core.exit_limit_price(
+        feat,
+        position_qty=1.0,
+        scratch_bps=5.0,
+        aggressive_bps=35.0,
+        pnl_bps=-25.0,
+        ramp_bps=20.0,
+        cross_touch=True,
+    )
+    assert mild > deep
+    assert deep < 99.95
+
+
+def test_plan_exit_reason_market_when_deep_loss() -> None:
+    feat = Features(symbol="BTCUSDT", mid=100.0, inventory_ratio=0.2)
+    own = OwnBookState(symbol="BTCUSDT")
+    own.ledger = EntryLedger(entry_mid=100.2, opened_ts=time.time() - 10.0)
+    s = Settings(mm_market_exit_loss_bps=10.0, mm_max_hold_sec=150.0)
+    reason = mm_core.plan_exit_reason(
+        feat=feat,
+        settings=s,
+        own=own,
+        position_qty=1.0,
+        mid=100.0,
+    )
+    assert reason is not None
+    assert reason.startswith("mm_market_exit")

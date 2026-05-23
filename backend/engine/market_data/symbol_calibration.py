@@ -106,6 +106,20 @@ def _backend_data_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent / "data"
 
 
+def _resolve_data_path(path_str: str) -> Path:
+    """Resolve a settings path under ``backend/data/`` (accepts optional ``data/`` prefix)."""
+    p = Path(path_str.strip())
+    if p.is_absolute():
+        return p
+    rel = p.as_posix().lstrip("/")
+    if rel.startswith("data/"):
+        rel = rel[5:]
+    return _backend_data_dir() / rel
+
+
+_warned_missing: set[str] = set()
+
+
 def default_calibration_path() -> Path:
     return _backend_data_dir() / "symbol_calibration.json"
 
@@ -203,10 +217,9 @@ def load_symbol_calibration(path: str | None = None) -> dict[str, SymbolCalibrat
 
     paths: list[Path] = []
     path_str = (path or "").strip()
+    primary: Path | None = None
     if path_str:
-        primary = Path(path_str)
-        if not primary.is_absolute():
-            primary = _backend_data_dir() / primary
+        primary = _resolve_data_path(path_str)
         if primary.exists():
             paths.append(primary)
     legacy = _backend_data_dir() / "mm_spread_calibration.json"
@@ -215,14 +228,15 @@ def load_symbol_calibration(path: str | None = None) -> dict[str, SymbolCalibrat
 
     if not paths:
         if path_str:
-            wanted = Path(path_str)
-            if not wanted.is_absolute():
-                wanted = _backend_data_dir() / wanted
-            logger.warning(
-                "symbol calibration missing at %s — MM jump/spread/fees use Settings "
-                "defaults; run: python -m analytics.mm_spread_pipeline --from-mm-symbols",
-                wanted,
-            )
+            wanted = _resolve_data_path(path_str)
+            key = str(wanted)
+            if key not in _warned_missing:
+                _warned_missing.add(key)
+                logger.warning(
+                    "symbol calibration missing at %s — MM jump/spread/fees use Settings "
+                    "defaults; run: python -m analytics.mm_spread_pipeline --from-mm-symbols",
+                    wanted,
+                )
         return {}
 
     mtime = max(p.stat().st_mtime for p in paths)

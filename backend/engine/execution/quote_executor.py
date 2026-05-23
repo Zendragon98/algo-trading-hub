@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from common.config import Settings
 from common.enums import OrderType, Side
 from common.types import ChildOrder, ParentOrder, QuoteIntent
+from gateways.gateway_interface import SymbolFilters
 
 from ..market_data.own_quote_book import MM_QUOTE_NOTE_PREFIX, OwnLevel, OwnQuoteBook
 from ..orders.order_manager import OrderManager, new_client_order_id
+from ..risk.venue_sizing import venue_cap_qty, venue_min_qty, venue_qty_in_bounds
 
 logger = logging.getLogger(__name__)
+
+SymbolFiltersFor = Callable[[str], SymbolFilters | None]
 
 
 def _new_quote_parent_id(symbol: str) -> str:
@@ -41,10 +46,13 @@ class QuoteExecutor:
         order_manager: OrderManager,
         own_book: OwnQuoteBook,
         settings: Settings,
+        *,
+        symbol_filters: SymbolFiltersFor | None = None,
     ) -> None:
         self._om = order_manager
         self._own = own_book
         self._settings = settings
+        self._symbol_filters = symbol_filters
         self._sessions: dict[str, _SymbolSession] = {}
 
     def apply_settings(self, settings: Settings) -> None:
@@ -109,6 +117,18 @@ class QuoteExecutor:
                 return True
             return False
 
+        sized_qty = self._size_quote_qty(symbol, qty, price, reduce_only)
+        if sized_qty is None:
+            if working is not None:
+                await self._om.cancel(working.child_id)
+                if side is Side.BUY:
+                    sess.bid = None
+                else:
+                    sess.ask = None
+                return True
+            return False
+        qty = sized_qty
+
         refresh_bps = float(self._settings.mm_quote_refresh_bps)
         if working is not None:
             if working.qty > 0 and working.price > 0:
@@ -139,7 +159,35 @@ class QuoteExecutor:
             strategy_name=intent.strategy_name,
         )
         self._om.register_parent(parent)
-        placed = await self._om.submit_child(child)
+        try:
+            placed = await self._om.submit_child(child)
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            status = getattr(exc, "status", None)
+            if code == -4164:
+                logger.debug(
+                    "MM quote skipped %s %s @ %.6f qty=%.8f: below venue min notional",
+                    symbol,
+                    side.value,
+                    price,
+                    qty,
+                )
+            elif code in (-4116, -1003) or status in (0, 418):
+                logger.warning(
+                    "MM quote place failed %s %s @ %.6f qty=%.8f: %s",
+                    symbol,
+                    side.value,
+                    price,
+                    qty,
+                    exc,
+                )
+            else:
+                raise
+            if side is Side.BUY:
+                sess.bid = None
+            else:
+                sess.ask = None
+            return False
         wq = _WorkingQuote(parent_id, placed.id, side, price, qty)
         if side is Side.BUY:
             sess.bid = wq
@@ -155,3 +203,27 @@ class QuoteExecutor:
             intent.reason[:120],
         )
         return True
+
+    def _size_quote_qty(
+        self,
+        symbol: str,
+        qty: float,
+        price: float,
+        reduce_only: bool,
+    ) -> float | None:
+        if qty <= 0 or price <= 0:
+            return None
+        if self._symbol_filters is None:
+            return qty
+        filters = self._symbol_filters(symbol)
+        if filters is None:
+            return qty
+        floor = venue_min_qty(mid=price, filters=filters)
+        if floor is not None:
+            qty = max(qty, floor)
+        qty = venue_cap_qty(qty, filters)
+        if qty <= 0:
+            return None
+        if not venue_qty_in_bounds(qty, filters, price, reduce_only=reduce_only):
+            return None
+        return qty

@@ -73,3 +73,35 @@ async def test_refresh_submits_bid_and_ask() -> None:
     assert len(gw.placed) == 2
     sides = {o.side for o in gw.placed}
     assert Side.BUY in sides and Side.SELL in sides
+
+
+@pytest.mark.asyncio
+async def test_refresh_bumps_qty_to_venue_min_notional() -> None:
+    bus = EventBus()
+    gw = _MockGateway()
+
+    def _filters(symbol: str) -> SymbolFilters:
+        return SymbolFilters(symbol=symbol, step_size=0.0001, min_notional=50.0)
+
+    gw.get_symbol_filters = _filters  # type: ignore[method-assign]
+    om = OrderManager(gw, bus)
+    own = OwnQuoteBook()
+    ex = QuoteExecutor(
+        om,
+        own,
+        Settings(mm_quote_enabled=True),
+        symbol_filters=gw.get_symbol_filters,
+    )
+    # 0.0002 BTC @ 80_000 = $16 — below $50 floor; should bump to ~0.000625
+    intent = QuoteIntent(
+        symbol="BTCUSDT",
+        strategy_name="market_making_v2",
+        bid_price=80_000.0,
+        bid_qty=0.0002,
+        ask_price=None,
+        ask_qty=0.0,
+        reason="test",
+    )
+    await ex.refresh([intent])
+    assert len(gw.placed) == 1
+    assert gw.placed[0].qty * gw.placed[0].price >= 50.0 - 1e-6

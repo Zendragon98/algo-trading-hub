@@ -111,6 +111,7 @@ class BinanceRestClient:
         min_interval_sec: float = 0.05,
         rest_429_default_backoff_sec: float = 60.0,
         rest_pause_buffer_sec: float = 0.5,
+        max_blocking_wait_sec: float = 8.0,
     ) -> None:
         # 10s is generous for testnet which can lag spot in latency.
         self._base_url = base_url
@@ -121,6 +122,7 @@ class BinanceRestClient:
         self._min_interval_sec = max(0.0, float(min_interval_sec))
         self._429_default_sec = max(1.0, float(rest_429_default_backoff_sec))
         self._pause_buffer_sec = max(0.0, float(rest_pause_buffer_sec))
+        self._max_blocking_wait_sec = max(0.0, float(max_blocking_wait_sec))
         # Serializes REST calls + coordinates spacing vs global pause window.
         self._gate = asyncio.Lock()
         self._pause_until: float = 0.0
@@ -143,6 +145,13 @@ class BinanceRestClient:
                 reason,
             )
         return delay
+
+    def rest_backoff_remaining_sec(self) -> float:
+        """Seconds until the global REST pause window expires."""
+        return max(0.0, self._pause_until - time.time())
+
+    def rest_is_heavily_throttled(self, threshold_sec: float = 8.0) -> bool:
+        return self.rest_backoff_remaining_sec() > max(0.0, float(threshold_sec))
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -182,6 +191,16 @@ class BinanceRestClient:
             if now < self._pause_until:
                 wait = self._pause_until - now
                 if wait > 0:
+                    if (
+                        self._max_blocking_wait_sec > 0.0
+                        and wait > self._max_blocking_wait_sec
+                    ):
+                        raise BinanceRestError(
+                            418,
+                            -1003,
+                            f"REST paused {wait:.0f}s (fail-fast cap {self._max_blocking_wait_sec:.0f}s)",
+                            retry_after_sec=wait,
+                        )
                     logger.warning(
                         "binance REST: waiting %.1fs (global rate-limit pause)",
                         wait,

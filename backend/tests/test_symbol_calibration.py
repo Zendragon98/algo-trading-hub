@@ -7,6 +7,7 @@ import json
 from common.config import Settings
 from engine.execution.algo_wheel import AlgoWheel, WheelConfig
 from engine.market_data.symbol_calibration import (
+    _resolve_data_path,
     invalidate_cache,
     load_symbol_calibration,
 )
@@ -68,3 +69,14 @@ def test_algo_wheel_uses_per_symbol_calibration(tmp_path) -> None:
     assert cfg.hit_ratio_threshold == 0.55
     cfg_eth = wheel.config_for("ETHUSDT", settings)
     assert cfg_eth.imbalance_threshold == 0.20
+
+
+def test_resolve_data_path_strips_duplicate_data_prefix(tmp_path, monkeypatch) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(
+        "engine.market_data.symbol_calibration._backend_data_dir",
+        lambda: data_dir,
+    )
+    assert _resolve_data_path("data/mm_spread_calibration.json") == data_dir / "mm_spread_calibration.json"
+    assert _resolve_data_path("mm_spread_calibration.json") == data_dir / "mm_spread_calibration.json"

@@ -155,7 +155,7 @@ const EMPTY: AlgoStream = {
   error: null,
   systemHealth: null,
   maxRiskPct: 0.35,
-  maxGrossNotional: 50_000,
+  maxGrossNotional: 100_000,
   breakers: EMPTY_BREAKERS,
   replaySummary: null,
   refresh: NOOP_REFRESH,
@@ -367,7 +367,7 @@ export function useAlgoStream(): AlgoStream {
         ...applyTradingState(prev, state, parentClosePendingRef.current),
         logs,
         maxRiskPct: numSetting(settings, "max_risk_pct", 0.35),
-        maxGrossNotional: numSetting(settings, "max_gross_notional", 50_000),
+        maxGrossNotional: numSetting(settings, "max_gross_notional", 100_000),
         breakers: toBreakerList(breakersDto),
         connected: prev.connected,
       }));

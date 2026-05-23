@@ -118,7 +118,14 @@ class MarketMakingStrategy(StrategyBase):
                 mid=float(feat.mid),
             )
             if exit_reason:
-                intent = self._exit_quote_intent(feat, own, pos_qty, exit_reason)
+                intent = mm_core.build_exit_quote_intent(
+                    feat=feat,
+                    settings=self._settings,
+                    own=own,
+                    position_qty=pos_qty,
+                    reason=exit_reason,
+                    strategy_name=self.name,
+                )
                 if intent is not None:
                     intents.append(intent)
                     continue
@@ -134,42 +141,6 @@ class MarketMakingStrategy(StrategyBase):
                 )
             )
         return intents
-
-    def _exit_quote_intent(
-        self,
-        feat: Features,
-        own: OwnBookState,
-        pos_qty: float,
-        reason: str,
-    ) -> QuoteIntent | None:
-        mid = feat.mid or 0.0
-        if mid <= 0:
-            return None
-        qty = abs(pos_qty)
-        if qty <= 0:
-            return None
-        scratch_bps = mm_core.mm_float(feat.symbol, self._settings, "mm_exit_scratch_bps")
-        if pos_qty > 0:
-            return QuoteIntent(
-                symbol=feat.symbol,
-                bid_price=None,
-                ask_price=mm_core.exit_pegged_price(mid, scratch_bps=scratch_bps, reduce_long=True),
-                bid_qty=0.0,
-                ask_qty=qty,
-                reason=reason,
-                strategy_name=self.name,
-                reduce_only_ask=True,
-            )
-        return QuoteIntent(
-            symbol=feat.symbol,
-            bid_price=mm_core.exit_pegged_price(mid, scratch_bps=scratch_bps, reduce_long=False),
-            ask_price=None,
-            bid_qty=qty,
-            ask_qty=0.0,
-            reason=reason,
-            strategy_name=self.name,
-            reduce_only_bid=True,
-        )
 
     def _own(self, symbol: str) -> OwnBookState:
         if self._own_provider is not None:

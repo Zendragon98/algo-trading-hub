@@ -5,8 +5,9 @@ from __future__ import annotations
 import time
 
 import httpx
+import pytest
 
-from gateways.binance.rest_client import BinanceRestError, parse_retry_after_header
+from gateways.binance.rest_client import BinanceRestClient, BinanceRestError, parse_retry_after_header
 
 
 def test_parse_retry_after_seconds() -> None:
@@ -35,3 +36,25 @@ def test_binance_rest_error_minus_1003_without_timestamp_uses_default() -> None:
 def test_binance_rest_error_explicit_retry_overrides_parsing() -> None:
     err = BinanceRestError(429, None, "Too Many Requests", retry_after_sec=15.0)
     assert err.retry_after_sec == 15.0
+
+
+@pytest.mark.asyncio
+async def test_rest_fail_fast_when_pause_exceeds_cap() -> None:
+    client = BinanceRestClient(
+        "https://testnet.binancefuture.com",
+        "key",
+        "secret",
+        max_blocking_wait_sec=5.0,
+    )
+    client._pause_until = time.time() + 120.0
+    with pytest.raises(BinanceRestError) as exc_info:
+        await client._execute_rate_limited_request(
+            "GET",
+            "/fapi/v1/ping",
+            params={},
+            signed=False,
+            headers={},
+        )
+    assert exc_info.value.code == -1003
+    assert exc_info.value.retry_after_sec is not None
+    assert exc_info.value.retry_after_sec > 60.0

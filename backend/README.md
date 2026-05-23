@@ -544,7 +544,7 @@ Live logs emit `venue=`, `res=`, `inv=`, `pnl_bps=` on each quote refresh (SIG l
 
 **Key settings:** `MM_QUOTE_*`, `MM_RESERVATION_INVENTORY_BPS`, `MM_INVENTORY_SPREAD_SKEW_BPS`, `MM_INVENTORY_*`, `MM_JUMP_*`, `MM_DEPLETION_*`, `MM_TOXICITY_THRESHOLD`. `MM_SKEW_*` / `MM_TAPE_*` feed the micro shift into reservation mid.
 
-`market_making_v2` adds fee-aware spread floor (`MM2_MIN_SPREAD_BPS`) and cancels quotes when skew is below `MM2_MIN_SKEW_BPS` (same pull pattern as the spread gate). Hot-swap: `POST /api/control/strategy { "name": "market_making" }`.
+`market_making_v2` spread gate uses the same half-spread resolution as quoting (`max(fee_rt + buffer, 2 × half_spread_bps)` with venue floor). Override via `MM2_MIN_SPREAD_BPS` or per-symbol `min_spread_bps` in calibration. Cancels quotes when skew is below `MM2_MIN_SKEW_BPS`. Hot-swap: `POST /api/control/strategy { "name": "market_making" }`.
 
 Pair **exits** (`pairs_close` / `pairs_stop`) emit `reduce_only=True` on both legs so kill-switch / entry breakers do not block basis unwinds.
 
@@ -704,7 +704,7 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `LEVERAGE`                   | `10`                                 | Futures leverage target per symbol (applied lazily before first entry); Binance clamps to each symbol's max (`GET /fapi/v1/leverageBracket` then `POST /fapi/v1/leverage`) |
 | `LEVERAGE_BRACKET_CACHE_PATH` | `data/cache/binance_leverage_brackets.json` | Backend-relative JSON cache for bracket caps (skip GET after first successful fetch) |
 | `LEVERAGE_BRACKET_CACHE_TTL_SEC` | `0`                               | Seconds before refetching brackets (`0` = only refresh when cache missing or `BINANCE_REST_BASE` changes) |
-| `MAX_GROSS_NOTIONAL`         | `50000`                              | Hard cap on total open notional |
+| `MAX_GROSS_NOTIONAL`         | `100000`                             | Hard cap on total open notional |
 | `MAX_DRAWDOWN_PCT`           | `0.10`                               | Drawdown that trips the kill switch |
 | `DEFAULT_STOP_LOSS_PCT`      | `0.005`                              | Per-position SL distance (also the sizing denominator) |
 | `DEFAULT_TAKE_PROFIT_PCT`    | `0.010`                              | Per-position TP distance |

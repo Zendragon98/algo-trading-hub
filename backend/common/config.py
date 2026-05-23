@@ -57,9 +57,11 @@ class Settings(BaseSettings):
     # Client-side REST pacing + HTTP 429 handling (see BinanceRestClient).
     # Slightly conservative default to stay under Binance futures REST weight limits
     # when connect + reconcile + orders share one client.
-    binance_rest_min_interval_ms: int = 150
+    binance_rest_min_interval_ms: int = 200
     binance_rest_429_default_backoff_sec: float = 60.0
     binance_rest_pause_buffer_sec: float = 0.5
+    # Fail fast instead of blocking the event loop for multi-minute IP bans.
+    binance_rest_max_blocking_wait_sec: float = 8.0
     # Public market-data WS keepalive (see market_connection.py).
     market_ws_ping_interval_sec: float = 20.0
     market_ws_ping_timeout_sec: float = 180.0
@@ -100,7 +102,7 @@ class Settings(BaseSettings):
     # which is the canonical "size by stop" rule traders use on futures.
     max_risk_pct: float = 0.35
     risk_per_trade_pct: float = 0.003
-    max_gross_notional: float = 50_000.0
+    max_gross_notional: float = 100_000.0
     max_drawdown_pct: float = 0.10
     default_stop_loss_pct: float = 0.005
     default_take_profit_pct: float = 0.010
@@ -422,24 +424,47 @@ class Settings(BaseSettings):
 
     # --- Market-making 2.0 (fee-aware fade; skew + imbalance + tape) ---
     # MM2_SYMBOLS: CSV list, or ``AUTO`` (empty = AUTO); shares MM scanner when AUTO.
-    mm2_symbols: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    mm2_symbols: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "SOLUSDT",
+            "AVAXUSDT",
+            "ARBUSDT",
+            "APTUSDT",
+            "OPUSDT",
+        ],
+    )
     mm2_skew_window_sec: float = 300.0
     mm2_skew_scale: float = 1.0
     mm2_imbalance_scale: float = 8.0
     mm2_tape_scale: float = 12.0
     mm2_min_tape_trades: int = 5
     mm2_min_skew_bps: float = 1.0
-    mm2_tape_confirm: float = 0.08
-    mm2_taker_fee_bps: float = 4.0
+    mm2_tape_confirm: float = 0.08  # require tape + imbalance to align before quoting a side
+    mm2_taker_fee_bps: float = 4.5
     mm2_maker_fee_bps: float = 2.0
     mm2_fee_round_trip_bps: float = 0.0
     mm2_spread_buffer_bps: float = 2.0
     mm2_min_spread_bps: float = 0.0
     mm2_min_edge_bps: float = 0.0
     mm2_min_exit_profit_bps: float = 5.0
-    mm2_max_hold_sec: float = 150.0
+    mm2_max_hold_sec: float = 45.0
+    mm2_market_exit_loss_bps: float = 10.0
+    mm2_aggressive_exit_loss_bps: float = 5.0
+    mm2_exit_inside_touch_bps: float = 1.0
+    mm2_exit_stale_sec: float = 20.0
+    mm2_exit_scratch_bps: float = 0.0
+    mm2_exit_aggressive_bps: float = 35.0
+    mm2_exit_loss_ramp_bps: float = 20.0
+    mm2_exit_cross_touch: bool = True
+    mm2_early_loss_hold_frac: float = 0.0
     mm2_min_samples: int = 5
-    mm2_risk_per_trade_pct: float = 0.002
+    mm2_risk_per_trade_pct: float = 0.008
+    mm2_max_inventory_notional: float = 400.0
+    mm2_max_concurrent_positions: int = 3
+    mm2_max_consecutive_same_side_fills: int = 2
+    mm2_side_halt_sec: float = 120.0
+    mm2_vol_regime_spike_mult: float = 2.0
+    mm2_vol_regime_pause_sec: float = 600.0
     mm2_qty: float = 0.001
     mm2_cooldown_sec: float = 25.0
     mm2_max_entries_per_tick: int = 1
@@ -451,7 +476,7 @@ class Settings(BaseSettings):
     # --- Institutional MM (quote-only execution, microstructure) ---
     mm_institutional_risk_enabled: bool = True
     mm_quote_enabled: bool = True
-    mm_urgent_exit_market: bool = False
+    mm_urgent_exit_market: bool = True
     mm_tape_pressure_mode: str = "volume"  # volume | count
     mm_max_inventory_notional: float = 0.0  # 0 = use max_symbol_notional_pct * equity
     mm_inventory_skew_scale: float = 4.0
@@ -472,10 +497,33 @@ class Settings(BaseSettings):
     mm_jump_flatten: bool = False
     mm_max_adverse_markout_bps: float = 8.0
     mm_markout_cooldown_sec: float = 15.0
+    mm_markout_ewma_alpha: float = 0.15
+    mm_markout_horizons_sec: Annotated[list[float], NoDecode] = Field(
+        default_factory=lambda: [1.0, 5.0, 30.0],
+    )
     mm_scratch_loss_bps: float = 15.0
     mm_exit_scratch_bps: float = 5.0
+    # Exit when unrealized <= -this (before max-hold); limit peg ramps toward touch.
+    mm_loss_exit_bps: float = 10.0
+    # Max scratch distance when deeply underwater (pegs toward best bid/ask).
+    mm_exit_aggressive_bps: float = 35.0
+    # Loss bps span over which exit limit ramps from scratch to aggressive.
+    mm_exit_loss_ramp_bps: float = 20.0
+    # At full ramp, peg sell at best_ask / buy at best_bid (aggressive limit, taker).
+    mm_exit_cross_touch: bool = True
+    # After this fraction of max_hold, flatten if still losing (0 = off).
+    mm_early_loss_hold_frac: float = 0.0
+    mm_market_exit_loss_bps: float = 10.0
+    mm_aggressive_exit_loss_bps: float = 5.0
+    mm_exit_inside_touch_bps: float = 1.0
+    mm_exit_stale_sec: float = 20.0
+    mm_max_concurrent_positions: int = 3
+    mm_max_consecutive_same_side_fills: int = 2
+    mm_side_halt_sec: float = 120.0
+    mm_vol_regime_spike_mult: float = 2.0
+    mm_vol_regime_pause_sec: float = 600.0
     mm_min_exit_profit_bps: float = 5.0
-    mm_max_hold_sec: float = 150.0
+    mm_max_hold_sec: float = 45.0
     mm_catastrophe_stop_pct: float = 0.0
     mm_depletion_top_n: int = 10
     mm_depletion_baseline_alpha: float = 0.06
@@ -514,7 +562,7 @@ class Settings(BaseSettings):
     mm_quote_use_venue_spread_floor: bool = True
     mm_quote_venue_spread_mult: float = 1.0
     # L2 calibration artefact from analytics.spread_calibrator (after l2_loader ingest).
-    mm_spread_calibration_path: str = "data/mm_spread_calibration.json"
+    mm_spread_calibration_path: str = "mm_spread_calibration.json"
     mm_spread_calib_percentile: float = 50.0
     mm_spread_calib_half_mult: float = 0.55
     mm_spread_calib_buffer_bps: float = 0.5

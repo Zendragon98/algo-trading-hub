@@ -48,6 +48,14 @@ STRATEGIES: list[tuple[str, list[re.Pattern[str]]]] = [
         ],
     ),
     (
+        "blended_signals",
+        [
+            re.compile(r"BLEND (open|close)", re.I),
+            re.compile(r"blend_(long|short)", re.I),
+            re.compile(r"VWAP P-", re.I),
+        ],
+    ),
+    (
         "market_making_v2",
         [
             re.compile(r"MM2 (entry|exit|tilt|open|close)", re.I),
@@ -76,8 +84,8 @@ PROBLEM_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
-def _get(path: str) -> dict:
-    with urllib.request.urlopen(f"{API}{path}", timeout=30) as resp:
+def _get(path: str, *, timeout: float = 120.0) -> dict:
+    with urllib.request.urlopen(f"{API}{path}", timeout=timeout) as resp:
         return json.loads(resp.read().decode())
 
 
@@ -127,7 +135,17 @@ def _open_position_count() -> int:
 
 def _flatten_settle(pause_sec: float = 6.0, flat_timeout_sec: float = 120.0) -> None:
     """Flatten, rearm breakers, resume, poll until venue-flat, then settle equity."""
-    _post("/api/control/flatten", timeout=600.0)
+    if _open_position_count() == 0:
+        _post("/api/control/breakers/rearm", {})
+        st = _get("/api/status")
+        if st.get("status") == "paused":
+            _post("/api/control/resume", timeout=60.0)
+        if pause_sec > 0:
+            time.sleep(pause_sec)
+        _equity_pnl()
+        time.sleep(2.0)
+        return
+    _post("/api/control/flatten", timeout=180.0)
     _post("/api/control/breakers/rearm", {})
     st = _get("/api/status")
     if st.get("status") == "paused":

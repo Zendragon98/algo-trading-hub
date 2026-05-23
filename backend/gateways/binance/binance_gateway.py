@@ -46,6 +46,7 @@ class BinanceGateway(GatewayInterface):
             min_interval_sec=max(0.0, settings.binance_rest_min_interval_ms / 1000.0),
             rest_429_default_backoff_sec=settings.binance_rest_429_default_backoff_sec,
             rest_pause_buffer_sec=settings.binance_rest_pause_buffer_sec,
+            max_blocking_wait_sec=settings.binance_rest_max_blocking_wait_sec,
         )
         self._market = MarketConnection(
             ws_base=settings.binance_ws_base,
@@ -307,6 +308,12 @@ class BinanceGateway(GatewayInterface):
         return out
 
     @property
+    def rest_backoff_remaining_sec(self) -> float:
+        return self._rest.rest_backoff_remaining_sec()
+
+    def rest_is_heavily_throttled(self, threshold_sec: float = 8.0) -> bool:
+        return self._rest.rest_is_heavily_throttled(threshold_sec)
+
     def rest(self) -> BinanceRestClient:
         """Exposed so the analytics CLI can reuse the signed REST client."""
         return self._rest

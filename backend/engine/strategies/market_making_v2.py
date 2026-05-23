@@ -15,8 +15,8 @@ from ..market_data.feature_store import Features
 from ..market_data.own_quote_book import OwnBookState
 from . import mm_core
 from .market_making import MarketMakingStrategy
-from .mm_calibrated import mm2_fee_round_trip_bps, mm2_spread_buffer_bps, mm_float
-from .mm_symbol_params import resolve_mm_params
+from .mm_calibrated import mm2_fee_round_trip_bps, mm_float
+from .mm_symbol_params import required_min_spread_bps
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ class _SymbolState:
 class MarketMakingV2Strategy(StrategyBase):
     name = "market_making_v2"
     display_label = "Market making 2.0 (quotes + fees)"
-    description = "Quote MM with spread/fee gate, tape confirm, and profit exits"
+    description = "Asymmetric microstructure MM: tape-confirmed one-sided quotes, tiered exits"
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -81,9 +81,19 @@ class MarketMakingV2Strategy(StrategyBase):
     def on_tick(self, features: dict[str, Features]) -> Iterable[Signal]:
         return []
 
+    def _open_position_count(self) -> int:
+        n = 0
+        for sym in self._symbols:
+            if abs(self._position_qty(sym)) > 1e-8:
+                n += 1
+        return n
+
     def on_tick_quotes(self, features: dict[str, Features]) -> list[QuoteIntent]:
         equity = self._equity()
         intents: list[QuoteIntent] = []
+        now = time.time()
+        open_positions = self._open_position_count()
+        max_concurrent = int(self._settings.mm2_max_concurrent_positions)
         for symbol in self._symbols:
             feat = features.get(symbol)
             if feat is None or feat.mid is None:
@@ -98,6 +108,7 @@ class MarketMakingV2Strategy(StrategyBase):
                         ask_qty=0.0,
                         reason="mm2_spread_gate",
                         strategy_name=self.name,
+                        venue_mid=float(feat.mid or 0.0),
                     )
                 )
                 continue
@@ -127,6 +138,25 @@ class MarketMakingV2Strategy(StrategyBase):
             own = self._own(symbol)
             pos_qty = self._position_qty(symbol)
             s = _Mm2SettingsAdapter(self._settings)
+            mm_core.update_vol_regime_halt(own, feat, s, now=now)
+            mm_core.update_consecutive_fill_halts(own, s, now=now)
+            if (
+                abs(pos_qty) < 1e-8
+                and max_concurrent > 0
+                and open_positions >= max_concurrent
+            ):
+                intents.append(
+                    QuoteIntent(
+                        symbol=symbol,
+                        bid_price=None,
+                        ask_price=None,
+                        bid_qty=0.0,
+                        ask_qty=0.0,
+                        reason="mm2_max_concurrent",
+                        strategy_name=self.name,
+                    )
+                )
+                continue
             exit_reason = mm_core.plan_exit_reason(
                 feat=feat,
                 settings=s,
@@ -135,7 +165,14 @@ class MarketMakingV2Strategy(StrategyBase):
                 mid=float(feat.mid),
             )
             if exit_reason:
-                intent = _exit_intent(feat, pos_qty, exit_reason, self.name, self._settings)
+                intent = mm_core.build_exit_quote_intent(
+                    feat=feat,
+                    settings=s,
+                    own=own,
+                    position_qty=pos_qty,
+                    reason=exit_reason,
+                    strategy_name=self.name,
+                )
                 if intent is not None:
                     intents.append(intent)
                     continue
@@ -149,11 +186,34 @@ class MarketMakingV2Strategy(StrategyBase):
                 strategy_name=self.name,
                 fee_round_trip_bps=mm2_fee_round_trip_bps(symbol, self._settings),
             )
-            if float(self._settings.mm2_tape_confirm) > 0:
+            tape_thr = float(self._settings.mm2_tape_confirm)
+            if tape_thr > 0:
                 tape_p = mm_core.tape_pressure(feat, s)
-                if not _tape_confirms(skew_avg or 0.0, tape_p, self._settings.mm2_tape_confirm):
+                if not _tape_confirms(skew_avg or 0.0, tape_p, tape_thr):
                     intent.bid_price = None
                     intent.ask_price = None
+                    intent.bid_qty = 0.0
+                    intent.ask_qty = 0.0
+                    intent.reason = f"{intent.reason} | mm2_tape_gate"
+            direction = mm_core.micro_direction(feat, s, skew_avg)
+            mm_core.apply_asymmetric_quotes(intent, direction=direction, position_qty=pos_qty)
+            if mm_core.symbol_quoting_halted(
+                own,
+                want_bid=intent.bid_price is not None,
+                want_ask=intent.ask_price is not None,
+                now=now,
+            ):
+                intent.bid_price = None
+                intent.ask_price = None
+                intent.bid_qty = 0.0
+                intent.ask_qty = 0.0
+                intent.reason = f"{intent.reason} | mm2_side_halt"
+            if now < own.vol_regime_halt_until:
+                intent.bid_price = None
+                intent.ask_price = None
+                intent.bid_qty = 0.0
+                intent.ask_qty = 0.0
+                intent.reason = f"{intent.reason} | mm2_vol_regime"
             intents.append(intent)
         return intents
 
@@ -161,19 +221,14 @@ class MarketMakingV2Strategy(StrategyBase):
         spread = feat.spread_bps
         if spread is None:
             return False
-        params = resolve_mm_params(feat.symbol, self._settings, feat)
-        floor = params.min_spread_bps
-        if floor is None:
-            floor = float(self._settings.mm2_min_spread_bps)
-        if floor > 0:
-            return spread >= floor
-        min_edge = float(self._settings.mm2_min_edge_bps)
-        if min_edge > 0:
-            return spread >= min_edge
-        sym = feat.symbol
-        return spread >= mm2_fee_round_trip_bps(
-            sym, self._settings
-        ) + mm2_spread_buffer_bps(sym, self._settings)
+        required = required_min_spread_bps(
+            feat.symbol,
+            self._settings,
+            feat,
+            explicit_min_spread_bps=float(self._settings.mm2_min_spread_bps),
+            explicit_min_edge_bps=float(self._settings.mm2_min_edge_bps),
+        )
+        return spread >= required
 
     def _own(self, symbol: str) -> OwnBookState:
         if self._own_provider is not None:
@@ -219,6 +274,21 @@ _MM2_FIELD_MAP = {
     "mm_min_exit_profit_bps": "mm2_min_exit_profit_bps",
     "mm_max_hold_sec": "mm2_max_hold_sec",
     "mm_qty": "mm2_qty",
+    "mm_market_exit_loss_bps": "mm2_market_exit_loss_bps",
+    "mm_aggressive_exit_loss_bps": "mm2_aggressive_exit_loss_bps",
+    "mm_exit_inside_touch_bps": "mm2_exit_inside_touch_bps",
+    "mm_exit_stale_sec": "mm2_exit_stale_sec",
+    "mm_exit_scratch_bps": "mm2_exit_scratch_bps",
+    "mm_max_inventory_notional": "mm2_max_inventory_notional",
+    "mm_max_concurrent_positions": "mm2_max_concurrent_positions",
+    "mm_max_consecutive_same_side_fills": "mm2_max_consecutive_same_side_fills",
+    "mm_side_halt_sec": "mm2_side_halt_sec",
+    "mm_vol_regime_spike_mult": "mm2_vol_regime_spike_mult",
+    "mm_vol_regime_pause_sec": "mm2_vol_regime_pause_sec",
+    "mm_exit_aggressive_bps": "mm2_exit_aggressive_bps",
+    "mm_exit_loss_ramp_bps": "mm2_exit_loss_ramp_bps",
+    "mm_exit_cross_touch": "mm2_exit_cross_touch",
+    "mm_early_loss_hold_frac": "mm2_early_loss_hold_frac",
 }
 
 
@@ -242,37 +312,3 @@ def _tape_confirms(skew_avg: float, tape_p: float, threshold: float) -> bool:
         return True
     return False
 
-
-def _exit_intent(
-    feat: Features,
-    pos_qty: float,
-    reason: str,
-    strategy_name: str,
-    settings: Settings,
-) -> QuoteIntent | None:
-    mid = feat.mid or 0.0
-    qty = abs(pos_qty)
-    if mid <= 0 or qty <= 0:
-        return None
-    scratch_bps = mm_core.mm_float(feat.symbol, settings, "mm_exit_scratch_bps")
-    if pos_qty > 0:
-        return QuoteIntent(
-            symbol=feat.symbol,
-            bid_price=None,
-            ask_price=mm_core.exit_pegged_price(mid, scratch_bps=scratch_bps, reduce_long=True),
-            bid_qty=0.0,
-            ask_qty=qty,
-            reason=reason,
-            strategy_name=strategy_name,
-            reduce_only_ask=True,
-        )
-    return QuoteIntent(
-        symbol=feat.symbol,
-        bid_price=mm_core.exit_pegged_price(mid, scratch_bps=scratch_bps, reduce_long=False),
-        ask_price=None,
-        bid_qty=qty,
-        ask_qty=0.0,
-        reason=reason,
-        strategy_name=strategy_name,
-        reduce_only_bid=True,
-    )

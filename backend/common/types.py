@@ -87,6 +87,8 @@ class QuoteIntent:
     bid_half_bps: float = 0.0
     ask_half_bps: float = 0.0
     unrealized_pnl_bps: float = 0.0
+    # When set, engine cancels MM quotes and submits reduce-only market flatten.
+    flatten_market: bool = False
     ts: float = field(default_factory=time)
 
 

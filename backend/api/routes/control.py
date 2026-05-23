@@ -172,8 +172,16 @@ async def set_strategy(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if changed and engine.status is EngineStatus.RUNNING:
-        await _run_or_500("strategy/market", engine.refresh_market_universe)
-        await _run_or_500("strategy/sync", engine.sync_trading_book_from_rest)
+        refreshed = await _run_or_500("strategy/market", engine.refresh_market_universe)
+        if refreshed and not engine.rest_heavily_throttled():
+            await _run_or_500("strategy/sync", engine.sync_trading_book_from_rest)
+        elif refreshed:
+            logger.info(
+                "strategy swap: skipping REST sync (rate-limited %.0fs)",
+                engine.rest_backoff_remaining_sec(),
+            )
+        else:
+            logger.info("strategy swap: market universe unchanged, skipping REST sync")
     logger.info("control strategy set name=%s changed=%s", body.name, changed)
     return _status(engine)
 

@@ -44,11 +44,16 @@ CYCLE_BASE_PATCH: dict[str, object] = {
     "reconcile_heal_on_mismatch": True,
     # .env often sets PAIR_CALIBRATION_PATH=data (entry_z=2); disable for soak tuning.
     "pair_calibration_path": "",
-    "symbol_calibration_path": "data/symbol_calibration.json",
+    "symbol_calibration_path": "",
+    # Avoid AUTO universe scans and heavy reconcile during soak cycles.
+    "mm_universe_auto": False,
+    "mm2_universe_auto": False,
+    "reconcile_interval_sec": 300.0,
 }
 
 STRATEGY_PATCHES: dict[str, dict[str, object]] = {
     "pairs_trading_usdt_usdc": {
+        "symbols": LIQUID_SYMBOLS[:4],
         "pair_calibration_path": "",
         "pair_entry_z": 3.8,
         "pair_exit_z": 0.3,
@@ -71,8 +76,8 @@ STRATEGY_PATCHES: dict[str, dict[str, object]] = {
         "sma_min_mid_price": 0.05,
     },
     "blended_signals": {
-        "blend_symbols": ["AUTO"],
-        "blend_max_symbols": 10,
+        "blend_symbols": LIQUID_SYMBOLS,
+        "blend_max_symbols": 6,
         "blend_bar_interval_sec": 300.0,
         "blend_entry_threshold": 0.35,
         "blend_min_confirming_votes": 3,
@@ -93,15 +98,19 @@ STRATEGY_PATCHES: dict[str, dict[str, object]] = {
         "mm_min_samples": 8,
     },
     "market_making_v2": {
-        "mm2_symbols": ["BTCUSDT", "ETHUSDT"],
+        "mm2_symbols": ["SOLUSDT", "AVAXUSDT", "ARBUSDT", "APTUSDT", "OPUSDT"],
         "mm2_min_spread_bps": 6.0,
         "mm2_min_skew_bps": 0.5,
-        "mm2_tape_confirm": 0.0,
-        "mm2_min_exit_profit_bps": 10.0,
-        "mm2_max_hold_sec": 90.0,
+        "mm2_tape_confirm": 0.08,
+        "mm2_min_exit_profit_bps": 5.0,
+        "mm2_max_hold_sec": 45.0,
+        "mm2_market_exit_loss_bps": 10.0,
+        "mm2_aggressive_exit_loss_bps": 5.0,
         "mm2_cooldown_sec": 45.0,
         "mm2_max_entries_per_tick": 1,
-        "mm2_risk_per_trade_pct": 0.0004,
+        "mm2_risk_per_trade_pct": 0.008,
+        "mm2_max_inventory_notional": 400.0,
+        "mm2_max_concurrent_positions": 3,
         "mm2_min_samples": 5,
     },
 }
@@ -110,13 +119,17 @@ _MARKER_COUNTS: dict[str, re.Pattern[str]] = {
     "pairs_trading_usdt_usdc": re.compile(r"PAIRS (entry|exit)", re.I),
     "sma_crossover": re.compile(r"SMA (open|close)", re.I),
     "blended_signals": re.compile(r"BLEND (open|close)", re.I),
-    "market_making": re.compile(r"MM .* venue=", re.I),
-    "market_making_v2": re.compile(r"mm2_|MM .* venue=", re.I),
+    "market_making": re.compile(r"MM (tilt|open|close)", re.I),
+    "market_making_v2": re.compile(r"MM2 (entry|exit|tilt|open|close)", re.I),
 }
 
-# MM2 + MM + SMA only — pairs (74 symbols) dominates flatten slippage in soak cycles.
+# Liquid / low-flatten-cost legs first; pairs (74 symbols) last to limit slippage.
 STRATEGY_ORDER = [
     "market_making_v2",
+    "market_making",
+    "blended_signals",
+    "sma_crossover",
+    "pairs_trading_usdt_usdc",
 ]
 
 _IGNORE_ERROR_SUBSTR = (
@@ -144,7 +157,7 @@ def _patch_settings(patch: dict[str, object]) -> None:
         headers={"Content-Type": "application/json"},
         method="PATCH",
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    with urllib.request.urlopen(req, timeout=300) as resp:
         resp.read()
 
 
@@ -163,8 +176,9 @@ def _apply_strategy_patch(strategy: str) -> None:
         return
     try:
         _patch_settings(patch)
-    except urllib.error.HTTPError as exc:
-        print(f"  {strategy} PATCH failed: {exc.read().decode(errors='replace')[:200]}", flush=True)
+    except (urllib.error.HTTPError, TimeoutError, OSError) as exc:
+        detail = exc.read().decode(errors="replace")[:200] if hasattr(exc, "read") else str(exc)
+        print(f"  {strategy} PATCH failed: {detail}", flush=True)
 
 
 def _scan_actionable_errors(chunk: str) -> list[str]:
@@ -203,6 +217,8 @@ def _analyze_cycle(
             f"    {flag} {name}: delta={leg_delta:+.2f} signals={n} | {detail}",
             flush=True,
         )
+        if leg_delta < 0:
+            print(f"      note: leg lost {leg_delta:+.2f} USD during soak", flush=True)
         if leg_delta < -10 and n == 0:
             print(
                 f"      note: large loss with no signals (likely flatten/slippage, not {name})",
@@ -251,6 +267,15 @@ def _tune_from_cycle(
             patch["mm_quote_half_spread_bps"] = sp["mm_quote_half_spread_bps"]
             patch["mm_cooldown_sec"] = sp["mm_cooldown_sec"]
             patch["mm_risk_per_trade_pct"] = sp["mm_risk_per_trade_pct"]
+        elif name == "blended_signals":
+            sp["blend_cooldown_sec"] = min(240.0, float(sp.get("blend_cooldown_sec", 120.0)) + 15.0)
+            sp["blend_entry_threshold"] = min(0.55, float(sp.get("blend_entry_threshold", 0.35)) + 0.03)
+            sp["blend_risk_per_trade_pct"] = max(
+                0.0004, float(sp.get("blend_risk_per_trade_pct", 0.0008)) - 0.0001,
+            )
+            patch["blend_cooldown_sec"] = sp["blend_cooldown_sec"]
+            patch["blend_entry_threshold"] = sp["blend_entry_threshold"]
+            patch["blend_risk_per_trade_pct"] = sp["blend_risk_per_trade_pct"]
         elif name == "market_making_v2":
             sp["mm2_min_spread_bps"] = min(12.0, float(sp.get("mm2_min_spread_bps", 6.0)) + 0.5)
             sp["mm2_min_exit_profit_bps"] = min(12.0, float(sp.get("mm2_min_exit_profit_bps", 10.0)) + 0.5)
@@ -282,7 +307,7 @@ def main() -> int:
         help="Stop after this many consecutive cycles with cycle PnL > 0 (0 = disabled)",
     )
     parser.add_argument("--max-cycles", type=int, default=0, help="0 = unlimited")
-    parser.add_argument("--strategies", nargs="*", default=[], help="Subset (default: all four)")
+    parser.add_argument("--strategies", nargs="*", default=[], help="Subset (default: all five)")
     args = parser.parse_args()
     wait_sec = max(60, int(args.minutes * 60))
 

@@ -222,9 +222,9 @@ def _min_edge_bps(settings: Settings) -> float:
     explicit = float(settings.mm_auto_min_edge_bps)
     if explicit > 0:
         return explicit
-    maker = float(settings.mm2_maker_fee_bps)
-    buffer = float(settings.mm2_spread_buffer_bps)
-    return 2.0 * maker + buffer
+    from engine.strategies.mm_calibrated import mm2_fee_edge_floor_bps
+
+    return mm2_fee_edge_floor_bps("BTCUSDT", settings)
 
 
 def score_mm_candidate(

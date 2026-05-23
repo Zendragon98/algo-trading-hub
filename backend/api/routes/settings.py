@@ -61,9 +61,15 @@ async def patch_settings(
                 "mm2_universe_auto",
             ):
                 patch[key] = getattr(expanded, key)
+        sym_keys = {"symbols", "sma_symbols", "blend_symbols", "mm_symbols", "mm2_symbols"}
+        symbols_before: set[str] | None = None
+        if sym_keys & patch.keys():
+            symbols_before = set(engine._resolve_market_symbols())
         new_s = engine.apply_settings_patch(patch)
-        if {"symbols", "sma_symbols", "blend_symbols", "mm_symbols", "mm2_symbols"} & patch.keys():
-            await engine.refresh_market_universe()
+        if symbols_before is not None:
+            symbols_after = set(engine._resolve_market_symbols())
+            if symbols_after != symbols_before:
+                await engine.refresh_market_universe()
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.errors()) from exc
     except ValueError as exc:

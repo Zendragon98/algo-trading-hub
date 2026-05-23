@@ -32,6 +32,8 @@ class Features:
     best_ask: float | None = None
     mid_return_1s_bps: float = 0.0
     vol_ewma_bps: float = 0.0
+    vol_5m_bps: float = 0.0
+    vol_1h_bps: float = 0.0
     jump_active: bool = False
     vpin: float = 0.5
     tape_velocity: float = 0.0
@@ -102,6 +104,8 @@ class FeatureStore:
             last_price=ms.tape.last_price,
             mid_return_1s_bps=ms.mid.return_1s_bps,
             vol_ewma_bps=ms.mid.vol_ewma_bps,
+            vol_5m_bps=ms.mid.vol_5m_bps,
+            vol_1h_bps=ms.mid.vol_1h_bps,
             jump_active=ms.mid.jump_active,
             vpin=ms.tape.vpin,
             tape_velocity=ms.tape.trades_per_sec,

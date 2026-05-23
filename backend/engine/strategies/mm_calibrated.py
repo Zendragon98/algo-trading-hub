@@ -64,3 +64,8 @@ def mm2_spread_buffer_bps(symbol: str, settings: Settings) -> float:
         "mm2_spread_buffer_bps",
         cal_attr="spread_buffer_bps",
     )
+
+
+def mm2_fee_edge_floor_bps(symbol: str, settings: Settings) -> float:
+    """Round-trip fees + buffer; respects ``post_only_enabled`` and calibration."""
+    return mm2_fee_round_trip_bps(symbol, settings) + mm2_spread_buffer_bps(symbol, settings)

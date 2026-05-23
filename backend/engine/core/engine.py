@@ -33,6 +33,7 @@ from common.types import (
     Fill,
     ParentOrder,
     Position,
+    QuoteIntent,
     Signal,
     TapeTrade,
     Tick,
@@ -49,6 +50,7 @@ from ..execution.submit_guard import SubmitGuard
 from ..execution.vwap_executor import VwapExecutor
 from ..market_data.data_quality import DataQualityMonitor, DiffAction
 from ..market_data.feature_store import FeatureStore
+from ..market_data.markout_tracker import MarkoutObservation
 from ..market_data.microstructure_hub import MicrostructureHub
 from ..market_data.orderbook import OrderBookStore
 from ..market_data.own_quote_book import OwnBookState, OwnQuoteBook
@@ -187,6 +189,7 @@ class Engine:
             large_trade_mult=settings.mm_large_trade_mult,
         )
         self._micro = MicrostructureHub(self._books, self._tape, settings)
+        self._micro.set_markout_listener(self._on_markout_observation)
         self._features = FeatureStore(self._books, self._tape, settings, hub=self._micro)
         self._own_book = OwnQuoteBook(markout_cooldown_sec=settings.mm_markout_cooldown_sec)
         self._latest_tick: dict[str, Tick] = {}
@@ -284,6 +287,7 @@ class Engine:
             order_manager=self._oms,
             own_book=self._own_book,
             settings=settings,
+            symbol_filters=gateway.get_symbol_filters,
         )
         self._mm_flow = MmFlowGuard(settings)
         self._router = ExecutionRouter(
@@ -365,9 +369,8 @@ class Engine:
         # Latest 24h notional volume per symbol; refreshed periodically and
         # consumed by strategies via Engine.volume_weights.
         self._volume_weights: dict[str, float] = {}
-        # True while an auto-flatten is dispatched in response to a
-        # MAJOR engine breach; prevents duplicate flattens stacking up.
-        self._auto_flatten_in_progress: bool = False
+        # Coalesces concurrent flatten() / _flatten_and_wait_for_flat() calls.
+        self._flatten_task: asyncio.Task[None] | None = None
         # After a successful auto-flatten, MAJOR latched breaches persist until
         # re-arm; without this we'd re-run ``flatten()`` every heartbeat (spam
         # logs + venue churn). Cleared when ENGINE scope is no longer blocked.
@@ -522,11 +525,18 @@ class Engine:
             on_quote_volume_24h=self._on_quote_volume_24h,
             on_reconnect=self._on_market_ws_reconnect,
         )
-        await self._resync_symbol_books(
-            added if added else list(new_syms),
-            reason="strategy_swap",
-            invalidate=True,
-        )
+        if self.rest_heavily_throttled():
+            logger.warning(
+                "market universe refresh: skipping L2 resync (%d symbols, REST throttled %.0fs)",
+                len(added if added else new_syms),
+                self.rest_backoff_remaining_sec(),
+            )
+        else:
+            await self._resync_symbol_books(
+                added if added else list(new_syms),
+                reason="strategy_swap",
+                invalidate=True,
+            )
         await self._prime_symbol_prices()
         return True
 
@@ -980,13 +990,34 @@ class Engine:
         await self._publish_status()
         logger.warning("engine paused")
 
-    async def resume(self) -> None:
+    async def resume(self, *, skip_rest_sync: bool = False) -> None:
         if self._state.status is not EngineStatus.PAUSED:
             return
-        await self.sync_trading_book_from_rest()
+        if not skip_rest_sync and not self.rest_heavily_throttled():
+            await self.sync_trading_book_from_rest()
+        elif skip_rest_sync or self.rest_heavily_throttled():
+            logger.warning(
+                "resume: skipping REST trading-book sync (throttled %.0fs)",
+                self.rest_backoff_remaining_sec(),
+            )
         self._state.status = EngineStatus.RUNNING
         await self._publish_status()
         logger.info("engine resumed")
+
+    def rest_backoff_remaining_sec(self) -> float:
+        fn = getattr(self._gateway, "rest_backoff_remaining_sec", None)
+        if callable(fn):
+            return float(fn())
+        return 0.0
+
+    def rest_heavily_throttled(self, threshold_sec: float = 8.0) -> bool:
+        fn = getattr(self._gateway, "rest_is_heavily_throttled", None)
+        if callable(fn):
+            return bool(fn(threshold_sec))
+        return self.rest_backoff_remaining_sec() > threshold_sec
+
+    def _flatten_inflight(self) -> bool:
+        return self._flatten_task is not None and not self._flatten_task.done()
 
     async def sync_trading_book_from_rest(self) -> None:
         """Pull wallet, positions, and open orders from the venue over REST.
@@ -997,6 +1028,12 @@ class Engine:
         path targets mid-session operator actions without a full reconnect.
         """
         if self._state.status is EngineStatus.STOPPED:
+            return
+        if self.rest_heavily_throttled():
+            logger.warning(
+                "sync_trading_book_from_rest skipped (REST throttled %.0fs)",
+                self.rest_backoff_remaining_sec(),
+            )
             return
         try:
             balances, positions = await self._gateway.fetch_balances_and_positions()
@@ -1082,12 +1119,32 @@ class Engine:
         if was_running:
             await self.pause()
         try:
+            local_open = [p for p in self._positions.all() if abs(p.qty) > 1e-12]
+            if not local_open:
+                try:
+                    venue_open = await self._fetch_venue_open_positions()
+                except Exception:  # noqa: BLE001
+                    venue_open = []
+                if not venue_open:
+                    logger.info("flatten skipped: already flat")
+                    return
+            if self.rest_heavily_throttled() and not local_open:
+                logger.warning(
+                    "flatten skipped: locally flat while REST throttled (%.0fs)",
+                    self.rest_backoff_remaining_sec(),
+                )
+                return
             await self.flatten()
             base_timeout = float(getattr(self._settings, "flatten_timeout_sec", 30.0))
             loop = asyncio.get_event_loop()
             deadline = loop.time() + max(base_timeout, 15.0)
             poll = 0.75
             while loop.time() < deadline:
+                if self.rest_heavily_throttled() and not [
+                    p for p in self._positions.all() if abs(p.qty) > 1e-12
+                ]:
+                    logger.info("flatten wait: locally flat during REST throttle; stopping poll")
+                    return
                 open_pos = await self._fetch_venue_open_positions()
                 await self._positions.sync_from_venue(open_pos)
                 if not open_pos:
@@ -1099,7 +1156,14 @@ class Engine:
                 )
                 await self._close_positions_for_flatten(open_pos, retry=True)
                 await asyncio.sleep(poll)
-            remaining = [p.symbol for p in await self._fetch_venue_open_positions()]
+            try:
+                remaining = [p.symbol for p in await self._fetch_venue_open_positions()]
+            except Exception:  # noqa: BLE001
+                remaining = [
+                    p.symbol
+                    for p in self._positions.all()
+                    if abs(p.qty) > 1e-12
+                ]
             if remaining:
                 logger.warning(
                     "flatten timeout: %d positions still open on venue: %s",
@@ -1113,7 +1177,19 @@ class Engine:
             except Exception:  # noqa: BLE001
                 logger.exception("final venue position sync after flatten failed")
             if was_running and self._state.status is EngineStatus.PAUSED:
-                await self.resume()
+                try:
+                    await asyncio.wait_for(
+                        self.resume(skip_rest_sync=self.rest_heavily_throttled()),
+                        timeout=20.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("resume after flatten timed out; forcing RUNNING")
+                    self._state.status = EngineStatus.RUNNING
+                    await self._publish_status()
+                except Exception:  # noqa: BLE001
+                    logger.exception("resume after flatten failed; forcing RUNNING")
+                    self._state.status = EngineStatus.RUNNING
+                    await self._publish_status()
 
     async def _cancel_refresh_loops(self) -> None:
         """Cancel + await the background resync tasks spawned in start().
@@ -1403,8 +1479,18 @@ class Engine:
             self._touch_symbol_from_book(sym, book)
 
     async def _fetch_venue_open_positions(self) -> list[Position]:
-        rows = await self._gateway.fetch_positions()
-        return [p for p in rows if abs(p.qty) > 1e-12]
+        if self.rest_heavily_throttled():
+            return [p for p in self._positions.all() if abs(p.qty) > 1e-12]
+        try:
+            rows = await self._gateway.fetch_positions()
+            return [p for p in rows if abs(p.qty) > 1e-12]
+        except Exception as exc:  # noqa: BLE001
+            if getattr(exc, "code", None) == -1003:
+                logger.warning(
+                    "fetch_positions skipped (rate-limited); using local book",
+                )
+                return [p for p in self._positions.all() if abs(p.qty) > 1e-12]
+            raise
 
     async def _venue_position_qty(self, symbol: str) -> float | None:
         """Signed venue qty for ``symbol``, or ``None`` if the REST read failed."""
@@ -1505,6 +1591,20 @@ class Engine:
                 )
                 await self._market_reduce_only(position.symbol, side, qty)
 
+    async def _refresh_mm_quote_intents(self, intents: list[QuoteIntent]) -> None:
+        tol = float(self._settings.reconcile_qty_tolerance)
+        refresh: list[QuoteIntent] = []
+        for intent in intents:
+            if intent.flatten_market:
+                pos = self._positions.get(intent.symbol)
+                if pos is not None and abs(pos.qty) > tol:
+                    await self._quote_executor.cancel_all([intent.symbol])
+                    side = Side.SELL if pos.qty > 0 else Side.BUY
+                    await self._market_reduce_only(intent.symbol, side, abs(pos.qty))
+                continue
+            refresh.append(intent)
+        await self._quote_executor.refresh(refresh)
+
     async def _market_reduce_only(
         self,
         symbol: str,
@@ -1564,10 +1664,20 @@ class Engine:
     async def flatten(self) -> None:
         """Cancel working orders + close all venue positions (market or VWAP)."""
         await self._cancel_mm_quotes()
-        if self._auto_flatten_in_progress:
-            logger.warning("flatten skipped: flatten already in progress")
+        if self._flatten_inflight():
+            await self._flatten_task
             return
-        self._auto_flatten_in_progress = True
+        self._flatten_task = asyncio.create_task(
+            self._flatten_body(),
+            name="engine-flatten",
+        )
+        try:
+            await self._flatten_task
+        finally:
+            if self._flatten_task is not None and self._flatten_task.done():
+                self._flatten_task = None
+
+    async def _flatten_body(self) -> None:
         logger.warning("flattening all positions")
         try:
             try:
@@ -1575,10 +1685,11 @@ class Engine:
             except Exception:  # noqa: BLE001
                 logger.exception("venue cancel_all_open_orders failed during flatten")
             await self._oms.cancel_all()
-            try:
-                await self._order_reconciler.reconcile_once(trip_on_mismatch=False)
-            except Exception:  # noqa: BLE001
-                logger.exception("order reconcile after flatten failed")
+            if not self.rest_heavily_throttled():
+                try:
+                    await self._order_reconciler.reconcile_once(trip_on_mismatch=False)
+                except Exception:  # noqa: BLE001
+                    logger.exception("order reconcile after flatten failed")
             rounds = max(3, int(getattr(self._settings, "flatten_rounds", 4)))
             for attempt in range(rounds):
                 try:
@@ -1588,7 +1699,7 @@ class Engine:
                         "fetch_positions failed during flatten (attempt %d)",
                         attempt + 1,
                     )
-                    open_pos = self._positions.all()
+                    open_pos = [p for p in self._positions.all() if abs(p.qty) > 1e-12]
                 await self._positions.sync_from_venue(open_pos)
                 if not open_pos:
                     logger.info("flatten: venue flat after attempt %d", attempt + 1)
@@ -1604,8 +1715,9 @@ class Engine:
                     retry=attempt > 0,
                 )
                 await asyncio.sleep(1.5)
-        finally:
-            self._auto_flatten_in_progress = False
+        except Exception:  # noqa: BLE001
+            logger.exception("flatten body failed")
+            raise
 
     async def operator_halt(
         self,
@@ -2025,12 +2137,24 @@ class Engine:
 
         self._notify_strategies_on_fill(fill)
 
+    def _on_markout_observation(self, obs: MarkoutObservation) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._publish_markout_observation(obs))
+
+    async def _publish_markout_observation(self, obs: MarkoutObservation) -> None:
+        await self._bus.publish(
+            Event(type=EventType.MARKOUT, payload=obs.to_dict()),
+        )
+
     async def _handle_mm_fill(self, fill: Fill, strategy_name: str) -> None:
         sym = fill.symbol.upper()
         mid = self._mid_for(sym) or fill.price
         if mid <= 0:
             return
-        self._micro.on_fill(sym, fill, mid, time.time())
+        self._micro.on_fill(sym, fill, mid, time.time(), strategy_name=strategy_name)
         pos = self._positions.get(sym) or Position(symbol=sym)
         adverse = self._micro.last_fill_adverse_bps(sym)
         self._own_book.on_level_fill(sym, fill, position_qty=pos.qty, adverse_bps=adverse)
@@ -2041,7 +2165,10 @@ class Engine:
         own = self._sync_own_book(sym)
         feat = self._features.snapshot(sym, own=own, position_qty=pos.qty, equity=equity)
         intents = list(strat.on_tick_quotes({sym: feat}))
-        await self._quote_executor.refresh(intents)
+        try:
+            await self._refresh_mm_quote_intents(intents)
+        except Exception:  # noqa: BLE001 -- fill handler must not break user_ws
+            logger.exception("MM quote refresh after fill failed for %s", sym)
 
     def _notify_strategies_on_fill(self, fill: Fill) -> None:
         parent_id = fill.parent_id or ""
@@ -2180,7 +2307,7 @@ class Engine:
         # Refresh portfolio guards before the breaker advances so a
         # newly tripped MAJOR is honoured this same tick.
         self._pnl.update()
-        if not self._auto_flatten_in_progress:
+        if not self._flatten_inflight():
             self._loss_tracker.update()
         self._exec_quality_guard.evaluate()
         has_working_orders = any(True for _ in self._oms.working_children())
@@ -2244,10 +2371,9 @@ class Engine:
 
     async def _maybe_flatten_for_breaker(self) -> None:
         if not self._breaker.is_engine_halted():
-            self._auto_flatten_in_progress = False
             self._latched_major_flatten_done = False
             return
-        if self._auto_flatten_in_progress:
+        if self._flatten_inflight():
             return
         active = [
             s for s in self._breaker.active()
@@ -2358,7 +2484,7 @@ class Engine:
                     ),
                     reason=intent.reason,
                 )
-        await self._quote_executor.refresh(intents)
+        await self._refresh_mm_quote_intents(intents)
 
     async def _evaluate_all_strategies_netted(self) -> None:
         tagged: list[tuple[str, Signal]] = []
@@ -2699,8 +2825,16 @@ class Engine:
         async with self._book_snapshot_sem:
             try:
                 data = await self._gateway.book_snapshot(symbol, depth=100)
-            except Exception:  # noqa: BLE001
-                logger.exception("book snapshot failed for %s", symbol)
+            except Exception as exc:  # noqa: BLE001
+                code = getattr(exc, "code", None)
+                if code == -1003 or getattr(exc, "status", None) == 418:
+                    logger.warning(
+                        "book snapshot skipped for %s (rate limited): %s",
+                        symbol,
+                        exc,
+                    )
+                else:
+                    logger.exception("book snapshot failed for %s", symbol)
                 return
             last_id = int(data.get("lastUpdateId", 0))
             book = self._books.get(symbol)

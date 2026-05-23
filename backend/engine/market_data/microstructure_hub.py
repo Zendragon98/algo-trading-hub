@@ -9,7 +9,7 @@ from common.config import Settings
 from common.types import Fill, TapeTrade
 
 from .book_depletion import BookDepletionTracker, DepletionStats
-from .markout_tracker import MarkoutStats, MarkoutTracker
+from .markout_tracker import MarkoutListener, MarkoutStats, MarkoutTracker
 from .mid_tracker import MidReturnTracker, MidStats
 from .orderbook import OrderBookStore
 from .toxicity import ToxicityScorer, ToxicityStats
@@ -36,7 +36,13 @@ class MicrostructureHub:
         self._tape = tape
         self._mid = MidReturnTracker(settings)
         self._depletion = BookDepletionTracker(settings)
-        self._markout = MarkoutTracker()
+        horizons = tuple(float(x) for x in (settings.mm_markout_horizons_sec or []) if x > 0)
+        if not horizons:
+            horizons = (1.0, 5.0, 30.0)
+        self._markout = MarkoutTracker(
+            alpha=float(settings.mm_markout_ewma_alpha),
+            horizons_sec=horizons,
+        )
         self._toxicity = ToxicityScorer(settings)
         self._settings = settings
 
@@ -75,8 +81,21 @@ class MicrostructureHub:
                 ts=ts,
             )
 
-    def on_fill(self, symbol: str, fill: Fill, mid_at_fill: float, ts: float) -> None:
-        self._markout.on_fill(symbol, fill, mid_at_fill, ts)
+    def set_markout_listener(self, listener: MarkoutListener | None) -> None:
+        self._markout.set_listener(listener)
+
+    def on_fill(
+        self,
+        symbol: str,
+        fill: Fill,
+        mid_at_fill: float,
+        ts: float,
+        *,
+        strategy_name: str = "",
+    ) -> None:
+        self._markout.on_fill(
+            symbol, fill, mid_at_fill, ts, strategy_name=strategy_name,
+        )
 
     def last_fill_adverse_bps(self, symbol: str) -> float:
         return self._markout.stats(symbol).last_fill_adverse_bps

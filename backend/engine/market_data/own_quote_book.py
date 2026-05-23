@@ -36,6 +36,12 @@ class OwnBookState:
     last_fill_side: str = ""
     last_fill_adverse_bps: float = 0.0
     markout_cooldown_until: float = 0.0
+    consecutive_buy_fills: int = 0
+    consecutive_sell_fills: int = 0
+    halt_bid_until: float = 0.0
+    halt_ask_until: float = 0.0
+    exit_limit_since: float = 0.0
+    vol_regime_halt_until: float = 0.0
 
     @property
     def own_bid_qty(self) -> float:
@@ -123,8 +129,20 @@ class OwnQuoteBook:
         st.last_fill_adverse_bps = adverse_bps
         if adverse_bps > 0 and self._markout_cooldown > 0:
             st.markout_cooldown_until = time() + self._markout_cooldown
+        if fill.side.value == "buy":
+            st.consecutive_buy_fills += 1
+            st.consecutive_sell_fills = 0
+        elif fill.side.value == "sell":
+            st.consecutive_sell_fills += 1
+            st.consecutive_buy_fills = 0
 
         side = 1 if position_qty > 1e-12 else (-1 if position_qty < -1e-12 else 0)
+        if side == 0:
+            st.halt_bid_until = 0.0
+            st.halt_ask_until = 0.0
+            st.exit_limit_since = 0.0
+            st.consecutive_buy_fills = 0
+            st.consecutive_sell_fills = 0
         st.ledger.open_side = side
         if side == 0:
             st.ledger.entry_mid = 0.0
@@ -141,6 +159,10 @@ class OwnQuoteBook:
                 st.ledger.entry_mid = (
                     st.ledger.entry_mid * prev_q + fill.price * (new_q - prev_q)
                 ) / new_q
+                if fill.side.value == "buy":
+                    st.halt_bid_until = time() + 3600.0
+                elif fill.side.value == "sell":
+                    st.halt_ask_until = time() + 3600.0
             st.ledger.entry_qty = new_q
         return st
 

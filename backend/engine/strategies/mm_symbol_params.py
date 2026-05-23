@@ -11,7 +11,7 @@ from common.config import Settings
 
 from ..market_data.feature_store import Features
 from ..market_data.symbol_calibration import SymbolCalibration, load_symbol_calibration
-from .mm_calibrated import calibration_path
+from .mm_calibrated import calibration_path, mm2_fee_edge_floor_bps
 
 _OVERRIDE_ALIASES: dict[str, str] = {
 
@@ -288,5 +288,31 @@ def resolve_mm_params(
         venue_half_floor_bps=venue_floor,
 
     )
+
+
+def required_min_spread_bps(
+    symbol: str,
+    settings: Settings,
+    feat: Features | None = None,
+    *,
+    explicit_min_spread_bps: float = 0.0,
+    explicit_min_edge_bps: float = 0.0,
+) -> float:
+    """Minimum venue spread (bps) before posting two-sided MM quotes.
+
+    Aligns the spread gate with ``resolve_mm_params`` / quote pricing: requires the
+  book to be at least as wide as ``2 * half_spread_bps`` (incl. venue floor), with
+    fee + buffer as a hard floor.
+    """
+    params = resolve_mm_params(symbol, settings, feat)
+    if params.min_spread_bps is not None:
+        return params.min_spread_bps
+    if explicit_min_spread_bps > 0:
+        return explicit_min_spread_bps
+    if explicit_min_edge_bps > 0:
+        return explicit_min_edge_bps
+    fee_floor = mm2_fee_edge_floor_bps(symbol, settings)
+    quote_width = 2.0 * params.half_spread_bps
+    return max(fee_floor, quote_width)
 
 
