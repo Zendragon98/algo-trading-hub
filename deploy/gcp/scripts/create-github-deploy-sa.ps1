@@ -38,7 +38,7 @@ $roles = @(
 )
 foreach ($role in $roles) {
   Write-Host "Binding $role ..."
-  gcloud projects add-iam-policy-binding $PROJECT `
+  & $gcloud projects add-iam-policy-binding $PROJECT `
     --member="serviceAccount:$SA_EMAIL" `
     --role=$role `
     --condition=None | Out-Null
@@ -47,7 +47,7 @@ foreach ($role in $roles) {
 if (Test-Path $KEY_FILE) {
   Remove-Item $KEY_FILE -Force
 }
-gcloud iam service-accounts keys create $KEY_FILE `
+& $gcloud iam service-accounts keys create $KEY_FILE `
   --iam-account=$SA_EMAIL `
   --project=$PROJECT
 

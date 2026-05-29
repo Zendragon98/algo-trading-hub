@@ -6,8 +6,10 @@ import {
   Loader2,
   Pause,
   Play,
+  RefreshCcw,
   Settings2,
   Square,
+  Target,
   Wallet,
   Zap,
 } from "lucide-react";
