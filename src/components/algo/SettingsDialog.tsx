@@ -72,7 +72,9 @@ function isStrategyParamKey(key: string): boolean {
     key.startsWith("sma_") ||
     key.startsWith("mm_") ||
     key.startsWith("mm2_") ||
-    key.startsWith("blend_")
+    key.startsWith("blend_") ||
+    key.startsWith("flow_") ||
+    key === "flow_universe_auto"
   );
 }
 
@@ -99,8 +101,8 @@ const BOOT_STRATEGY_OPTIONS: { value: string; label: string }[] = [
   { value: "pairs_trading_usdt_usdc", label: "Pairs trading (USDT/USDC)" },
   { value: "sma_crossover", label: "SMA crossover" },
   { value: "blended_signals", label: "Blended signals (EMA/MACD/RSI/BB)" },
-  { value: "market_making", label: "Market making (skew + tape)" },
-  { value: "market_making_v2", label: "Market making 2.0 (fee-aware fade)" },
+  { value: "flow_momentum", label: "Flow momentum (tape follow)" },
+  { value: "market_making_v2", label: "Market making (fee-aware quotes)" },
 ];
 
 const selectTriggerClass =
@@ -422,6 +424,7 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
     const mmLegacy = mmAll.filter((k) => !mmInst.includes(k));
     const mm2 = strategyKeys.filter((k) => k.startsWith("mm2_"));
     const blend = strategyKeys.filter((k) => k.startsWith("blend_"));
+    const flow = strategyKeys.filter((k) => k.startsWith("flow_"));
 
     return (
       <div className="space-y-4">
@@ -481,6 +484,13 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
           <div className="space-y-3">
             <SectionTitle>Blended signals (EMA / MACD / RSI / BB)</SectionTitle>
             {blend.map((k) => renderField(k))}
+          </div>
+        )}
+
+        {flow.length > 0 && (
+          <div className="space-y-3">
+            <SectionTitle>Flow momentum (tape follow)</SectionTitle>
+            {flow.map((k) => renderField(k))}
           </div>
         )}
       </div>

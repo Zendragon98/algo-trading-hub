@@ -24,6 +24,7 @@ from .core.engine import ALL_STRATEGIES_MODE, Engine
 from .persistence.market_capture import create_capturer
 from .persistence.run_bootstrap import bootstrap_run, shutdown_bootstrap
 from .strategies.blended_signals import BlendedSignalsStrategy
+from .strategies.flow_momentum import FlowMomentumStrategy
 from .strategies.market_making_v2 import MarketMakingV2Strategy
 from .strategies.pairs_trading import PairsTradingStrategy
 from .strategies.sma_crossover import SmaCrossoverStrategy
@@ -63,6 +64,7 @@ async def run() -> None:
         PairsTradingStrategy(settings),
         SmaCrossoverStrategy(settings),
         BlendedSignalsStrategy(settings),
+        FlowMomentumStrategy(settings),
         MarketMakingV2Strategy(settings),
     ]
     known_names = {s.name for s in strategies} | {ALL_STRATEGIES_MODE}
@@ -118,7 +120,9 @@ async def run() -> None:
         if isinstance(strat, PairsTradingStrategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_weight_provider(lambda: engine.volume_weights)
-        if isinstance(strat, (SmaCrossoverStrategy, BlendedSignalsStrategy)):
+        if isinstance(
+            strat, (SmaCrossoverStrategy, BlendedSignalsStrategy, FlowMomentumStrategy)
+        ):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_position_provider(_position_qty_for(strat.name))
         if isinstance(strat, BlendedSignalsStrategy):

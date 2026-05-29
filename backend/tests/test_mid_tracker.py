@@ -8,6 +8,7 @@ def test_jump_latches_pause() -> None:
     s = Settings(
         binance_api_key="x",
         binance_api_secret="y",
+        symbol_calibration_path="",
         mm_jump_return_bps=10.0,
         mm_jump_pause_sec=30.0,
     )
@@ -22,6 +23,7 @@ def test_tiny_tick_does_not_trigger_vol_relative_jump() -> None:
     s = Settings(
         binance_api_key="x",
         binance_api_secret="y",
+        symbol_calibration_path="",
         mm_jump_return_bps=25.0,
         mm_jump_vol_mult=3.0,
         mm_jump_pause_sec=30.0,

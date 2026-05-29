@@ -103,6 +103,17 @@ STRATEGY_PATCHES: dict[str, dict[str, object]] = {
         "mm_min_tape_trades": 5,
         "mm_min_samples": 8,
     },
+    "flow_momentum": {
+        "flow_symbols": LIQUID_SYMBOLS[:5],
+        "flow_tape_threshold": 0.12,
+        "flow_confirm_ticks": 3,
+        "flow_stop_loss_bps": 10.0,
+        "flow_take_profit_bps": 15.0,
+        "flow_max_hold_sec": 90.0,
+        "flow_cooldown_sec": 30.0,
+        "flow_risk_per_trade_pct": 0.08,
+        "flow_max_entries_per_tick": 1,
+    },
     "market_making_v2": {
         "mm2_symbols": ["SOLUSDT", "AVAXUSDT", "ARBUSDT", "APTUSDT", "OPUSDT"],
         "mm2_min_spread_bps": 6.0,
@@ -127,11 +138,13 @@ _MARKER_COUNTS: dict[str, re.Pattern[str]] = {
     "blended_signals": re.compile(r"BLEND (open|close)", re.I),
     "market_making": re.compile(r"MM (tilt|open|close)", re.I),
     "market_making_v2": re.compile(r"MM2 (entry|exit|tilt|open|close)", re.I),
+    "flow_momentum": re.compile(r"FLOW (open|close)", re.I),
 }
 
 # Liquid / low-flatten-cost legs first; pairs (74 symbols) last to limit slippage.
 STRATEGY_ORDER = [
     "market_making_v2",
+    "flow_momentum",
     "blended_signals",
     "sma_crossover",
     "pairs_trading_usdt_usdc",

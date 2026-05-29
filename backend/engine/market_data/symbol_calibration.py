@@ -220,11 +220,12 @@ def load_symbol_calibration(path: str | None = None) -> dict[str, SymbolCalibrat
     primary: Path | None = None
     if path_str:
         primary = _resolve_data_path(path_str)
-        if primary.exists():
-            paths.append(primary)
     legacy = _backend_data_dir() / "mm_spread_calibration.json"
+    # Legacy spread file first; explicit primary path wins on key conflicts.
     if legacy.exists() and legacy != primary:
         paths.append(legacy)
+    if primary is not None and primary.exists():
+        paths.append(primary)
 
     if not paths:
         if path_str:

@@ -125,7 +125,14 @@ def test_report_freshness() -> None:
 def test_min_edge_from_settings() -> None:
     from analytics.mm_universe_scanner import _min_edge_bps
 
-    s = Settings(mm_auto_min_edge_bps=0.0, mm2_maker_fee_bps=2.0, mm2_spread_buffer_bps=2.0)
+    s = Settings(
+        symbol_calibration_path="",
+        mm_spread_calibration_path="",
+        mm_auto_min_edge_bps=0.0,
+        mm2_maker_fee_bps=2.0,
+        mm2_spread_buffer_bps=2.0,
+        mm2_assume_maker_rebate=False,
+    )
     assert _min_edge_bps(s) == pytest.approx(6.0)
 
 

@@ -3,7 +3,9 @@ flowchart TB
     subgraph Boot["Registered at main.py (all loaded)"]
         P["PairsTradingStrategy"]
         S["SmaCrossoverStrategy"]
-        M["MarketMakingStrategy"]
+        B["BlendedSignalsStrategy"]
+        F["FlowMomentumStrategy"]
+        M2["MarketMakingV2Strategy"]
     end
 
     subgraph Mode["Active mode"]
@@ -13,28 +15,37 @@ flowchart TB
 
     P --> ONE
     S --> ONE
-    M --> ONE
+    B --> ONE
+    F --> ONE
+    M2 --> ONE
     P --> ALL
     S --> ALL
-    M --> ALL
+    B --> ALL
+    F --> ALL
+    M2 --> ALL
 
     ONE --> TICK["on_tick per 1 Hz clock"]
-    ALL --> TICK2["each strategy on_tick"]
+    ALL --> TICK2["alpha: on_tick each"]
+    ALL --> MMQ["mm2: on_tick_quotes"]
     TICK2 --> NET["net_strategy_signals<br/>per symbol + group_id"]
-    NET --> DISPATCH["_dispatch_netted / _dispatch_group"]
-
+    NET --> DISPATCH["_dispatch_netted"]
+    MMQ --> QE["QuoteExecutor"]
     TICK --> DISPATCH2["_dispatch_signals"]
     DISPATCH --> RISK["PreTrade → Execution"]
     DISPATCH2 --> RISK
+    QE --> RISK
 
     subgraph RiskOwnership["StopLossMonitor ownership"]
-        P2["pairs: manages_own_risk=true<br/>z-space SL/TP only"]
-        S2["sma + mm: engine brackets<br/>DEFAULT_STOP_LOSS_PCT"]
+        P2["pairs + flow: manages_own_risk"]
+        S2["sma + blend: engine brackets"]
+        M2R["mm2: institutional risk"]
     end
 
     P -.-> P2
+    F -.-> P2
     S -.-> S2
-    M -.-> S2
+    B -.-> S2
+    M2 -.-> M2R
 
     subgraph Ledger["STRATEGY=all only"]
         L["strategy_ledger<br/>per-strategy attributed qty"]

@@ -17,6 +17,7 @@ from common.events import EventBus  # noqa: E402
 from common.types import ChildOrder, Kline, Position, Signal  # noqa: E402
 from engine.core.engine import ALL_STRATEGIES_MODE, Engine  # noqa: E402
 from engine.market_data.feature_store import Features  # noqa: E402
+from engine.strategies.flow_momentum import FlowMomentumStrategy  # noqa: E402
 from engine.strategies.strategy_base import StrategyBase  # noqa: E402
 from gateways.gateway_interface import GatewayInterface, SymbolFilters  # noqa: E402
 
@@ -83,6 +84,35 @@ def test_set_active_all_mode() -> None:
     engine.set_active_strategy(ALL_STRATEGIES_MODE)
     assert engine.is_multi_strategy_mode()
     assert engine.active_strategy_name == ALL_STRATEGIES_MODE
+
+
+@pytest.mark.asyncio
+async def test_flow_momentum_ticks_in_all_mode() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        symbols=["BTCUSDT"],
+        strategy=ALL_STRATEGIES_MODE,
+        flow_symbols=["BTCUSDT"],
+    )
+    flow_tick = 0
+
+    class _CountFlow(FlowMomentumStrategy):
+        def on_tick(self, features: dict[str, Features]):
+            nonlocal flow_tick
+            flow_tick += 1
+            return super().on_tick(features)
+
+    counted = _CountFlow(settings)
+    engine = Engine(
+        settings=settings,
+        bus=EventBus(),
+        gateway=_MockGateway(),
+        strategies=[_EmitStrategy("other", "ETHUSDT"), counted],
+    )
+    engine.set_active_strategy(ALL_STRATEGIES_MODE)
+    await engine._evaluate_strategies()
+    assert flow_tick == 1
 
 
 @pytest.mark.asyncio

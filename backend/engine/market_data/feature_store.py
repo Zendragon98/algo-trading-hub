@@ -7,6 +7,7 @@ from time import time
 
 from common.config import Settings
 
+from .funding_store import FundingRateStore
 from .microstructure_hub import MicrostructureHub
 from .orderbook import OrderBookStore
 from .own_quote_book import OwnBookState
@@ -54,6 +55,9 @@ class Features:
     own_ask_qty: float = 0.0
     entry_mid: float = 0.0
     unrealized_pnl_bps: float = 0.0
+    funding_rate_bps: float = 0.0
+    funding_carry_bps: float = 0.0
+    md_ready: bool = False
 
 
 class FeatureStore:
@@ -65,11 +69,13 @@ class FeatureStore:
         tape: TradeTape,
         settings: Settings,
         hub: MicrostructureHub | None = None,
+        funding: FundingRateStore | None = None,
     ) -> None:
         self._books = books
         self._tape = tape
         self._top_n = settings.imbalance_top_n
         self._hub = hub or MicrostructureHub(books, tape, settings)
+        self._funding = funding
         self._settings = settings
 
     def apply_settings(self, settings: Settings) -> None:
@@ -121,6 +127,7 @@ class FeatureStore:
             depth_depletion_asym=ms.depletion.depth_depletion_asym,
         )
 
+        feat.md_ready = book.ready()
         if not book.ready():
             return feat
 
@@ -130,6 +137,12 @@ class FeatureStore:
         feat.imbalance_topn = book.imbalance(self._top_n)
         feat.best_bid = book.best_bid()
         feat.best_ask = book.best_ask()
+
+        if self._funding is not None and self._settings.mm_funding_enabled:
+            snap = self._funding.get(symbol)
+            if snap is not None:
+                feat.funding_rate_bps = snap.rate_bps
+                feat.funding_carry_bps = snap.carry_bps
 
         if own is not None and mid and mid > 0:
             feat.own_bid_price = own.own_bid.price if own.own_bid else None

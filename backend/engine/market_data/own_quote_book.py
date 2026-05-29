@@ -42,6 +42,12 @@ class OwnBookState:
     halt_ask_until: float = 0.0
     exit_limit_since: float = 0.0
     vol_regime_halt_until: float = 0.0
+    protect_bid_until: float = 0.0
+    protect_ask_until: float = 0.0
+    protect_bid_floor: float = 0.0
+    protect_ask_ceiling: float = 0.0
+    pending_take_bid: bool = False
+    pending_take_ask: bool = False
 
     @property
     def own_bid_qty(self) -> float:
@@ -61,12 +67,21 @@ def is_mm_quote_parent(parent_id: str, notes: str = "") -> bool:
 
 
 class OwnQuoteBook:
-    def __init__(self, markout_cooldown_sec: float = 15.0) -> None:
+    def __init__(
+        self,
+        markout_cooldown_sec: float = 15.0,
+        *,
+        side_halt_sec: float = 120.0,
+    ) -> None:
         self._states: dict[str, OwnBookState] = {}
         self._markout_cooldown = max(0.0, markout_cooldown_sec)
+        self._side_halt_sec = max(0.0, side_halt_sec)
 
     def set_markout_cooldown_sec(self, sec: float) -> None:
         self._markout_cooldown = max(0.0, sec)
+
+    def set_side_halt_sec(self, sec: float) -> None:
+        self._side_halt_sec = max(0.0, sec)
 
     def state(self, symbol: str) -> OwnBookState:
         sym = symbol.upper()
@@ -84,6 +99,8 @@ class OwnQuoteBook:
         st = self.state(symbol)
         st.own_bid = None
         st.own_ask = None
+        bids: list[OwnLevel] = []
+        asks: list[OwnLevel] = []
         for c in children:
             if c.status not in (
                 OrderStatus.NEW,
@@ -100,9 +117,27 @@ class OwnQuoteBook:
                 posted_ts=c.created_at,
             )
             if c.side is Side.BUY:
-                st.own_bid = lvl
+                bids.append(lvl)
             else:
-                st.own_ask = lvl
+                asks.append(lvl)
+        if bids:
+            best = max(bids, key=lambda level: level.price)
+            st.own_bid = OwnLevel(
+                best.price,
+                sum(level.qty for level in bids),
+                best.child_id,
+                posted_ts=min(level.posted_ts for level in bids if level.posted_ts > 0)
+                or best.posted_ts,
+            )
+        if asks:
+            best = min(asks, key=lambda level: level.price)
+            st.own_ask = OwnLevel(
+                best.price,
+                sum(level.qty for level in asks),
+                best.child_id,
+                posted_ts=min(level.posted_ts for level in asks if level.posted_ts > 0)
+                or best.posted_ts,
+            )
         return st
 
     def set_session_levels(
@@ -159,10 +194,12 @@ class OwnQuoteBook:
                 st.ledger.entry_mid = (
                     st.ledger.entry_mid * prev_q + fill.price * (new_q - prev_q)
                 ) / new_q
-                if fill.side.value == "buy":
-                    st.halt_bid_until = time() + 3600.0
-                elif fill.side.value == "sell":
-                    st.halt_ask_until = time() + 3600.0
+                if self._side_halt_sec > 0:
+                    until = time() + self._side_halt_sec
+                    if fill.side.value == "buy":
+                        st.halt_bid_until = until
+                    elif fill.side.value == "sell":
+                        st.halt_ask_until = until
             st.ledger.entry_qty = new_q
         return st
 

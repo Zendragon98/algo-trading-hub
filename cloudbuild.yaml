@@ -1,0 +1,37 @@
+# Google Cloud Build — build and push the backend image to Artifact Registry.
+#
+# Prerequisites (one-time):
+#   gcloud services enable cloudbuild.googleapis.com artifactregistry.googleapis.com
+#   gcloud artifacts repositories create algo-trading \
+#     --repository-format=docker --location=$REGION
+#
+# Submit:
+#   gcloud builds submit --config=cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_REPOSITORY=algo-trading
+
+substitutions:
+  _REGION: us-central1
+  _REPOSITORY: algo-trading
+  _IMAGE: backend
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - backend/Dockerfile
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:latest
+      - backend
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY

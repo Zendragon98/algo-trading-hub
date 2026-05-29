@@ -13,3 +13,9 @@ def test_venue_qty_in_bounds_rejects_over_max() -> None:
     filt = SymbolFilters(symbol="X", max_qty=100.0, min_qty=1.0)
     assert venue_qty_in_bounds(50.0, filt, 1.0) is True
     assert venue_qty_in_bounds(150.0, filt, 1.0) is False
+
+
+def test_venue_qty_in_bounds_reduce_only_allows_below_min_qty() -> None:
+    filt = SymbolFilters(symbol="FILUSDT", min_qty=0.1, min_notional=15.0)
+    assert venue_qty_in_bounds(0.031, filt, 0.95, reduce_only=False) is False
+    assert venue_qty_in_bounds(0.031, filt, 0.95, reduce_only=True) is True

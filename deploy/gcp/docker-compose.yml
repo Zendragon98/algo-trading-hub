@@ -1,0 +1,31 @@
+# Run on a Compute Engine VM (or any Linux host with Docker).
+# Copy env.gcp.example to .env and fill secrets before: docker compose up -d
+#
+#   cd deploy/gcp
+#   cp env.gcp.example .env
+#   # edit .env — set IMAGE, secrets, CORS_ORIGINS
+#   docker compose up -d
+
+services:
+  engine:
+    image: ${IMAGE:-algo-trading-backend:latest}
+    container_name: algo-trading-engine
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ${DATA_DIR:-/var/lib/algo-trading/data}:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s

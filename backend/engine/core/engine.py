@@ -51,10 +51,11 @@ from ..execution.submit_guard import SubmitGuard
 from ..execution.vwap_executor import VwapExecutor
 from ..market_data.data_quality import DataQualityMonitor, DiffAction
 from ..market_data.feature_store import FeatureStore
+from ..market_data.funding_store import FundingRateStore
 from ..market_data.markout_tracker import MarkoutObservation
 from ..market_data.microstructure_hub import MicrostructureHub
 from ..market_data.orderbook import OrderBookStore
-from ..market_data.own_quote_book import OwnBookState, OwnQuoteBook
+from ..market_data.own_quote_book import OwnBookState, OwnQuoteBook, is_mm_quote_child
 from ..market_data.symbol_calibration import invalidate_cache
 from ..market_data.trade_tape import TradeTape
 from ..observability.alert_manager import AlertManager
@@ -190,8 +191,15 @@ class Engine:
         )
         self._micro = MicrostructureHub(self._books, self._tape, settings)
         self._micro.set_markout_listener(self._on_markout_observation)
-        self._features = FeatureStore(self._books, self._tape, settings, hub=self._micro)
-        self._own_book = OwnQuoteBook(markout_cooldown_sec=settings.mm_markout_cooldown_sec)
+        self._funding = FundingRateStore()
+        self._last_funding_poll_ts = 0.0
+        self._features = FeatureStore(
+            self._books, self._tape, settings, hub=self._micro, funding=self._funding,
+        )
+        self._own_book = OwnQuoteBook(
+            markout_cooldown_sec=settings.mm_markout_cooldown_sec,
+            side_halt_sec=settings.mm_side_halt_sec,
+        )
         self._latest_tick: dict[str, Tick] = {}
 
         # OMS + tracker stack
@@ -288,6 +296,7 @@ class Engine:
             own_book=self._own_book,
             settings=settings,
             symbol_filters=gateway.get_symbol_filters,
+            on_venue_reject=self._on_mm_quote_reject,
         )
         self._mm_flow = MmFlowGuard(settings)
         self._router = ExecutionRouter(
@@ -367,6 +376,7 @@ class Engine:
         self._mm_universe_last_adverse_refresh_ts: float = 0.0
         self._mm_universe_last_adverse_check_ts: float = 0.0
         self._mm_universe_spread_baselines: dict[str, float] = {}
+        self._multi_strategy_log_ts: float = 0.0
         # Latest 24h notional volume per symbol; refreshed periodically and
         # consumed by strategies via Engine.volume_weights.
         self._volume_weights: dict[str, float] = {}
@@ -650,6 +660,7 @@ class Engine:
         self._quote_executor.apply_settings(s)
         self._mm_flow.apply_settings(s)
         self._own_book.set_markout_cooldown_sec(s.mm_markout_cooldown_sec)
+        self._own_book.set_side_halt_sec(s.mm_side_halt_sec)
         self._executor.apply_settings(s)
         self._stop_monitor.set_externally_managed(self._compute_externally_managed())
         self._submit_guard.apply_settings(s)
@@ -691,7 +702,9 @@ class Engine:
         def own_provider(sym: str) -> OwnBookState:
             sym_u = sym.upper()
             children = [
-                c for c in self._oms.working_children() if c.symbol.upper() == sym_u
+                c
+                for c in self._oms.working_children()
+                if c.symbol.upper() == sym_u and is_mm_quote_child(c)
             ]
             return self._own_book.sync_working(sym_u, list(children))
 
@@ -706,7 +719,11 @@ class Engine:
 
     def _sync_own_book(self, symbol: str) -> OwnBookState:
         sym = symbol.upper()
-        children = [c for c in self._oms.working_children() if c.symbol.upper() == sym]
+        children = [
+            c
+            for c in self._oms.working_children()
+            if c.symbol.upper() == sym and is_mm_quote_child(c)
+        ]
         return self._own_book.sync_working(sym, list(children))
 
     def _compute_externally_managed(self) -> set[str]:
@@ -1287,7 +1304,9 @@ class Engine:
 
     def _mm_universe_refresh_enabled(self) -> bool:
         return bool(
-            self._settings.mm_universe_auto or self._settings.mm2_universe_auto,
+            self._settings.mm_universe_auto
+            or self._settings.mm2_universe_auto
+            or self._settings.flow_universe_auto,
         )
 
     def _active_mm_symbols(self) -> list[str]:
@@ -1419,6 +1438,8 @@ class Engine:
             patch["mm_symbols"] = symbols
         if self._settings.mm2_universe_auto:
             patch["mm2_symbols"] = symbols
+        if self._settings.flow_universe_auto:
+            patch["flow_symbols"] = symbols
         if not patch:
             return False
 
@@ -2204,6 +2225,37 @@ class Engine:
             Event(type=EventType.MARKOUT, payload=obs.to_dict()),
         )
 
+    def _on_mm_quote_reject(self, symbol: str, side: Side, code: int | None) -> None:
+        own = self._own_book.state(symbol)
+        mm_core.note_mm_venue_reject(own, self._settings, side=side, code=code)
+
+    async def _maybe_poll_funding(self) -> None:
+        if not self._settings.mm_funding_enabled:
+            return
+        interval = float(self._settings.mm_funding_poll_sec)
+        now = time.time()
+        if interval > 0 and self._last_funding_poll_ts > 0 and now - self._last_funding_poll_ts < interval:
+            return
+        rest = getattr(self._gateway, "_rest", None)
+        if rest is None or not hasattr(rest, "premium_index"):
+            return
+        self._last_funding_poll_ts = now
+        try:
+            rows = await rest.premium_index()
+        except Exception:  # noqa: BLE001
+            logger.debug("funding poll failed", exc_info=True)
+            return
+        for row in rows:
+            sym = str(row.get("symbol", "")).upper()
+            if not sym:
+                continue
+            try:
+                rate = float(row.get("lastFundingRate", 0) or 0)
+                nft = float(row.get("nextFundingTime", 0) or 0) / 1000.0
+            except (TypeError, ValueError):
+                continue
+            self._funding.update(sym, rate=rate, next_funding_ts=nft if nft > 0 else None)
+
     async def _handle_mm_fill(self, fill: Fill, strategy_name: str) -> None:
         sym = fill.symbol.upper()
         mid = self._mid_for(sym) or fill.price
@@ -2219,6 +2271,8 @@ class Engine:
         equity = self._portfolio.snapshot().equity
         own = self._sync_own_book(sym)
         feat = self._features.snapshot(sym, own=own, position_qty=pos.qty, equity=equity)
+        maker = bool(getattr(fill, "is_maker", False))
+        mm_core.on_mm_fill(own, feat, self._settings, side=fill.side.value, maker=maker)
         intents = list(strat.on_tick_quotes({sym: feat}))
         try:
             await self._refresh_mm_quote_intents(intents)
@@ -2404,6 +2458,7 @@ class Engine:
             return
 
         await self._maybe_refresh_mm_universe_adverse()
+        await self._maybe_poll_funding()
 
         # Risk-driven exits first; an exit can't be vetoed by risk again
         # because it's already a closing trade.
@@ -2527,6 +2582,7 @@ class Engine:
         except Exception:  # noqa: BLE001
             logger.exception("strategy %s on_tick_quotes raised", strat.name)
             return
+        verbose_mm_log = not self.is_multi_strategy_mode()
         for intent in intents:
             if intent.reservation_mid > 0 or intent.reason:
                 obs: list[str] = []
@@ -2537,26 +2593,53 @@ class Engine:
                 if intent.tape_pressure is not None:
                     obs.append(f"tape_p={intent.tape_pressure:+.3f}")
                 obs_suffix = f" {' '.join(obs)}" if obs else ""
-                signal_log_emit(
-                    logger,
-                    (
-                        f"MM {intent.symbol} venue={intent.venue_mid:.4f} "
-                        f"res={intent.reservation_mid:.4f} inv={intent.inventory_ratio:+.3f} "
-                        f"bid_half={intent.bid_half_bps:.2f} ask_half={intent.ask_half_bps:.2f} "
-                        f"bid={intent.bid_price} ask={intent.ask_price} "
-                        f"pnl_bps={intent.unrealized_pnl_bps:.1f}{obs_suffix}"
-                    ),
-                    reason=intent.reason,
+                headline = (
+                    f"MM {intent.symbol} venue={intent.venue_mid:.4f} "
+                    f"res={intent.reservation_mid:.4f} inv={intent.inventory_ratio:+.3f} "
+                    f"bid_half={intent.bid_half_bps:.2f} ask_half={intent.ask_half_bps:.2f} "
+                    f"bid={intent.bid_price} ask={intent.ask_price} "
+                    f"pnl_bps={intent.unrealized_pnl_bps:.1f}{obs_suffix}"
                 )
+                if verbose_mm_log:
+                    signal_log_emit(logger, headline, reason=intent.reason)
+                else:
+                    logger.debug("%s | %s", headline, intent.reason or "")
         await self._refresh_mm_quote_intents(intents)
+
+    def _maybe_log_multi_strategy_summary(
+        self,
+        *,
+        sig_counts: dict[str, int],
+    ) -> None:
+        """Periodic LIVE LOG line so STRATEGY=all shows every loaded strategy."""
+        if not self.is_multi_strategy_mode():
+            return
+        interval = float(self._settings.multi_strategy_log_interval_sec)
+        if interval <= 0:
+            return
+        now = time.time()
+        if self._multi_strategy_log_ts > 0 and now - self._multi_strategy_log_ts < interval:
+            return
+        self._multi_strategy_log_ts = now
+        parts: list[str] = []
+        for strat in self._strategies:
+            label = (strat.display_label or strat.name).strip()
+            sym_n = len(strat.symbols())
+            if mm_core.is_mm_strategy(strat.name):
+                parts.append(f"MM2 {sym_n} syms")
+            else:
+                sig_n = sig_counts.get(strat.name, 0)
+                parts.append(f"{label} {sym_n} syms sig={sig_n}")
+        if not parts:
+            return
+        logger.info("ALL strategies tick: %s", " | ".join(parts))
 
     async def _evaluate_all_strategies_netted(self) -> None:
         tagged: list[tuple[str, Signal]] = []
+        sig_counts: dict[str, int] = {}
         symbol_union: set[str] = set()
         alpha_strategies: list[StrategyBase] = []
         for strat in self._strategies:
-            if strat.name == "market_making":
-                continue
             if mm_core.is_mm_strategy(strat.name):
                 await self._evaluate_mm_quotes(strat)
             else:
@@ -2570,8 +2653,10 @@ class Engine:
                 feats = {sym: feats_cache[sym] for sym in strat.symbols() if sym in feats_cache}
                 for sig in strat.on_tick(feats):
                     tagged.append((strat.name, sig))
+                    sig_counts[strat.name] = sig_counts.get(strat.name, 0) + 1
             except Exception:  # noqa: BLE001
                 logger.exception("strategy %s on_tick raised", strat.name)
+        self._maybe_log_multi_strategy_summary(sig_counts=sig_counts)
         if not tagged:
             return
         result = net_strategy_signals(tagged)

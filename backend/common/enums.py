@@ -65,6 +65,17 @@ class Urgency(str, Enum):
     AGGRESSIVE = "aggressive"  # fewer slices, shorter window, higher slippage cap
 
 
+class MmExecutionMode(str, Enum):
+    """How QuoteExecutor works a single MM quote side."""
+
+    MAKE = "make"
+    CHASE = "chase"
+    CLIMB = "climb"
+    LADDER = "ladder"
+    CLIMB_MULTI = "climb_multi"
+    TAKE = "take"
+
+
 class AlgoMode(str, Enum):
     """How the VWAP slicer distributes child orders across the schedule.
 

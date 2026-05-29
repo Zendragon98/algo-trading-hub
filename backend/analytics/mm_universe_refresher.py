@@ -29,7 +29,11 @@ class AdverseUniverseSignal:
 
 
 def mm_auto_active(settings: Settings) -> bool:
-    return bool(settings.mm_universe_auto or settings.mm2_universe_auto)
+    return bool(
+        settings.mm_universe_auto
+        or settings.mm2_universe_auto
+        or settings.flow_universe_auto,
+    )
 
 
 def spread_baselines_from_report(path_symbols: dict[str, float]) -> dict[str, float]:

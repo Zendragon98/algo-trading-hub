@@ -6,11 +6,12 @@ import time
 from dataclasses import dataclass
 
 from common.config import Settings
+from common.enums import Side
 from common.types import QuoteIntent
 
 from ..market_data.feature_store import Features, unrealized_pnl_bps
 from ..market_data.own_quote_book import EntryLedger, OwnBookState
-from .mm_calibrated import mm_float
+from .mm_calibrated import mm_float, mm_risk_float
 from .mm_symbol_params import MmSymbolQuoteParams, resolve_mm_params
 
 MM_STRATEGY_NAMES = frozenset({"market_making", "market_making_v2"})
@@ -140,6 +141,155 @@ def build_microstructure_bias(
     )
 
 
+def _quote_asset(symbol: str) -> str:
+    sym = symbol.upper()
+    if sym.endswith("USDC"):
+        return "USDC"
+    if sym.endswith("USDT"):
+        return "USDT"
+    if sym.endswith("USD"):
+        return "USD"
+    return "USDT"
+
+
+def stablecoin_fx(settings: Settings, quote_asset: str) -> float:
+    """Slide stablecoin basis: F for USDT/USDC/USD."""
+    if not settings.mm_stablecoin_basis_enabled:
+        return 1.0
+    if quote_asset == "USDT":
+        idx = float(settings.usdt_usd_index)
+        return min(1.0004, max(0.9986, idx))
+    if quote_asset == "USDC":
+        return float(settings.usdc_usd_index)
+    return 1.0
+
+
+def stablecoin_basis_bps(settings: Settings, symbol: str, *, inbound: bool) -> float:
+    f = stablecoin_fx(settings, _quote_asset(symbol))
+    adj = (f - 1.0) if inbound else (1.0 - f)
+    return adj * 10_000.0
+
+
+def funding_shift_bps(feat: Features, settings: Settings, inv_ratio: float) -> float:
+    if not settings.mm_funding_enabled:
+        return 0.0
+    carry = float(feat.funding_carry_bps or feat.funding_rate_bps)
+    scale = float(settings.mm_funding_shift_scale)
+    # Positive funding: longs pay -> lower mid when long inventory.
+    return -carry * scale * max(-1.0, min(1.0, inv_ratio))
+
+
+def update_protect_state(
+    own: OwnBookState,
+    feat: Features,
+    settings: Settings,
+    *,
+    now: float,
+) -> None:
+    if not settings.mm_protect_enabled:
+        return
+    thresh = float(settings.mm_protect_burst_thresh)
+    widen_bps = float(settings.mm_protect_widen_bps) / 10_000.0
+    decay = float(settings.mm_protect_decay_sec)
+    mid = float(feat.mid or 0.0)
+    if mid <= 0:
+        return
+    buy_burst = (
+        feat.tape_velocity > thresh
+        or feat.large_trade_share > thresh
+        or feat.bid_hit_ratio > 0.65
+    )
+    sell_burst = (
+        feat.tape_velocity > thresh
+        or feat.large_trade_share > thresh
+        or feat.ask_hit_ratio > 0.65
+    )
+    if buy_burst:
+        own.protect_bid_floor = mid * (1.0 + widen_bps)
+        own.protect_bid_until = now + decay
+    if sell_burst:
+        own.protect_ask_ceiling = mid * (1.0 - widen_bps)
+        own.protect_ask_until = now + decay
+
+
+def apply_protect_clamp(
+    bid_price: float | None,
+    ask_price: float | None,
+    own: OwnBookState,
+    *,
+    now: float,
+) -> tuple[float | None, float | None]:
+    if now < own.protect_bid_until and own.protect_bid_floor > 0 and bid_price is not None:
+        bid_price = max(bid_price, own.protect_bid_floor)
+    if now < own.protect_ask_until and own.protect_ask_ceiling > 0 and ask_price is not None:
+        ask_price = min(ask_price, own.protect_ask_ceiling)
+    return bid_price, ask_price
+
+
+def position_side_blocked(
+    side_want_long: bool,
+    position_qty: float,
+    mid: float,
+    settings: Settings,
+) -> bool:
+    if mid <= 0:
+        return True
+    if side_want_long:
+        limit_n = float(settings.mm_buy_position_limit_notional)
+        if limit_n <= 0:
+            return False
+        return position_qty >= limit_n / mid - 1e-12
+    limit_n = float(settings.mm_sell_position_limit_notional)
+    if limit_n <= 0:
+        return False
+    return position_qty <= -limit_n / mid + 1e-12
+
+
+def mm_feeds_ready(feat: Features, settings: Settings, skew_avg: float | None) -> bool:
+    if not settings.mm_require_ready:
+        return True
+    if not feat.md_ready or feat.mid is None:
+        return False
+    if feat.best_bid is None or feat.best_ask is None:
+        return False
+    min_tr = max(1, int(settings.mm_min_tape_trades))
+    if feat.tape_bid_hit_count + feat.tape_ask_hit_count < min_tr:
+        return False
+    if settings.mm_funding_enabled and feat.funding_rate_bps == 0.0 and feat.funding_carry_bps == 0.0:
+        pass
+    if skew_avg is None:
+        return False
+    return True
+
+
+def plan_hedge_reduce(
+    *,
+    feat: Features,
+    settings: Settings,
+    position_qty: float,
+    inv_ratio: float,
+) -> bool:
+    """Whether to emit TAKE reduce on this tick (inventory hedge)."""
+    exit_ratio = float(settings.mm_inventory_exit_ratio)
+    if exit_ratio <= 0:
+        return False
+    if abs(inv_ratio) < exit_ratio:
+        return False
+    return abs(position_qty) > 1e-12
+
+
+def should_fill_hedge_ioc(
+    own: OwnBookState,
+    feat: Features,
+    settings: Settings,
+) -> bool:
+    if not settings.mm_fill_hedge_ioc_enabled:
+        return False
+    if own.last_fill_adverse_bps >= float(settings.mm_fill_hedge_adverse_bps):
+        return True
+    return float(feat.vol_5m_bps) >= float(settings.mm_fill_hedge_vol_bps)
+
+
 def compute_reservation_mid(
     venue_mid: float,
     *,
@@ -165,9 +315,14 @@ def compute_reservation_mid(
     )
     p = params or resolve_mm_params(feat.symbol, settings, feat)
     inv_bps = -inv_ratio * p.reservation_inventory_bps
-    total_bps = micro_bps + inv_bps
+    fund_bps = funding_shift_bps(feat, settings, inv_ratio)
+    stable_in = stablecoin_basis_bps(settings, sym, inbound=True)
+    stable_out = stablecoin_basis_bps(settings, sym, inbound=False)
+    stable_bps = (stable_in + stable_out) * 0.5
+    manual_bps = float(settings.mm_manual_adj_bps)
+    total_bps = micro_bps + inv_bps + fund_bps + stable_bps + manual_bps
     reservation = venue_mid * (1.0 + total_bps / 10_000.0)
-    return reservation, micro_bps, inv_bps
+    return reservation, micro_bps, inv_bps + fund_bps + stable_bps + manual_bps
 
 
 def compute_half_spreads_bps(
@@ -508,11 +663,11 @@ def plan_exit_reason(
     if feat.jump_active and settings.mm_jump_flatten:
         return "mm_market_exit jump_flatten"
 
-    scratch = mm_float(sym, settings, "mm_scratch_loss_bps", cal_attr="scratch_loss_bps")
+    scratch = mm_risk_float(sym, settings, "mm_scratch_loss_bps", cal_attr="scratch_loss_bps")
     if own.last_fill_adverse_bps >= scratch:
         return f"mm_aggressive_exit adverse_fill bps={own.last_fill_adverse_bps:.2f}"
 
-    market_bps = mm_float(
+    market_bps = mm_risk_float(
         sym, settings, "mm_market_exit_loss_bps", cal_attr="market_exit_loss_bps"
     )
     if market_bps > 0 and pnl_bps <= -market_bps:
@@ -527,13 +682,13 @@ def plan_exit_reason(
     if own.exit_limit_since > 0 and stale_sec > 0 and now - own.exit_limit_since >= stale_sec:
         return f"mm_market_exit stale_limit pnl_bps={pnl_bps:.2f}"
 
-    markout_cap = mm_float(
+    markout_cap = mm_risk_float(
         sym, settings, "mm_max_adverse_markout_bps", cal_attr="max_adverse_markout_bps"
     )
     if pnl_bps < 0 and markout_cap > 0 and feat.markout_adverse_ewma_bps >= markout_cap * 0.75:
         return f"mm_aggressive_exit markout pnl_bps={pnl_bps:.2f}"
 
-    aggressive_bps = mm_float(
+    aggressive_bps = mm_risk_float(
         sym, settings, "mm_aggressive_exit_loss_bps", cal_attr="aggressive_exit_loss_bps"
     )
     if aggressive_bps > 0 and pnl_bps <= -aggressive_bps:
@@ -543,7 +698,7 @@ def plan_exit_reason(
     if exit_ratio > 0 and abs(feat.inventory_ratio) >= exit_ratio:
         return f"mm_inventory_exit inv={feat.inventory_ratio:.3f} pnl_bps={pnl_bps:.2f}"
 
-    min_profit = mm_float(
+    min_profit = mm_risk_float(
         sym, settings, "mm_min_exit_profit_bps", cal_attr="min_exit_profit_bps"
     )
     if min_profit > 0 and pnl_bps >= min_profit:
@@ -590,7 +745,7 @@ def build_exit_quote_intent(
     if reason.startswith("mm_profit_exit"):
         price = mid
     elif reason.startswith("mm_aggressive_exit"):
-        inside = mm_float(
+        inside = mm_risk_float(
             feat.symbol, settings, "mm_exit_inside_touch_bps", cal_attr="exit_inside_touch_bps"
         )
         price = exit_limit_price(
@@ -603,11 +758,13 @@ def build_exit_quote_intent(
             cross_touch=True,
         )
     else:
-        scratch_bps = mm_float(feat.symbol, settings, "mm_exit_scratch_bps", cal_attr="exit_scratch_bps")
-        aggressive_bps = mm_float(
+        scratch_bps = mm_risk_float(
+            feat.symbol, settings, "mm_exit_scratch_bps", cal_attr="exit_scratch_bps"
+        )
+        aggressive_bps = mm_risk_float(
             feat.symbol, settings, "mm_exit_aggressive_bps", cal_attr="exit_aggressive_bps"
         )
-        ramp_bps = mm_float(
+        ramp_bps = mm_risk_float(
             feat.symbol, settings, "mm_exit_loss_ramp_bps", cal_attr="exit_loss_ramp_bps"
         )
         price = exit_limit_price(
@@ -621,11 +778,12 @@ def build_exit_quote_intent(
         )
     if price <= 0:
         return None
+    use_take = reason.startswith("mm_aggressive_exit") or reason.startswith("mm_inventory_exit")
     if position_qty > 0:
         return QuoteIntent(
             symbol=feat.symbol,
             bid_price=None,
-            ask_price=price,
+            ask_price=None if use_take else price,
             bid_qty=0.0,
             ask_qty=qty,
             reason=reason,
@@ -633,10 +791,14 @@ def build_exit_quote_intent(
             reduce_only_ask=True,
             venue_mid=mid,
             unrealized_pnl_bps=pnl_bps,
+            best_bid=feat.best_bid,
+            best_ask=feat.best_ask,
+            take_ask=use_take,
+            take_ask_price=feat.best_bid if use_take else None,
         )
     return QuoteIntent(
         symbol=feat.symbol,
-        bid_price=price,
+        bid_price=None if use_take else price,
         ask_price=None,
         bid_qty=qty,
         ask_qty=0.0,
@@ -645,6 +807,10 @@ def build_exit_quote_intent(
         reduce_only_bid=True,
         venue_mid=mid,
         unrealized_pnl_bps=pnl_bps,
+        best_bid=feat.best_bid,
+        best_ask=feat.best_ask,
+        take_bid=use_take,
+        take_bid_price=feat.best_ask if use_take else None,
     )
 
 
@@ -666,6 +832,20 @@ def compute_quote_intent(
     venue_mid = float(feat.mid or 0.0)
     sym = feat.symbol
     tick_now = time.time()
+    update_protect_state(own, feat, settings, now=tick_now)
+    if not mm_feeds_ready(feat, settings, skew_avg):
+        return QuoteIntent(
+            symbol=sym,
+            bid_price=None,
+            ask_price=None,
+            bid_qty=0.0,
+            ask_qty=0.0,
+            reason="mm_not_ready",
+            strategy_name=strategy_name,
+            venue_mid=venue_mid,
+            best_bid=feat.best_bid,
+            best_ask=feat.best_ask,
+        )
     bid_blocked = entry_blocked(
         feat, settings, want_long=True, own=own, now=tick_now
     )
@@ -743,7 +923,21 @@ def compute_quote_intent(
     if ask_blocked:
         ask_price = None
 
+    if position_side_blocked(True, position_qty, venue_mid, settings):
+        bid_price = None
+    if position_side_blocked(False, position_qty, venue_mid, settings):
+        ask_price = None
+
+    bid_price, ask_price = apply_protect_clamp(bid_price, ask_price, own, now=tick_now)
     bid_price, ask_price = apply_quote_pegs(bid_price, ask_price, feat, settings)
+
+    bid_price, ask_price = clamp_targets_no_cross(
+        bid_price,
+        ask_price,
+        best_bid=feat.best_bid,
+        best_ask=feat.best_ask,
+        tick=infer_price_tick(feat),
+    )
 
     size_pct = params.size_pct if params.size_pct is not None else float(settings.mm_quote_size_pct)
     size_notional = equity * size_pct if equity > 0 else 0.0
@@ -764,7 +958,40 @@ def compute_quote_intent(
 
     reduce_bid = position_qty < -1e-12
     reduce_ask = position_qty > 1e-12
+    abs_pos = abs(position_qty)
+    if reduce_bid:
+        bid_qty = min(bid_qty, abs_pos)
+    if reduce_ask:
+        ask_qty = min(ask_qty, abs_pos)
     pnl_bps = unrealized_pnl_bps(own.ledger.entry_mid, venue_mid, position_qty)
+
+    take_bid = False
+    take_ask = False
+    if own.pending_take_bid:
+        take_bid = True
+        own.pending_take_bid = False
+    if own.pending_take_ask:
+        take_ask = True
+        own.pending_take_ask = False
+    if plan_hedge_reduce(
+        feat=feat, settings=settings, position_qty=position_qty, inv_ratio=inv
+    ):
+        if position_qty > 0:
+            take_ask = True
+        elif position_qty < 0:
+            take_bid = True
+    sweep_bps = float(settings.mm_sweep_edge_bps)
+    if sweep_bps > 0 and pricing.reservation_mid > 0:
+        if (
+            feat.best_ask is not None
+            and pricing.reservation_mid >= feat.best_ask * (1.0 + sweep_bps / 10_000.0)
+        ):
+            take_bid = True
+        if (
+            feat.best_bid is not None
+            and pricing.reservation_mid <= feat.best_bid * (1.0 - sweep_bps / 10_000.0)
+        ):
+            take_ask = True
 
     reason = (
         f"mm_quote {params.symbol} venue_mid={pricing.venue_mid:.4f} "
@@ -791,4 +1018,67 @@ def compute_quote_intent(
         bid_half_bps=bid_half,
         ask_half_bps=ask_half,
         unrealized_pnl_bps=pnl_bps,
+        best_bid=feat.best_bid,
+        best_ask=feat.best_ask,
+        spread_bps=feat.spread_bps,
+        take_bid=take_bid,
+        take_ask=take_ask,
+        take_bid_price=feat.best_ask if take_bid else None,
+        take_ask_price=feat.best_bid if take_ask else None,
     )
+
+
+def clamp_targets_no_cross(
+    bid: float | None,
+    ask: float | None,
+    *,
+    best_bid: float | None,
+    best_ask: float | None,
+    tick: float,
+) -> tuple[float | None, float | None]:
+    if tick <= 0:
+        return bid, ask
+    if bid is not None and best_ask is not None and best_ask > 0 and bid >= best_ask:
+        bid = best_ask - tick
+    if ask is not None and best_bid is not None and best_bid > 0 and ask <= best_bid:
+        ask = best_bid + tick
+    return bid, ask
+
+
+def on_mm_fill(
+    own: OwnBookState,
+    feat: Features,
+    settings: Settings,
+    *,
+    side: str,
+    maker: bool,
+) -> None:
+    """Post-fill hook: queue IOC hedge when configured."""
+    if not maker or not settings.mm_fill_hedge_ioc_enabled:
+        return
+    if not should_fill_hedge_ioc(own, feat, settings):
+        return
+    if side == "buy":
+        own.pending_take_ask = True
+    elif side == "sell":
+        own.pending_take_bid = True
+
+
+def note_mm_venue_reject(
+    own: OwnBookState,
+    settings: Settings,
+    *,
+    side: Side,
+    code: int | None,
+    now: float | None = None,
+) -> None:
+    if code not in (-2022, -4116, -1003):
+        return
+    ts = now if now is not None else time.time()
+    pause = float(settings.mm_reject_halt_sec)
+    if pause <= 0:
+        return
+    if side is Side.BUY:
+        own.halt_bid_until = max(own.halt_bid_until, ts + pause)
+    else:
+        own.halt_ask_until = max(own.halt_ask_until, ts + pause)

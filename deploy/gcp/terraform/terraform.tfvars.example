@@ -1,0 +1,14 @@
+project_id = "your-gcp-project"
+region     = "us-central1"
+zone       = "us-central1-a"
+
+# Trading + WS fan-in: e2-standard-4 is a reasonable starting point
+machine_type = "e2-standard-4"
+data_disk_gb = 100
+
+# SSH via Cloud IAP (recommended)
+admin_cidr_blocks = ["35.235.240.0/20"]
+
+# HTTPS to nginx on the VM — lock to your office/VPN CIDRs only
+expose_https             = true
+api_allowed_cidr_blocks  = ["203.0.113.10/32"]

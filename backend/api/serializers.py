@@ -200,7 +200,9 @@ def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
         active_dto = StrategyInfoDTO(
             name=ALL_STRATEGIES_MODE,
             label="All strategies (netted)",
-            description="Runs pairs, SMA, and market making with internal position netting.",
+            description=(
+                "Runs pairs, SMA, blend, flow momentum, and MM2 with internal signal netting."
+            ),
             active=True,
         )
     else:

@@ -187,7 +187,13 @@ class VwapExecutor:
                 n_slices=n,
             )
             if all(
-                _slice_satisfies(s.qty, filters, ref_price, reduce_only=parent.reduce_only)
+                _slice_satisfies(
+                    s.qty,
+                    filters,
+                    ref_price,
+                    reduce_only=parent.reduce_only,
+                    parent_qty=parent.qty,
+                )
                 for s in candidate
             ):
                 schedule = candidate
@@ -418,7 +424,13 @@ class VwapExecutor:
         ref_price = price if price is not None else self._price(parent.symbol)
         is_market = order_type is OrderType.MARKET
         slice_qty = venue_cap_qty(slc.qty, filters, market_order=is_market)
-        if not _slice_satisfies(slice_qty, filters, ref_price, reduce_only=parent.reduce_only):
+        if not _slice_satisfies(
+            slice_qty,
+            filters,
+            ref_price,
+            reduce_only=parent.reduce_only,
+            parent_qty=parent.qty,
+        ):
             raise ValueError(
                 f"slice qty violates venue filters (symbol={parent.symbol} qty={slice_qty:.10f} "
                 f"ref_price={'-' if ref_price is None else f'{ref_price:.8f}'} filters={filters})"
@@ -586,8 +598,19 @@ def _slice_satisfies(
     ref_price: float | None,
     *,
     reduce_only: bool = False,
+    parent_qty: float | None = None,
 ) -> bool:
     """Return True if `qty` clears the venue's per-order constraints."""
+    if (
+        reduce_only
+        and filters is not None
+        and filters.step_size is not None
+        and filters.step_size > 0
+        and qty + 1e-12 < filters.step_size
+    ):
+        # Dust close: allow one parent-sized slice below step; block sub-step slices.
+        if parent_qty is None or abs(qty - parent_qty) > 1e-12:
+            return False
     return venue_qty_in_bounds(
         qty, filters, ref_price, reduce_only=reduce_only,
     )

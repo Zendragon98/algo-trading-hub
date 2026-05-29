@@ -54,6 +54,8 @@ def test_calibrate_and_resolve_half_spread(tmp_path, monkeypatch) -> None:
             symbol_calibration_path=str(out),
             mm_spread_calibration_path=str(out),
             mm_quote_use_venue_spread_floor=False,
+            mm_symbol_half_spread_bps={},
+            mm_symbol_quote_overrides={},
         ),
     )
     assert params.half_spread_bps == cal[sym].half_spread_bps

@@ -235,6 +235,67 @@ def _ranking_by_symbol(rankings: list[MmSymbolScore]) -> dict[str, MmSymbolScore
     return {r.symbol: r for r in rankings}
 
 
+def assemble_pin_universe(
+    rankings: list[MmSymbolScore],
+    settings: Settings,
+    *,
+    ticker_by_sym: dict[str, TickerVolStats] | None = None,
+    sample_stats: dict[str, tuple[float, float, float]] | None = None,
+) -> list[str]:
+    """Liquid maincaps only — ``MM_AUTO_PIN_SYMBOLS`` after volume/spread gates (no midcaps)."""
+    pins = _pin_symbols(settings)
+    pin_min_vol = float(settings.mm_auto_pin_min_quote_volume)
+    pin_min_edge = float(settings.mm_auto_pin_min_edge_bps)
+    pin_min_spread = float(settings.mm_auto_pin_min_spread_bps)
+    by_sym = _ranking_by_symbol(rankings)
+    ticker_by_sym = ticker_by_sym or {}
+    sample_stats = sample_stats or {}
+
+    selected: list[str] = []
+    seen: set[str] = set()
+
+    for sym in pins:
+        if sym in seen:
+            continue
+        row = by_sym.get(sym)
+        tv = ticker_by_sym.get(sym)
+        sampled = sample_stats.get(sym)
+        qv = tv.quote_volume if tv else (row.quote_volume_24h if row else 0.0)
+        if qv > 0 and qv < pin_min_vol:
+            logger.info("flow pin: skip %s (volume %.0f < %.0f)", sym, qv, pin_min_vol)
+            continue
+        if row is not None and row.eligible:
+            selected.append(sym)
+            seen.add(sym)
+            logger.info("flow pin: %s (scan eligible)", sym)
+            continue
+        if sampled is None:
+            logger.info("flow pin: skip %s (no spread samples)", sym)
+            continue
+        median_sp, _spread_cv, _mid_vol = sampled
+        if median_sp < pin_min_spread:
+            logger.info(
+                "flow pin: skip %s (spread %.2f < %.2f bps)",
+                sym,
+                median_sp,
+                pin_min_spread,
+            )
+            continue
+        edge = median_sp - pin_min_edge
+        if edge < 0:
+            logger.info("flow pin: %s tight edge (%.2f bps) — including", sym, edge)
+        selected.append(sym)
+        seen.add(sym)
+        logger.info("flow pin: %s (spread=%.2f bps vol=%.0f)", sym, median_sp, qv)
+
+    if not selected:
+        fallback = pins[: min(5, len(pins))] or ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        logger.warning("flow pin universe empty; fallback=%s", fallback)
+        return fallback
+    logger.info("flow pin universe (%d): %s", len(selected), selected)
+    return selected
+
+
 def assemble_tiered_universe(
     rankings: list[MmSymbolScore],
     settings: Settings,
@@ -247,62 +308,20 @@ def assemble_tiered_universe(
     if cap <= 0:
         cap = 16
     pins = _pin_symbols(settings)
-    pin_min_vol = float(settings.mm_auto_pin_min_quote_volume)
-    pin_min_edge = float(settings.mm_auto_pin_min_edge_bps)
-    pin_min_spread = float(settings.mm_auto_pin_min_spread_bps)
     mid_min_vol = float(settings.mm_auto_midcap_min_quote_volume)
     by_sym = _ranking_by_symbol(rankings)
     ticker_by_sym = ticker_by_sym or {}
     sample_stats = sample_stats or {}
 
-    selected: list[str] = []
-    seen: set[str] = set()
-
-    for sym in pins:
-        if len(selected) >= cap:
-            break
-        if sym in seen:
-            continue
-        row = by_sym.get(sym)
-        tv = ticker_by_sym.get(sym)
-        sampled = sample_stats.get(sym)
-        qv = tv.quote_volume if tv else (row.quote_volume_24h if row else 0.0)
-        if qv > 0 and qv < pin_min_vol:
-            logger.info("mm tier: skip pin %s (volume %.0f < %.0f)", sym, qv, pin_min_vol)
-            continue
-        if row is not None and row.eligible:
-            selected.append(sym)
-            seen.add(sym)
-            logger.info("mm tier: pinned maincap %s (scan eligible)", sym)
-            continue
-        if sampled is None:
-            logger.info("mm tier: skip pin %s (no spread samples)", sym)
-            continue
-        median_sp, _spread_cv, _mid_vol = sampled
-        if median_sp < pin_min_spread:
-            logger.info(
-                "mm tier: skip pin %s (spread %.2f < %.2f bps)",
-                sym,
-                median_sp,
-                pin_min_spread,
-            )
-            continue
-        # Maincaps: prioritize activity; edge vs fees is enforced at quote time.
-        edge = median_sp - pin_min_edge
-        if edge < 0:
-            logger.info(
-                "mm tier: pin %s tight edge (%.2f bps) — including for flow",
-                sym,
-                edge,
-            )
-        selected.append(sym)
-        seen.add(sym)
-        logger.info(
-            "mm tier: pinned maincap %s (spread=%.2f bps vol=%.0f)",
-            sym,
-            median_sp,
-            qv,
-        )
+    selected = assemble_pin_universe(
+        rankings,
+        settings,
+        ticker_by_sym=ticker_by_sym,
+        sample_stats=sample_stats,
+    )
+    if len(selected) > cap:
+        selected = selected[:cap]
+    seen = set(selected)
 
     midcap_candidates = [
         r
@@ -683,6 +702,27 @@ async def resolve_mm_universe(
     force_rescan: bool = False,
 ) -> list[str]:
     """Return recommended MM symbols (scan or cached report)."""
+    report = await _load_or_scan_mm_report(settings, rest=rest, force_rescan=force_rescan)
+    return list(report.recommended)
+
+
+async def resolve_flow_universe(
+    settings: Settings | None = None,
+    *,
+    rest: BinanceRestClient | None = None,
+    force_rescan: bool = False,
+) -> list[str]:
+    """Return flow-momentum symbols: full MM scan universe (pins + midcaps)."""
+    report = await _load_or_scan_mm_report(settings, rest=rest, force_rescan=force_rescan)
+    return list(report.recommended)
+
+
+async def _load_or_scan_mm_report(
+    settings: Settings | None = None,
+    *,
+    rest: BinanceRestClient | None = None,
+    force_rescan: bool = False,
+) -> MmUniverseReport:
     settings = settings or get_settings()
     ttl = float(settings.mm_auto_scan_ttl_sec)
     if not force_rescan:
@@ -692,11 +732,11 @@ async def resolve_mm_universe(
                 "mm universe: using cached report (%s, age ok)",
                 cached.recommended,
             )
-            return list(cached.recommended)
+            return cached
 
     report = await scan_mm_universe(settings, rest=rest)
     write_mm_universe_report(report)
-    return list(report.recommended)
+    return report
 
 
 def main() -> None:

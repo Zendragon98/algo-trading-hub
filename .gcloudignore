@@ -1,0 +1,23 @@
+# Cloud Build upload — only backend/ and cloudbuild.yaml are needed for the image.
+.git
+.gitignore
+node_modules
+dist
+.output
+.vercel
+.wrangler
+.nitro
+.vinxi
+.tanstack
+*.log
+.env
+**/.env
+!**/.env.example
+**/.venv
+**/__pycache__
+**/.pytest_cache
+backend/data
+backend/.venv
+src
+public
+deploy/gcp/terraform/.terraform

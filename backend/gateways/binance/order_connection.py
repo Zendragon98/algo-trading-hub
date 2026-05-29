@@ -152,9 +152,16 @@ class OrderConnection:
             if order.price is None:
                 raise ValueError(f"LIMIT order {order.id} missing price")
             params["price"] = self._quantize_price(order.symbol, order.price, order.side)
-            params["timeInForce"] = (
-                "GTX" if self._post_only_enabled and not order.reduce_only else "GTC"
-            )
+            if order.time_in_force:
+                params["timeInForce"] = order.time_in_force
+            elif order.post_only is True or (
+                order.post_only is None
+                and self._post_only_enabled
+                and not order.reduce_only
+            ):
+                params["timeInForce"] = "GTX"
+            else:
+                params["timeInForce"] = "GTC"
         if order.reduce_only:
             # Binance Futures expects the literal string "true". Reduce-only
             # orders are also exempt from MIN_NOTIONAL, which is how a tiny
@@ -341,6 +348,7 @@ class OrderConnection:
                 fee_asset=str(order.get("N", "")),
                 trade_id=trade_id,
                 realized_pnl=realized_pnl,
+                is_maker=bool(order.get("m", False)),
             )
             await self._on_fill(fill)
 

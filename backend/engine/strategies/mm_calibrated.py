@@ -36,6 +36,25 @@ def mm_float(
     return pick(cal, val, default)
 
 
+def mm_risk_float(
+    symbol: str,
+    settings: Settings,
+    attr: str,
+    *,
+    cal_attr: str | None = None,
+) -> float:
+    """Risk / jump knobs: Settings first; per-symbol only from explicit symbol_calibration_path."""
+    default = float(getattr(settings, attr))
+    path = (getattr(settings, "symbol_calibration_path", "") or "").strip()
+    if not path:
+        return default
+    cal = load_symbol_calibration(path).get(symbol.upper())
+    if cal is None:
+        return default
+    val = getattr(cal, cal_attr or attr, None)
+    return pick(cal, val, default)
+
+
 def mm2_fee_round_trip_bps(symbol: str, settings: Settings) -> float:
     """Per-symbol fee RT from calibration fees section, else Settings.
 

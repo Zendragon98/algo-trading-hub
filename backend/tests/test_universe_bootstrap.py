@@ -34,6 +34,7 @@ def test_needs_auto_universe_resolve() -> None:
         blend_symbols=["BTCUSDT"],
         mm_symbols=["BTCUSDT"],
         mm2_symbols=["BTCUSDT"],
+        flow_symbols=["BTCUSDT"],
     )
     assert not needs_auto_universe_resolve(s2)
     s3 = Settings(venue="ibkr", blend_symbols=[])

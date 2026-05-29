@@ -90,7 +90,9 @@ class Settings(BaseSettings):
     )
     base_currency: str = "USDT"
     engine_autostart: bool = False
-    # Which strategy set to run: "pairs" | "sma" | "market_making" | "market_making_v2" | "all".
+    # Which strategy set to run: "pairs" | "sma" | "blend" | "flow" | "mm2" | "all".
+    # STRATEGY=all: periodic LIVE LOG summary of every loaded strategy (seconds; 0 = off).
+    multi_strategy_log_interval_sec: float = 60.0
     # "all" runs every registered strategy with internal position netting.
     strategy: str = "pairs"
 
@@ -389,6 +391,30 @@ class Settings(BaseSettings):
     blend_max_entries_per_tick: int = 2
     blend_scan_log_interval_sec: float = 60.0
 
+    # --- Flow momentum (follow sustained one-sided tape across multiple symbols) ---
+    # FLOW_SYMBOLS: CSV list, or ``AUTO`` (empty = AUTO) — full MM scan universe.
+    flow_symbols: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    flow_universe_auto: bool = False
+    flow_tape_mode: str = "volume"  # volume | count
+    flow_min_tape_trades: int = 5
+    flow_tape_threshold: float = 0.12
+    flow_exit_tape_threshold: float = 0.06
+    flow_imbalance_min: float = 0.05
+    flow_confirm_ticks: int = 3
+    flow_require_depletion: bool = False
+    flow_min_tape_velocity: float = 0.0
+    flow_skip_toxic: bool = True
+    flow_take_profit_bps: float = 15.0
+    flow_stop_loss_bps: float = 10.0
+    flow_max_hold_sec: float = 90.0
+    flow_cooldown_sec: float = 30.0
+    flow_risk_per_trade_pct: float = 0.08
+    flow_qty: float = 0.001
+    flow_min_mid_price: float = 0.01
+    flow_entry_score: float = 0.85
+    flow_max_entries_per_tick: int = 2
+    flow_scan_log_interval_sec: float = 60.0
+
     # --- Market-making tilt strategy (skew + imbalance + tape) ---
     # MM_SYMBOLS: CSV list, or ``AUTO`` (empty = AUTO) to run mm_universe_scanner at boot.
     mm_symbols: Annotated[list[str], NoDecode] = Field(default_factory=list)
@@ -623,6 +649,45 @@ class Settings(BaseSettings):
     mm_quote_size_pct: float = 0.002
     mm_quote_max_refresh_per_tick: int = 8
     mm_quote_toxic_widen_bps: float = 6.0
+    # Execution zones (slide: place/cancel ranges in bps; 0 = disabled).
+    mm_place_range_bps: float = 0.0
+    mm_cancel_range_bps: float = 0.0
+    mm_sweep_edge_bps: float = 0.0
+    # Execution mode: make | chase | climb | ladder | climb_multi | take
+    mm_execution_mode: str = "make"
+    mm_execution_mode_bid: str = ""
+    mm_execution_mode_ask: str = ""
+    mm_ladder_levels: int = 3
+    mm_ladder_spacing_ticks: int = 1
+    mm_ladder_qty_weights: str = "equal"
+    mm_climb_ticks_per_refresh: int = 1
+    mm_climb_max_ticks_from_touch: int = 0
+    mm_max_working_orders_per_symbol: int = 8
+    # Protect guardrails (trade bursts); 0 thresh = off.
+    mm_protect_enabled: bool = False
+    mm_protect_burst_thresh: float = 0.55
+    mm_protect_widen_bps: float = 8.0
+    mm_protect_decay_sec: float = 3.0
+    # Per-side position limits (notional); 0 = use inventory hard ratio only.
+    mm_buy_position_limit_notional: float = 0.0
+    mm_sell_position_limit_notional: float = 0.0
+    mm_reject_halt_sec: float = 30.0
+    # Funding / carry (perp); requires mm_funding_enabled.
+    mm_funding_enabled: bool = False
+    mm_funding_shift_scale: float = 1.0
+    mm_funding_poll_sec: float = 60.0
+    # Stablecoin basis tilt; needs USDT/USD index when enabled.
+    mm_stablecoin_basis_enabled: bool = False
+    usdt_usd_index: float = 1.0
+    usdc_usd_index: float = 1.0
+    # Manual reservation mid offset (bps).
+    mm_manual_adj_bps: float = 0.0
+    # Readiness gate before quoting.
+    mm_require_ready: bool = False
+    # Post-fill IOC hedge when adverse maker fill exceeds threshold.
+    mm_fill_hedge_ioc_enabled: bool = False
+    mm_fill_hedge_vol_bps: float = 50.0
+    mm_fill_hedge_adverse_bps: float = 5.0
 
     # --- API ---
     api_host: str = "127.0.0.1"
@@ -702,6 +767,7 @@ class Settings(BaseSettings):
         "symbols",
         "sma_symbols",
         "blend_symbols",
+        "flow_symbols",
         "mm_symbols",
         "mm2_symbols",
         "mm_auto_pin_symbols",
@@ -772,10 +838,13 @@ def normalize_strategy_name(value: str) -> str:
         "blend": "blended_signals",
         "blended": "blended_signals",
         "blended_signals": "blended_signals",
-        "mm": "market_making",
-        "market_making": "market_making",
+        "mm": "market_making_v2",
+        "market_making": "market_making_v2",
         "mm2": "market_making_v2",
         "market_making_v2": "market_making_v2",
+        "flow": "flow_momentum",
+        "flow_momentum": "flow_momentum",
+        "momentum": "flow_momentum",
         "all": "all",
         "multi": "all",
     }

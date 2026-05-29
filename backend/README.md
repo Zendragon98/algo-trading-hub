@@ -7,7 +7,7 @@ Python backend for the React console at the repo root. Connects to **Binance USD
 | **Process model** | Trading: one asyncio loop (`Engine` + FastAPI + `EventBus` in `main.py`). Analytics: supervised worker subprocess for backtest/download (`analytics.worker_main`) |
 | **Venue seam** | `GatewayInterface` — Binance production; IBKR skeleton |
 | **Strategies** | Pairs (basis z), SMA crossover, institutional market making (quote + microstructure); hot-swap at runtime |
-| **Multi-strategy** | `STRATEGY=all` nets signals via `signal_netter` before execution |
+| **Multi-strategy** | `STRATEGY=all` runs pairs, SMA, blend, flow, and MM2; alpha signals netted via `signal_netter` |
 | **Persistence** | Per-run JSONL under `data/runs/` + optional WAL replay |
 | **API** | REST control + `/ws` stream; schemas mirror `src/components/algo/types.ts` |
 
@@ -382,6 +382,8 @@ python -m analytics.spread_calibrator --symbols BTCUSDT,ETHUSDT,DOGEUSDT
 
 **MM spread calibration:** `l2_loader` samples REST depth into `data/l2/{SYMBOL}_l2.parquet`. `spread_calibrator` computes per-symbol `suggested_half_spread_bps` from observed L2 spreads and writes `data/mm_spread_calibration.json`. At runtime, `MM_SPREAD_CALIBRATION_PATH` seeds starting quotes (unless overridden by `MM_SYMBOL_HALF_SPREAD_BPS`); live `MM_QUOTE_USE_VENUE_SPREAD_FLOOR` and inventory skew continue adjusting from there.
 
+**MM quote execution (`engine/execution/quote_executor.py`):** Post-only maker quotes by default (`MM_EXECUTION_MODE=make`). Also supports `chase` (replace on move), `climb` (step toward target), `ladder` / `climb_multi` (multi-level book), and `take` (IOC reduce / sweep). Shared pre-submit rules: no-cross clamp, optional `MM_PLACE_RANGE_BPS` / `MM_CANCEL_RANGE_BPS`, venue min-notional sizing. Pricing extensions in `mm_core.py`: protect guardrails (`MM_PROTECT_*`), funding carry (`MM_FUNDING_ENABLED`), stablecoin basis (`MM_STABLECOIN_BASIS_ENABLED`), per-side position limits, readiness gate (`MM_REQUIRE_READY`), post-fill IOC hedge (`MM_FILL_HEDGE_IOC_ENABLED`).
+
 ### Execution module — `engine/execution/`
 
 See [Parent-order execution](#parent-order-execution-sequence) above for the sequence diagram.
@@ -521,9 +523,20 @@ Multi-indicator ensemble for single-leg crypto: **EMA trend**, **MACD momentum**
 - **Universe:** `BLEND_SYMBOLS` (CSV or `AUTO` / empty for top-N USDT perps by 24h volume, capped by `BLEND_MAX_SYMBOLS`, default 10).
 - **Sizing / risk:** same equity-budget pattern as SMA (`BLEND_RISK_PER_TRADE_PCT` split across `BLEND_SYMBOLS`); engine per-leg SL/TP stays armed (`manages_own_risk()` is False).
 
+### Strategy — `engine/strategies/flow_momentum.py`
+
+**Tape-flow momentum** — the complement to MM fade. When the public tape keeps lifting offers (buyers aggressive) or hitting bids (sellers aggressive), market makers get run over; this strategy **enters with** that flow across the full MM scan universe.
+
+- **Universe:** `FLOW_SYMBOLS=AUTO` (empty = AUTO) — full MM scan universe (pins + midcaps, same as `MM_SYMBOLS=AUTO`). Explicit CSV overrides.
+- **Entry:** `FLOW_TAPE_THRESHOLD` + aligned `FLOW_IMBALANCE_MIN` for `FLOW_CONFIRM_TICKS` consecutive ticks (`volume` or `count` tape mode).
+- **Exit:** in-strategy (`manages_own_risk()` True): `FLOW_STOP_LOSS_BPS`, `FLOW_TAKE_PROFIT_BPS`, `FLOW_MAX_HOLD_SEC`, and tape reversal past `FLOW_EXIT_TAPE_THRESHOLD`.
+- **Execution:** `Signal` → `ExecutionRouter` → `VwapExecutor` (same as SMA/blend).
+
+Boot: `STRATEGY=flow_momentum` (aliases `flow`, `momentum`).
+
 ### Strategy — `engine/strategies/market_making_v2.py` (+ legacy `market_making.py`)
 
-Institutional **two-sided market making** posts standing post-only bid/ask quotes via `QuoteExecutor` — **not** the VWAP wheel. Alpha strategies (`pairs_trading`, `sma_crossover`, `blended_signals`) still route `Signal` → `ExecutionRouter` → `VwapExecutor`.
+Institutional **two-sided market making** posts standing post-only bid/ask quotes via `QuoteExecutor` — **not** the VWAP wheel. Alpha strategies (`pairs_trading`, `sma_crossover`, `blended_signals`, `flow_momentum`) still route `Signal` → `ExecutionRouter` → `VwapExecutor`.
 
 **Use `market_making_v2` only.** `market_making` (v1) is deprecated: it lacks spread/skew/tape/vol-regime gates and is not registered in `main.py` / `engine/main_engine.py` or run in `STRATEGY=all`. The v1 module remains for universe helpers and unit tests.
 
@@ -558,9 +571,19 @@ Pair **exits** (`pairs_close` / `pairs_stop`) emit `reduce_only=True` on both le
 
 ### Multi-strategy mode — `all`
 
-Set boot default `STRATEGY=all` or hot-swap to `all`. Every registered strategy ticks each heartbeat; `engine/strategies/signal_netter.py` nets opposing signals per symbol before the shared risk + execution path. Per-strategy positions are tracked in `engine/position/strategy_ledger.py` when netting is active.
+Set boot default `STRATEGY=all` or hot-swap to `all`. Every registered strategy ticks each heartbeat. Per-quote MM2 `SIG` spam is suppressed in `all` mode (details stay at `LOG_LEVEL=debug`); LIVE LOG shows a periodic `ALL strategies tick:` summary plus each strategy's own scan lines (`SMA scan`, `BLEND scan`, `FLOW scan`, `MM2 gates`, `PAIRS` reference). Tune `MULTI_STRATEGY_LOG_INTERVAL_SEC` (default 60).
 
-**Caution:** If pairs, SMA, and blend subscribe to the same symbol (e.g. `BTCUSDT`), opposing intents may net to zero or leave unintended exposure. Prefer disjoint symbol universes per alpha strategy, or run MM on a separate symbol set. The engine logs a warning at boot listing overlapping symbols.
+| Strategy | Path in `all` mode |
+|----------|-------------------|
+| `pairs_trading_usdt_usdc` | `on_tick` → netted VWAP |
+| `sma_crossover` | `on_tick` → netted VWAP |
+| `blended_signals` | `on_tick` → netted VWAP |
+| `flow_momentum` | `on_tick` → netted VWAP |
+| `market_making_v2` | `on_tick_quotes` → `QuoteExecutor` (not netted) |
+
+`engine/strategies/signal_netter.py` nets opposing **alpha** signals per symbol before the shared risk + execution path. Per-strategy positions are tracked in `engine/position/strategy_ledger.py` when netting is active.
+
+**Caution:** If pairs, SMA, blend, and flow subscribe to the same symbol (e.g. `BTCUSDT`), opposing intents may net to zero or leave unintended exposure. MM2 quotes run in parallel on its symbol set. The engine logs a warning at boot listing overlapping alpha symbols.
 
 ### Operator flatten — `POST /api/control/flatten`
 
@@ -704,7 +727,7 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `IBKR_CLIENT_ID`             | `7`                                  | IB API client id |
 | `IBKR_ACCOUNT`               | empty                                | Specific account to trade (empty = default) |
 | `SYMBOLS`                    | `AUTO`                               | Subscribed symbols. CSV (`BTCUSDT,BTCUSDC,...`) or `AUTO` to auto-discover every USDT/USDC perp pair on the venue at boot |
-| `STRATEGY`                   | `pairs`                              | Boot default: `pairs`, `sma_crossover`, `market_making`, or `all` (netted multi-strategy). Hot-swappable via `POST /api/control/strategy` |
+| `STRATEGY`                   | `pairs`                              | Boot default: `pairs`, `sma_crossover`, `blend`, `flow_momentum`, `market_making_v2`, or `all` (netted multi-strategy). Hot-swappable via `POST /api/control/strategy` |
 | `ENGINE_AUTOSTART`           | `false`                              | Start engine on boot (or use `python main.py --engine`) |
 | `BASE_CURRENCY`              | `USDT`                               | Equity / PnL denomination (if `USDT`/`USDC`, the engine sums **USDT+USDC** wallets) |
 | `MAX_RISK_PCT`               | `0.35`                               | Per-leg notional ceiling as % of equity (hard cap; UI slider) |

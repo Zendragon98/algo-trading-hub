@@ -78,10 +78,19 @@ def venue_qty_in_bounds(
         return True
     if filters.max_qty is not None and qty > filters.max_qty + 1e-12:
         return False
-    if filters.step_size is not None and filters.step_size > 0:
-        if qty + 1e-12 < filters.step_size:
-            return False
-    if filters.min_qty is not None and qty + 1e-12 < filters.min_qty:
+    if (
+        not reduce_only
+        and filters.step_size is not None
+        and filters.step_size > 0
+        and qty + 1e-12 < filters.step_size
+    ):
+        return False
+    # Reduce-only closes may be below MIN_QTY / MIN_NOTIONAL when <= position size.
+    if (
+        not reduce_only
+        and filters.min_qty is not None
+        and qty + 1e-12 < filters.min_qty
+    ):
         return False
     if (
         not reduce_only

@@ -340,6 +340,15 @@ class BinanceRestClient:
     async def position_risk(self) -> list[dict[str, Any]]:
         return await self._get(f"{_FAPI_V2}/positionRisk", signed=True)
 
+    async def premium_index(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {}
+        if symbol is not None:
+            params["symbol"] = symbol.upper()
+        data = await self._get(f"{_FAPI}/premiumIndex", params=params or None, signed=False)
+        if isinstance(data, list):
+            return data
+        return [data] if isinstance(data, dict) else []
+
     async def new_order(self, **params: Any) -> dict[str, Any]:
         return await self._post(f"{_FAPI}/order", params=params, signed=True)
 

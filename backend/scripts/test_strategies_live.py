@@ -62,6 +62,14 @@ STRATEGIES: list[tuple[str, list[re.Pattern[str]]]] = [
             re.compile(r"VWAP P-", re.I),
         ],
     ),
+    (
+        "flow_momentum",
+        [
+            re.compile(r"FLOW (open|close)", re.I),
+            re.compile(r"flow_momentum_", re.I),
+            re.compile(r"VWAP P-", re.I),
+        ],
+    ),
 ]
 
 # Ignore transient WS/transport noise under symbol resync (still review in profit_loop).

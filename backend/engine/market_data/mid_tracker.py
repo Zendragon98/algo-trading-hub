@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from common.config import Settings
 
-from ..strategies.mm_calibrated import mm_float
+from ..strategies.mm_calibrated import mm_risk_float
 
 
 @dataclass(slots=True)
@@ -56,13 +56,13 @@ class MidReturnTracker:
             1.0 - self._vol_slow_alpha
         ) * prev_slow
         vol = self._vol_ewma[symbol]
-        jump_bps = mm_float(
+        jump_bps = mm_risk_float(
             symbol,
             self._settings,
             "mm_jump_return_bps",
             cal_attr="jump_return_bps",
         )
-        jump_vol_mult = mm_float(
+        jump_vol_mult = mm_risk_float(
             symbol,
             self._settings,
             "mm_jump_vol_mult",

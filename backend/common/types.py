@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from time import time
 
-from .enums import AlgoMode, OrderStatus, OrderType, PositionSide, Side, Urgency
+from .enums import AlgoMode, MmExecutionMode, OrderStatus, OrderType, PositionSide, Side, Urgency
 
 
 @dataclass(slots=True)
@@ -94,6 +94,14 @@ class QuoteIntent:
     exit_hold_sec: float = 0.0
     # When set, engine cancels MM quotes and submits reduce-only market flatten.
     flatten_market: bool = False
+    bid_execution_mode: MmExecutionMode = MmExecutionMode.MAKE
+    ask_execution_mode: MmExecutionMode = MmExecutionMode.MAKE
+    take_bid: bool = False
+    take_ask: bool = False
+    take_bid_price: float | None = None
+    take_ask_price: float | None = None
+    best_bid: float | None = None
+    best_ask: float | None = None
     ts: float = field(default_factory=time)
 
 
@@ -173,6 +181,9 @@ class ChildOrder:
     # venue (`reduceOnly=true` for Binance Futures) so the order is only
     # accepted as a position-reducing trade.
     reduce_only: bool = False
+    # None = gateway default (GTX when post_only_enabled). "IOC" for TAKE paths.
+    time_in_force: str | None = None
+    post_only: bool | None = None
 
 
 @dataclass(slots=True)
@@ -200,6 +211,7 @@ class Fill:
     # Exchange identifiers / fields (when provided by the venue adapter).
     trade_id: str | None = None
     realized_pnl: float | None = None
+    is_maker: bool = False
     ts: float = field(default_factory=time)
     venue_price: float = 0.0
     impact_bps: float = 0.0

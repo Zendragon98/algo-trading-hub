@@ -7,6 +7,7 @@ Official documentation for **Algo Trading Hub**. Use this index for audits, hand
 | [../README.md](../README.md) | All | Product overview, architecture summaries, local setup |
 | [../backend/README.md](../backend/README.md) | Engineers / quants | Engine modules, API contract, configuration matrix, troubleshooting |
 | [**OPERATIONS.md**](OPERATIONS.md) | SRE / trading ops | Health semantics, monitoring, incidents, backups, deployment patterns |
+| [**deploy/gcp/README.md**](../deploy/gcp/README.md) | Platform / SRE | Google Cloud: Compute Engine, Docker, Artifact Registry, backups |
 | [**SECURITY.md**](SECURITY.md) | Security / platform | Threat model, secrets, network control plane, hardening checklist |
 | [**COMPLIANCE_AND_GOVERNANCE.md**](COMPLIANCE_AND_GOVERNANCE.md) | Risk / compliance | Limitations of scope, records, change control, regulatory disclaimer |
 | [**ARCHITECTURE.md**](ARCHITECTURE.md) | Architects / security | Canonical links to diagrams + component map |

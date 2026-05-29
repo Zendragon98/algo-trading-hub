@@ -55,13 +55,22 @@ async def patch_settings(
                 "symbols",
                 "sma_symbols",
                 "blend_symbols",
+                "flow_symbols",
                 "mm_symbols",
                 "mm2_symbols",
                 "mm_universe_auto",
                 "mm2_universe_auto",
+                "flow_universe_auto",
             ):
                 patch[key] = getattr(expanded, key)
-        sym_keys = {"symbols", "sma_symbols", "blend_symbols", "mm_symbols", "mm2_symbols"}
+        sym_keys = {
+            "symbols",
+            "sma_symbols",
+            "blend_symbols",
+            "flow_symbols",
+            "mm_symbols",
+            "mm2_symbols",
+        }
         symbols_before: set[str] | None = None
         if sym_keys & patch.keys():
             symbols_before = set(engine._resolve_market_symbols())

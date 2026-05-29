@@ -31,9 +31,23 @@ Implications:
 | Mode | Console origin | API |
 |------|----------------|-----|
 | **Development** | Vite on `:5173` | Proxied to `:8000` for `/api` and `/ws` (see `vite.config.ts`) |
-| **Production build** | TanStack Start + Cloudflare Workers (`wrangler.jsonc`) | Must be set explicitly via **`VITE_API_BASE`** (see `src/lib/api.ts`) |
+| **Production build** | **Vercel** ([`deploy/vercel/README.md`](../deploy/vercel/README.md)) or Cloudflare Workers (`wrangler.jsonc`) | Must be set explicitly via **`VITE_API_BASE`** (see `src/lib/api.ts`) |
 
 Operators must ensure the browser can reach **`wss:`** when the page is served over **`https:`** (mixed-content rules).
+
+### 1.3 Google Cloud (recommended production path)
+
+The live engine is a **single long-lived process** with WebSockets and on-disk run archives. On GCP, run it on **Compute Engine + Docker**, not Cloud Run.
+
+| Piece | GCP service |
+|-------|-------------|
+| Engine + API | Compute Engine VM, Docker Compose |
+| Container images | Artifact Registry + Cloud Build ([`cloudbuild.yaml`](../cloudbuild.yaml)) |
+| Run archive backup | Cloud Storage (optional cron) |
+| Secrets | Secret Manager |
+| Dashboard | **Vercel** (recommended), Cloudflare Workers, or any host with `VITE_API_BASE` pointing at the API |
+
+**Full guide:** [`deploy/gcp/README.md`](../deploy/gcp/README.md) (Terraform VM, nginx TLS, systemd, checklist).
 
 ---
 

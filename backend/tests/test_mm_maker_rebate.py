@@ -32,6 +32,7 @@ def test_negative_maker_fee_lowers_edge_floor() -> None:
         mm_spread_calibration_path="",
         mm2_maker_fee_bps=-2.0,
         mm2_spread_buffer_bps=2.0,
+        mm2_assume_maker_rebate=False,
         post_only_enabled=True,
     )
     assert mm2_fee_round_trip_bps("BTCUSDT", s) == -4.0

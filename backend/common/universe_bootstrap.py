@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from analytics.mm_universe_scanner import resolve_mm_universe
+from analytics.mm_universe_scanner import resolve_flow_universe, resolve_mm_universe
 from common.config import Settings
 from gateways.binance.rest_client import BinanceRestClient
 from gateways.binance.universe import discover_usdt_perps, discover_usdt_usdc_pairs
@@ -31,6 +31,7 @@ def needs_auto_universe_resolve(settings: Settings) -> bool:
         or is_auto_symbol_list(settings.blend_symbols)
         or is_auto_symbol_list(settings.mm_symbols)
         or is_auto_symbol_list(settings.mm2_symbols)
+        or is_auto_symbol_list(settings.flow_symbols)
     )
 
 
@@ -94,8 +95,9 @@ async def resolve_binance_auto_universe(settings: Settings) -> Settings:
     blend_auto = is_auto_symbol_list(settings.blend_symbols)
     mm_auto = is_auto_symbol_list(settings.mm_symbols)
     mm2_auto = is_auto_symbol_list(settings.mm2_symbols)
+    flow_auto = is_auto_symbol_list(settings.flow_symbols)
 
-    if not (symbols_auto or sma_auto or blend_auto or mm_auto or mm2_auto):
+    if not (symbols_auto or sma_auto or blend_auto or mm_auto or mm2_auto or flow_auto):
         return settings
 
     rest = BinanceRestClient(
@@ -136,7 +138,7 @@ async def resolve_binance_auto_universe(settings: Settings) -> Settings:
             )
             updates["blend_symbols"] = blend_universe
             logger.info("BLEND_SYMBOLS=AUTO -> %d USDT perpetuals", len(blend_universe))
-        if mm_auto or mm2_auto:
+        if mm_auto or mm2_auto or flow_auto:
             mm_universe = await resolve_mm_universe(settings, rest=rest)
             if mm_auto:
                 updates["mm_symbols"] = mm_universe
@@ -144,11 +146,23 @@ async def resolve_binance_auto_universe(settings: Settings) -> Settings:
             if mm2_auto:
                 updates["mm2_symbols"] = mm_universe
                 updates["mm2_universe_auto"] = True
-            logger.info(
-                "MM_SYMBOLS=AUTO -> %d symbols: %s",
-                len(mm_universe),
-                ", ".join(mm_universe[:12]) + (" ..." if len(mm_universe) > 12 else ""),
-            )
+            if flow_auto:
+                flow_universe = mm_universe if (mm_auto or mm2_auto) else await resolve_flow_universe(
+                    settings, rest=rest
+                )
+                updates["flow_symbols"] = flow_universe
+                updates["flow_universe_auto"] = True
+                logger.info(
+                    "FLOW_SYMBOLS=AUTO -> %d symbols: %s",
+                    len(flow_universe),
+                    ", ".join(flow_universe[:12]) + (" ..." if len(flow_universe) > 12 else ""),
+                )
+            if mm_auto or mm2_auto:
+                logger.info(
+                    "MM_SYMBOLS=AUTO -> %d symbols: %s",
+                    len(mm_universe),
+                    ", ".join(mm_universe[:12]) + (" ..." if len(mm_universe) > 12 else ""),
+                )
         if updates:
             return settings.model_copy(update=updates)
         return settings

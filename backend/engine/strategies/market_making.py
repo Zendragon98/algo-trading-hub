@@ -111,6 +111,8 @@ class MarketMakingStrategy(StrategyBase):
             skew_avg = self._skew_mean(state, now)
             own = self._own(symbol)
             pos_qty = self._position_qty(symbol)
+            mm_core.update_vol_regime_halt(own, feat, self._settings, now=now)
+            mm_core.update_consecutive_fill_halts(own, self._settings, now=now)
             exit_reason = mm_core.plan_exit_reason(
                 feat=feat,
                 settings=self._settings,
@@ -130,17 +132,33 @@ class MarketMakingStrategy(StrategyBase):
                 if intent is not None:
                     intents.append(intent)
                     continue
-            intents.append(
-                mm_core.compute_quote_intent(
-                    feat=feat,
-                    settings=self._settings,
-                    own=own,
-                    position_qty=pos_qty,
-                    equity=equity,
-                    skew_avg=skew_avg,
-                    strategy_name=self.name,
-                )
+            intent = mm_core.compute_quote_intent(
+                feat=feat,
+                settings=self._settings,
+                own=own,
+                position_qty=pos_qty,
+                equity=equity,
+                skew_avg=skew_avg,
+                strategy_name=self.name,
             )
+            if mm_core.symbol_quoting_halted(
+                own,
+                want_bid=intent.bid_price is not None,
+                want_ask=intent.ask_price is not None,
+                now=now,
+            ):
+                intent.bid_price = None
+                intent.ask_price = None
+                intent.bid_qty = 0.0
+                intent.ask_qty = 0.0
+                intent.reason = f"{intent.reason} | mm_side_halt"
+            if now < own.vol_regime_halt_until:
+                intent.bid_price = None
+                intent.ask_price = None
+                intent.bid_qty = 0.0
+                intent.ask_qty = 0.0
+                intent.reason = f"{intent.reason} | mm_vol_regime"
+            intents.append(intent)
         return intents
 
     def _own(self, symbol: str) -> OwnBookState:

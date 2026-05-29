@@ -489,8 +489,10 @@ function Index() {
             label="STRATEGY"
             value={strategy?.label ?? "—"}
             sub={
-              strategy?.description ??
-              (backendReachable ? "Loading..." : "Backend offline — restart API")
+              strategy?.name === "all" && strategies.length > 0
+                ? strategies.map((s) => s.label).join(" · ")
+                : strategy?.description ??
+                  (backendReachable ? "Loading..." : "Backend offline — restart API")
             }
             tone="neutral"
           />
@@ -571,6 +573,7 @@ function Index() {
               <StrategyPicker
                 strategies={strategies}
                 activeName={strategy?.name ?? null}
+                multiMode={strategy?.name === "all"}
                 backendReachable={backendReachable}
                 onSelect={onSelectStrategy}
               />
@@ -721,7 +724,11 @@ function Index() {
         open={settingsOpen}
         onOpenChange={setSettingsOpen}
         onSaved={() => void live.refresh()}
-        activeStrategyLabel={strategy?.label ?? null}
+        activeStrategyLabel={
+          strategy?.name === "all" && strategies.length > 0
+            ? `All (${strategies.map((s) => s.label).join(", ")})`
+            : (strategy?.label ?? null)
+        }
       />
     </div>
   );
@@ -1299,18 +1306,21 @@ function ToggleRow({
 const ALL_STRATEGIES_OPTION: StrategyInfo = {
   name: "all",
   label: "All strategies (netted)",
-  description: "Run pairs, SMA, and market making with internal position netting.",
+  description:
+    "Pairs, SMA, blend, flow momentum, and MM2 run together; alpha signals are netted per symbol.",
   active: false,
 };
 
 function StrategyPicker({
   strategies,
   activeName,
+  multiMode,
   backendReachable,
   onSelect,
 }: {
   strategies: StrategyInfo[];
   activeName: string | null;
+  multiMode: boolean;
   backendReachable: boolean;
   onSelect: (name: string) => void;
 }) {
@@ -1325,9 +1335,16 @@ function StrategyPicker({
           </span>
         )}
       </div>
+      {multiMode && strategies.length > 0 ? (
+        <p className="mb-2 text-[11px] text-muted-foreground">
+          All registered strategies are ticking; alpha legs are netted per symbol before execution.
+        </p>
+      ) : null}
       <div className="grid grid-cols-1 gap-1.5">
         {options.map((s) => {
           const isActive = (activeName ?? "") === s.name;
+          const isRunningInAll = multiMode && s.name !== "all";
+          const highlighted = isActive || isRunningInAll;
           return (
             <button
               key={s.name}
@@ -1335,7 +1352,7 @@ function StrategyPicker({
               onClick={() => onSelect(s.name)}
               className={cn(
                 "flex flex-col items-start gap-0.5 rounded-sm border px-2.5 py-2 text-left transition-colors",
-                isActive
+                highlighted
                   ? "border-bull/60 bg-bull/10 text-bull"
                   : "border-border bg-background/40 text-foreground/80 hover:border-bull/30 hover:text-foreground",
               )}
@@ -1345,6 +1362,11 @@ function StrategyPicker({
                 {isActive && (
                   <span className="ml-auto rounded-sm border border-bull/40 bg-bull/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wider">
                     Active
+                  </span>
+                )}
+                {isRunningInAll && (
+                  <span className="ml-auto rounded-sm border border-bull/30 bg-bull/5 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-bull/90">
+                    Running
                   </span>
                 )}
               </div>
@@ -1868,6 +1890,20 @@ function TradesTable({ trades }: { trades: Trade[] }) {
 /** Newest log lines sit at the top; follow keeps scroll pinned there. */
 const LOG_FOLLOW_TOP_PX = 16;
 
+function logStrategyTag(msg: string): string | null {
+  if (msg.startsWith("ALL strategies")) return "ALL";
+  if (msg.startsWith("SMA ")) return "SMA";
+  if (msg.startsWith("BLEND ") || msg.startsWith("[blend]")) return "BLEND";
+  if (msg.startsWith("FLOW ")) return "FLOW";
+  if (msg.startsWith("MM2 ")) return "MM2";
+  if (msg.startsWith("PAIRS ") || msg.includes("pairs_")) return "PAIRS";
+  if (msg.startsWith("MM ")) return "MM2";
+  if (msg.includes("flow_momentum")) return "FLOW";
+  if (msg.includes("sma_cross")) return "SMA";
+  if (msg.includes("blend_")) return "BLEND";
+  return null;
+}
+
 function LogStream({ logs, className }: { logs: LogEntry[]; className?: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
@@ -1937,18 +1973,26 @@ function LogStream({ logs, className }: { logs: LogEntry[]; className?: string }
         )}
       >
         <div className="space-y-1 px-3 py-2 font-mono text-[12px] leading-relaxed">
-          {logs.map((l, i) => (
-            <div key={i} className="flex gap-2">
-              <span className="shrink-0 text-muted-foreground/70 tabular-nums">{l.ts}</span>
-              <span className={cn("shrink-0 font-semibold", color[l.level])}>{tag[l.level]}</span>
-              {l.logger ? (
-                <span className="shrink-0 max-w-[10rem] truncate text-[10px] text-muted-foreground/60">
-                  {l.logger.split(".").slice(-1)[0]}
-                </span>
-              ) : null}
-              <span className="min-w-0 break-words text-foreground/90">{l.msg}</span>
-            </div>
-          ))}
+          {logs.map((l, i) => {
+            const stratTag = logStrategyTag(l.msg);
+            return (
+              <div key={i} className="flex gap-2">
+                <span className="shrink-0 text-muted-foreground/70 tabular-nums">{l.ts}</span>
+                <span className={cn("shrink-0 font-semibold", color[l.level])}>{tag[l.level]}</span>
+                {stratTag ? (
+                  <span className="shrink-0 rounded-sm border border-border/60 bg-muted/40 px-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    {stratTag}
+                  </span>
+                ) : null}
+                {l.logger ? (
+                  <span className="shrink-0 max-w-[8rem] truncate text-[10px] text-muted-foreground/60">
+                    {l.logger.split(".").slice(-1)[0]}
+                  </span>
+                ) : null}
+                <span className="min-w-0 break-words text-foreground/90">{l.msg}</span>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>

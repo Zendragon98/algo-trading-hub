@@ -13,6 +13,22 @@ from engine.market_data.symbol_calibration import (
 )
 
 
+def test_load_symbol_calibration_primary_overrides_legacy(tmp_path) -> None:
+    legacy = tmp_path / "mm_spread_calibration.json"
+    legacy.write_text(
+        json.dumps({"symbols": {"BTCUSDT": {"mm": {"half_spread_bps": 9.0}}}}),
+        encoding="utf-8",
+    )
+    primary = tmp_path / "symbol_calibration.json"
+    primary.write_text(
+        json.dumps({"symbols": {"BTCUSDT": {"mm": {"half_spread_bps": 2.5}}}}),
+        encoding="utf-8",
+    )
+    invalidate_cache()
+    cal = load_symbol_calibration(str(primary))["BTCUSDT"]
+    assert cal.half_spread_bps == 2.5
+
+
 def test_load_symbol_calibration_merges_sections(tmp_path) -> None:
     path = tmp_path / "symbol_calibration.json"
     path.write_text(

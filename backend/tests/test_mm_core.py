@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from common.config import Settings
 from engine.market_data.feature_store import Features
 from engine.market_data.own_quote_book import EntryLedger, OwnBookState
@@ -32,6 +34,89 @@ def test_inventory_blocks_long_when_full() -> None:
     )
     s = Settings(mm_inventory_hard_ratio=0.85)
     assert mm_core.entry_blocked(feat, s, want_long=True) == "inventory"
+
+
+def test_compute_quote_intent_caps_reduce_only_side_to_position() -> None:
+    feat = Features(
+        symbol="FILUSDT",
+        mid=0.95,
+        spread_bps=10.0,
+        imbalance_topn=0.0,
+        jump_active=False,
+        is_toxic=False,
+        bid_depth_ratio=1.0,
+        ask_depth_ratio=1.0,
+        best_bid=0.949,
+        best_ask=0.951,
+    )
+    own = OwnBookState(symbol="FILUSDT")
+    s = Settings(mm_quote_size_pct=0.5, mm_max_inventory_notional=100.0)
+    intent = mm_core.compute_quote_intent(
+        feat=feat,
+        settings=s,
+        own=own,
+        position_qty=-0.031,
+        equity=10_000.0,
+        skew_avg=0.0,
+        strategy_name="market_making_v2",
+    )
+    assert intent.reduce_only_bid is True
+    assert intent.bid_qty == pytest.approx(0.031, rel=1e-6)
+    assert intent.bid_qty <= abs(-0.031) + 1e-12
+
+
+def test_clamp_targets_no_cross_in_intent() -> None:
+    feat = Features(
+        symbol="BTCUSDT",
+        mid=100.0,
+        spread_bps=10.0,
+        best_bid=99.5,
+        best_ask=100.5,
+        jump_active=False,
+        is_toxic=False,
+        bid_depth_ratio=1.0,
+        ask_depth_ratio=1.0,
+    )
+    own = OwnBookState(symbol="BTCUSDT")
+    s = Settings(mm_inventory_hard_ratio=0.0)
+    intent = mm_core.compute_quote_intent(
+        feat=feat,
+        settings=s,
+        own=own,
+        position_qty=0.0,
+        equity=10_000.0,
+        skew_avg=0.0,
+        strategy_name="market_making",
+    )
+    if intent.bid_price is not None:
+        assert intent.bid_price < feat.best_ask
+
+
+def test_position_limit_blocks_bid() -> None:
+    feat = Features(
+        symbol="BTCUSDT",
+        mid=100.0,
+        spread_bps=5.0,
+        jump_active=False,
+        is_toxic=False,
+        bid_depth_ratio=1.0,
+        ask_depth_ratio=1.0,
+    )
+    own = OwnBookState(symbol="BTCUSDT")
+    s = Settings(
+        mm_buy_position_limit_notional=500.0,
+        mm_inventory_hard_ratio=0.0,
+    )
+    intent = mm_core.compute_quote_intent(
+        feat=feat,
+        settings=s,
+        own=own,
+        position_qty=6.0,
+        equity=10_000.0,
+        skew_avg=0.0,
+        strategy_name="market_making",
+    )
+    assert intent.bid_price is None
 
 
 def test_compute_quote_intent_has_two_sides() -> None:
@@ -196,6 +281,41 @@ def test_entry_risk_moderate_widens_half_spread() -> None:
     assert intent.bid_price is not None
     assert "risk=moderate" in intent.reason
     assert intent.bid_half_bps > 3.0
+
+
+def test_on_mm_fill_skips_hedge_when_taker() -> None:
+    from engine.market_data.feature_store import Features
+    from engine.market_data.own_quote_book import OwnBookState
+
+    feat = Features(
+        symbol="BTCUSDT",
+        mid=100.0,
+        vol_5m_bps=100.0,
+        jump_active=False,
+    )
+    own = OwnBookState(symbol="BTCUSDT")
+    own.last_fill_adverse_bps = 10.0
+    s = Settings(mm_fill_hedge_ioc_enabled=True, mm_fill_hedge_adverse_bps=1.0)
+    mm_core.on_mm_fill(own, feat, s, side="buy", maker=False)
+    assert own.pending_take_ask is False
+    assert own.pending_take_bid is False
+
+
+def test_on_mm_fill_queues_hedge_when_maker() -> None:
+    from engine.market_data.feature_store import Features
+    from engine.market_data.own_quote_book import OwnBookState
+
+    feat = Features(
+        symbol="BTCUSDT",
+        mid=100.0,
+        vol_5m_bps=100.0,
+        jump_active=False,
+    )
+    own = OwnBookState(symbol="BTCUSDT")
+    own.last_fill_adverse_bps = 10.0
+    s = Settings(mm_fill_hedge_ioc_enabled=True, mm_fill_hedge_adverse_bps=1.0)
+    mm_core.on_mm_fill(own, feat, s, side="buy", maker=True)
+    assert own.pending_take_ask is True
 
 
 def test_plan_exit_reason_market_when_deep_loss() -> None:

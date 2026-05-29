@@ -15,6 +15,7 @@ A full-stack **algorithmic trading console**: a React dashboard observes and con
 | Engineering (engine, API, config, strategies) | [`backend/README.md`](backend/README.md) |
 | Architecture signpost (diagrams + component map) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | Operations / SRE (health, incidents, deployment) | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) |
+| Google Cloud deployment | [`deploy/gcp/README.md`](deploy/gcp/README.md) |
 | Security (threat model, secrets, hardening) | [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Risk / compliance (records, governance, disclaimer) | [`docs/COMPLIANCE_AND_GOVERNANCE.md`](docs/COMPLIANCE_AND_GOVERNANCE.md) |
 | Architecture diagrams (editable `.mmd`) | [`backend/docs/`](backend/docs/) |
@@ -260,10 +261,11 @@ Preview diagrams: [mermaid.live](https://mermaid.live) or VS Code Mermaid extens
 | **Pairs** | `pairs_trading` | `SYMBOLS` USDT+USDC perps | Self-managed (z-space SL/TP) | Volume-weighted implied USDT/USDC basis deviation |
 | **SMA** | `sma_crossover` | `SMA_SYMBOLS` | Engine per-leg brackets | Fast/slow SMA cross per symbol |
 | **Market making** | `market_making` | `MM_SYMBOLS` | Engine per-leg brackets | Fade/follow composite of skew · imbalance · tape |
+| **Flow momentum** | `flow_momentum` | `FLOW_SYMBOLS` | In-strategy (bps stop / reversal) | Follow sustained one-sided tape on liquid majors |
 | **Market making 2.0** | `market_making_v2` | `MM2_SYMBOLS` | Engine per-leg brackets | Fee-aware fade: spread gate, tape confirm, profit/time exits |
 | **All** | `all` | Union of above | Per-strategy rules | Net signals per symbol before one execution path |
 
-Hot-swap: `POST /api/control/strategy` with `{ "name": "pairs_trading" }` (or `sma_crossover`, `market_making`, `market_making_v2`, `all`). Boot default: `STRATEGY` in `.env`.
+Hot-swap: `POST /api/control/strategy` with `{ "name": "pairs_trading" }` (or `sma_crossover`, `flow_momentum`, `market_making_v2`, `all`). Boot default: `STRATEGY` in `.env`.
 
 ---
 
@@ -377,7 +379,16 @@ npm run dev
 
 - UI: **http://localhost:5173**
 - Vite proxies `/api` and `/ws` → `127.0.0.1:8000` (same-origin, no CORS)
-- Override API host: `VITE_API_BASE` in `.env`
+- Override API host: `VITE_API_BASE` in `.env` (see [`.env.example`](.env.example))
+
+### 3. Production: Vercel + GCP
+
+| Piece | Where | Guide |
+|-------|--------|--------|
+| Dashboard | Vercel | [`deploy/vercel/README.md`](deploy/vercel/README.md) |
+| Engine + API | GCP Compute Engine | [`deploy/gcp/README.md`](deploy/gcp/README.md) |
+
+Set `VITE_API_BASE` (and optionally `VITE_API_TOKEN`) in Vercel project settings; set matching `CORS_ORIGINS` on the GCP VM.
 
 ---
 

@@ -1,0 +1,20 @@
+[Unit]
+Description=Algo Trading Hub engine (Docker Compose)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/algo-trading-hub/deploy/gcp
+EnvironmentFile=-/opt/algo-trading-hub/deploy/gcp/.env
+
+# Pull latest image on start (optional; comment out for pinned tags)
+ExecStartPre=/usr/bin/docker compose pull --quiet
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
