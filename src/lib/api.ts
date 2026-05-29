@@ -586,8 +586,8 @@ export function toTrade(d: TradeDTO): Trade {
     price: d.price,
     action,
     entryPrice: d.entry_price ?? d.price,
-    exitPrice: d.exit_price,
-    pnl: d.pnl,
+    exitPrice: d.exit_price ?? null,
+    pnl: d.pnl ?? null,
   };
 }
 

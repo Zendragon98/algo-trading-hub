@@ -635,7 +635,7 @@ export function applyWsEvent(
       const activeCodes = active.map((b) => b.code);
       return {
         ...prev,
-        breakers: { active, history },
+        breakers: { ...prev.breakers, active, history },
         systemHealth: prev.systemHealth
           ? { ...prev.systemHealth, activeBreakers: activeCodes }
           : prev.systemHealth,

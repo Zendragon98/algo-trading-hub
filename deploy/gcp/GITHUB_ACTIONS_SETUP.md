@@ -27,7 +27,10 @@ gcloud iam service-accounts create $SA_NAME `
 
 $roles = @(
   "roles/cloudbuild.builds.editor",
-  "roles/storage.objectAdmin",
+  "roles/cloudbuild.builds.builder",
+  "roles/storage.admin",
+  "roles/artifactregistry.writer",
+  "roles/logging.logWriter",
   "roles/compute.instanceAdmin.v1",
   "roles/iap.tunnelResourceAccessor",
   "roles/compute.osAdminLogin",
@@ -90,7 +93,7 @@ Manual run: **Actions** → **Deploy backend to GCP** → **Run workflow**.
 | Failure | Fix |
 |---------|-----|
 | `GCP_SA_KEY` missing | Add secret (step 2) |
-| Cloud Build permission denied | Re-run IAM bindings for `github-actions-deploy` |
+| Cloud Build permission denied / `_cloudbuild` bucket forbidden | Grant `storage.admin`, `cloudbuild.builds.builder`, `artifactregistry.writer` to `github-actions-deploy`; grant `artifactregistry.writer` to `PROJECT_NUMBER@cloudbuild.gserviceaccount.com` |
 | SSH / IAP failed | VM running; firewall `algo-trading-allow-ssh-iap`; SA has `iap.tunnelResourceAccessor` + `compute.osAdminLogin` |
 | `docker compose` path wrong | Ensure `/opt/algo-trading-hub/deploy/gcp` exists on VM (initial setup) |
 | Build OK, old code still running | Check Actions log for “Restart engine”; run SSH step manually |

@@ -1,29 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import { Link } from "@tanstack/react-router";
-import {
-  Activity,
-  AlertTriangle,
-  ChevronDown,
-  CircleDot,
-  Cpu,
-  Download,
-  Gauge,
-  ListOrdered,
-  Loader2,
-  Pause,
-  Play,
-  Power,
-  RefreshCcw,
-  Settings2,
-  ShieldAlert,
-  Square,
-  Target,
-  TrendingDown,
-  TrendingUp,
-  Wallet,
-  Wifi,
-  Zap,
-} from "lucide-react";
+import { ChevronDown, Loader2, ShieldAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -43,11 +19,6 @@ import {
 } from "@/components/ui/collapsible";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
-import {
-  type ClosedTradePerfVm,
-  formatSignedRealizedPnl,
-  formatUsdPayoffCell,
-} from "@/lib/algo-format";
 import { BreakerLiveConfirmDialog } from "@/components/algo/BreakerLiveConfirmDialog";
 import { Panel, ToggleRow } from "@/components/algo/dashboard/primitives";
 import { Input } from "@/components/ui/input";
@@ -657,6 +628,4 @@ export function BreakerRow({ breaker, onRearm }: { breaker: BreakerStatus; onRea
     </div>
   );
 }
-
-const CLOCK_SKEW_WARN_MS = 250;
 

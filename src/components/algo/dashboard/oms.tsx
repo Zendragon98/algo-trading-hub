@@ -1,61 +1,10 @@
-import { useLayoutEffect, useRef, useState } from "react";
-import { Link } from "@tanstack/react-router";
-import {
-  Activity,
-  AlertTriangle,
-  ChevronDown,
-  CircleDot,
-  Cpu,
-  Download,
-  Gauge,
-  ListOrdered,
-  Loader2,
-  Pause,
-  Play,
-  Power,
-  RefreshCcw,
-  Settings2,
-  ShieldAlert,
-  Square,
-  Target,
-  TrendingDown,
-  TrendingUp,
-  Wallet,
-  Wifi,
-  Zap,
-} from "lucide-react";
+import { ListOrdered } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
-import {
-  type ClosedTradePerfVm,
-  formatSignedRealizedPnl,
-  formatUsdPayoffCell,
-} from "@/lib/algo-format";
-import type {
-  AlgoStatus,
-  BreakerList,
-  BreakerStatus,
-  ExecutionAggregate,
-  ExecutionParent,
-  LogEntry,
-  Position,
-  StartupProgress,
-  StrategyInfo,
-  SystemHealth,
-  Trade,
-  WorkingOrder,
-} from "@/components/algo/types";
+import type { ExecutionAggregate, ExecutionParent, WorkingOrder } from "@/components/algo/types";
 export function OmsTable({
   parents,
   children,

@@ -30,7 +30,10 @@ if (-not $saExists) {
 
 $roles = @(
   "roles/cloudbuild.builds.editor",
-  "roles/storage.objectAdmin",
+  "roles/cloudbuild.builds.builder",
+  "roles/storage.admin",
+  "roles/artifactregistry.writer",
+  "roles/logging.logWriter",
   "roles/compute.instanceAdmin.v1",
   "roles/iap.tunnelResourceAccessor",
   "roles/compute.osAdminLogin",
