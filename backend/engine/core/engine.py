@@ -25,7 +25,6 @@ from pathlib import Path
 from typing import Any
 
 from common.config import Settings, normalize_strategy_name
-from common.venue_errors import is_venue_throttle_error
 from common.enums import EngineStatus, EventType, OrderStatus, OrderType, Side, Urgency
 from common.events import Event, EventBus
 from common.logging import apply_log_level, group_signal_log, resolve_log_level, signal_log_emit
@@ -39,6 +38,7 @@ from common.types import (
     TapeTrade,
     Tick,
 )
+from common.venue_errors import is_venue_throttle_error
 from gateways.gateway_interface import DepthDiff, GatewayInterface
 
 from ..execution.algo_wheel import AlgoWheel, WheelConfig
@@ -83,10 +83,11 @@ from ..risk.pretrade_validator import PreTradeValidator
 from ..risk.risk_manager import ExitIntent, RiskManager
 from ..risk.stop_loss import StopLossMonitor
 from ..risk.venue_sizing import venue_cap_qty, venue_min_qty, venue_qty_in_bounds
-from ..strategies import mm_core
-from ..strategies.market_making_v2 import MarketMakingV2Strategy
+from ..strategies.market_making import core as mm_core
+from ..strategies.market_making.strategy import MarketMakingV2Strategy
 from ..strategies.signal_netter import NettedSignal, net_strategy_signals
 from ..strategies.strategy_base import StrategyBase
+from . import book_resync_runtime, mm_universe_runtime
 from .clock import Clock
 from .connection_monitor import ConnectionMonitor
 from .order_reconciliation import OrderReconciler
@@ -272,7 +273,7 @@ class Engine:
         self._md_quality = DataQualityMonitor(
             breaker=self._breaker,
             stale_resnapshot_sec=settings.md_stale_resnapshot_sec,
-            crossed_book_breaker=settings.md_crossed_book_breaker,
+            crossed_book_breaker=settings.is_breaker_enabled("md_crossed_book"),
         )
         self._md_bootstrap_done = False
         self._start_lock = asyncio.Lock()
@@ -397,6 +398,12 @@ class Engine:
         self._last_logged_status: str | None = None
         self._last_ops_health_signature: tuple[object, ...] | None = None
         self._last_forced_reconcile_ts: float = 0.0
+        self._sync_breaker_enabled(settings)
+
+    def _sync_breaker_enabled(self, s: Settings) -> None:
+        """Apply per-code enable flags and clear trips for newly disabled codes."""
+        self._breaker.set_enabled(s.is_breaker_enabled)
+        self._md_quality.crossed_book_breaker = s.is_breaker_enabled("md_crossed_book")
 
     def _reconcile_should_skip_rest(self) -> bool:
         """True when periodic reconcile should rely on user-data WS, not REST.
@@ -635,11 +642,29 @@ class Engine:
                 clean.pop(key, None)
         if isinstance(clean.get("strategy"), str):
             clean["strategy"] = normalize_strategy_name(clean["strategy"])
+        prev_enabled = dict(self._settings.breaker_enabled)
+        be_patch = clean.get("breaker_enabled")
+        if isinstance(be_patch, dict):
+            from common.breaker_registry import merge_breaker_enabled
+
+            clean["breaker_enabled"] = merge_breaker_enabled(
+                {str(k): bool(v) for k, v in be_patch.items()},
+                base=self._settings.breaker_enabled,
+            )
         merged = {**cur, **clean}
         new_settings = Settings.model_validate(merged)
+        newly_disabled = [
+            code
+            for code in prev_enabled
+            if prev_enabled.get(code, True) and not new_settings.is_breaker_enabled(code)
+        ]
         if clean:
             logger.info("settings patched: %s", ", ".join(sorted(clean.keys())))
         self._apply_runtime_settings(new_settings)
+        if newly_disabled:
+            cleared = self._breaker.clear_disabled_codes(newly_disabled)
+            if cleared:
+                self.apply_breaker_rearm_side_effects(cleared)
         return new_settings
 
     def _apply_runtime_settings(self, s: Settings) -> None:
@@ -676,6 +701,7 @@ class Engine:
         self._order_reconciler.apply_settings(s)
         for strat in self._strategies:
             strat.refresh_settings(s)
+        self._sync_breaker_enabled(s)
         apply_log_level(resolve_log_level(s.log_level))
         logger.info("log level applied: %s", s.log_level.lower())
 
@@ -904,13 +930,13 @@ class Engine:
         self._volume_refresh_task = asyncio.create_task(
             self._volume_refresh_loop(), name="engine-volume-refresh",
         )
-        if self._mm_universe_refresh_enabled():
-            self._mm_universe_spread_baselines = self._load_mm_universe_spread_baselines()
+        if mm_universe_runtime.refresh_enabled(self):
+            self._mm_universe_spread_baselines = mm_universe_runtime.load_spread_baselines()
             self._mm_universe_last_refresh_ts = time.time()
             refresh_sec = float(self._settings.mm_universe_refresh_sec)
             if refresh_sec > 0:
                 self._mm_universe_refresh_task = asyncio.create_task(
-                    self._mm_universe_refresh_loop(),
+                    mm_universe_runtime.refresh_loop(self),
                     name="engine-mm-universe-refresh",
                 )
         # Start the periodic venue reconciliation loop so OMS/Portfolio
@@ -1233,7 +1259,7 @@ class Engine:
                         self.resume(skip_rest_sync=self.rest_heavily_throttled()),
                         timeout=20.0,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning("resume after flatten timed out; forcing RUNNING")
                     self._state.status = EngineStatus.RUNNING
                     await self._publish_status()
@@ -1302,166 +1328,11 @@ class Engine:
                 if backoff is not None:
                     await asyncio.sleep(min(float(backoff) + 1.0, 86_400.0))
 
-    def _mm_universe_refresh_enabled(self) -> bool:
-        return bool(
-            self._settings.mm_universe_auto
-            or self._settings.mm2_universe_auto
-            or self._settings.flow_universe_auto,
-        )
-
-    def _active_mm_symbols(self) -> list[str]:
-        syms: set[str] = set()
-        if self.is_multi_strategy_mode():
-            targets = self._strategies
-        else:
-            active = self._strategies_by_name.get(self._active_strategy_name)
-            targets = [active] if active is not None else []
-        for strat in targets:
-            if strat is None or not mm_core.is_mm_strategy(strat.name):
-                continue
-            syms.update(strat.symbols())
-        return sorted(syms)
-
-    def _load_mm_universe_spread_baselines(self) -> dict[str, float]:
-        try:
-            from analytics.mm_universe_refresher import load_spread_baselines
-
-            return load_spread_baselines()
-        except Exception:  # noqa: BLE001
-            logger.debug("mm universe spread baselines unavailable", exc_info=True)
-            return {}
-
-    async def _mm_universe_refresh_loop(self) -> None:
-        """Periodic full MM universe rescan when ``MM_SYMBOLS`` was AUTO at boot."""
-        while True:
-            try:
-                interval = max(60.0, float(self._settings.mm_universe_refresh_sec))
-                await asyncio.sleep(interval)
-                await self._refresh_mm_universe(reason="periodic")
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                logger.exception("mm universe periodic refresh failed")
-
     async def _maybe_refresh_mm_universe_adverse(self) -> None:
-        if not self._mm_universe_refresh_enabled():
-            return
-        now = time.time()
-        check_sec = max(5.0, float(self._settings.mm_universe_adverse_check_sec))
-        if now - self._mm_universe_last_adverse_check_ts < check_sec:
-            return
-        self._mm_universe_last_adverse_check_ts = now
-
-        from analytics.mm_universe_refresher import (
-            SymbolMicroSnapshot,
-            evaluate_adverse_universe,
-            should_run_adverse_refresh,
-        )
-
-        if not should_run_adverse_refresh(
-            last_adverse_refresh_ts=self._mm_universe_last_adverse_refresh_ts,
-            cooldown_sec=float(self._settings.mm_universe_adverse_refresh_cooldown_sec),
-            now=now,
-        ):
-            return
-
-        mm_syms = self._active_mm_symbols()
-        if not mm_syms:
-            return
-
-        snaps: dict[str, SymbolMicroSnapshot] = {}
-        for sym in mm_syms:
-            own = self._sync_own_book(sym)
-            pos = self._positions.get(sym)
-            pos_qty = pos.qty if pos is not None else 0.0
-            feat = self._features.snapshot(sym, own=own, position_qty=pos_qty)
-            snaps[sym] = SymbolMicroSnapshot(
-                markout_adverse_ewma_bps=feat.markout_adverse_ewma_bps,
-                is_toxic=feat.is_toxic,
-                jump_active=feat.jump_active,
-                spread_bps=feat.spread_bps,
-                vol_ewma_bps=feat.vol_ewma_bps,
-                mid_return_1s_bps=feat.mid_return_1s_bps,
-            )
-
-        signal = evaluate_adverse_universe(
-            mm_syms,
-            snaps,
-            settings=self._settings,
-            spread_baselines=self._mm_universe_spread_baselines,
-        )
-        if signal is None:
-            return
-        logger.warning(
-            "mm universe adverse signal: %s — %s (%s)",
-            signal.reason,
-            signal.detail,
-            ", ".join(signal.symbols[:8]),
-        )
-        await self._refresh_mm_universe(reason=signal.reason)
+        await mm_universe_runtime.maybe_refresh_adverse(self)
 
     async def _refresh_mm_universe(self, *, reason: str) -> bool:
-        if not self._mm_universe_refresh_enabled():
-            return False
-        if self._state.status is not EngineStatus.RUNNING:
-            return False
-
-        from analytics.mm_universe_scanner import resolve_mm_universe
-        from gateways.binance.rest_client import BinanceRestClient
-
-        rest = getattr(self._gateway, "_rest", None)
-        own_rest = rest is None
-        if own_rest:
-            rest = BinanceRestClient(
-                base_url=self._settings.binance_rest_base,
-                api_key=self._settings.binance_api_key,
-                api_secret=self._settings.binance_api_secret,
-            )
-        try:
-            symbols = await resolve_mm_universe(
-                self._settings,
-                rest=rest,
-                force_rescan=True,
-            )
-        except Exception:  # noqa: BLE001
-            logger.exception("mm universe refresh failed (%s)", reason)
-            return False
-        finally:
-            if own_rest and rest is not None:
-                await rest.close()
-
-        if not symbols:
-            return False
-
-        patch: dict[str, Any] = {}
-        if self._settings.mm_universe_auto:
-            patch["mm_symbols"] = symbols
-        if self._settings.mm2_universe_auto:
-            patch["mm2_symbols"] = symbols
-        if self._settings.flow_universe_auto:
-            patch["flow_symbols"] = symbols
-        if not patch:
-            return False
-
-        prev = set(self._active_mm_symbols())
-        self.apply_settings_patch(patch)
-        self._mm_universe_spread_baselines = self._load_mm_universe_spread_baselines()
-        now = time.time()
-        self._mm_universe_last_refresh_ts = now
-        if reason != "periodic":
-            self._mm_universe_last_adverse_refresh_ts = now
-
-        changed = await self.refresh_market_universe()
-        new_set = set(symbols)
-        logger.info(
-            "mm universe refresh (%s): %d symbols %s -> %s market_ws_changed=%s",
-            reason,
-            len(symbols),
-            sorted(prev)[:8],
-            symbols[:12],
-            changed,
-        )
-        return changed or prev != new_set
+        return await mm_universe_runtime.refresh(self, reason=reason)
 
     async def _volume_refresh_loop(self) -> None:
         """Periodically top up volume weights when WS cache is incomplete.
@@ -1887,7 +1758,7 @@ class Engine:
                 self._md_quality.record_gap(sym, gap)
             if sym not in self._resnapshot_inflight:
                 self._gap_resync_pending.add(sym)
-                self._schedule_gap_resync()
+                book_resync_runtime.schedule_gap_resync(self)
             return
         if action is DiffAction.DROP_STALE:
             return
@@ -1910,37 +1781,7 @@ class Engine:
             )
 
     def _schedule_gap_resync(self) -> None:
-        task = self._gap_resync_task
-        if task is not None and not task.done():
-            return
-        self._gap_resync_task = asyncio.create_task(
-            self._drain_gap_resync(),
-            name="engine-gap-resync",
-        )
-
-    async def _drain_gap_resync(self) -> None:
-        await asyncio.sleep(0)
-        async with self._gap_resync_lock:
-            if not self._gap_resync_pending:
-                return
-            batch = sorted(self._gap_resync_pending)
-            self._gap_resync_pending.clear()
-        concurrency = self._book_resync_concurrency("gap")
-
-        async def _one(symbol: str) -> None:
-            if symbol in self._bulk_resync_symbols:
-                return
-            self._resnapshot_inflight.add(symbol)
-            try:
-                await self._snapshot_book(symbol)
-            finally:
-                self._resnapshot_inflight.discard(symbol)
-
-        await self._run_book_resync_workers(
-            batch,
-            concurrency=concurrency,
-            worker=_one,
-        )
+        book_resync_runtime.schedule_gap_resync(self)
 
     async def _capture_flush_loop(self) -> None:
         try:
@@ -1956,40 +1797,7 @@ class Engine:
             raise
 
     async def _on_market_ws_reconnect(self, symbols: list[str]) -> None:
-        """REST-resync L2 books after a public market WebSocket reconnect.
-
-        Debounce + coalesce shard reconnects so parallel snapshot storms do not
-        starve market WS ping handlers.
-        """
-        self._reconnect_resync_pending.update(s.upper() for s in symbols)
-        task = self._reconnect_resync_debounce_task
-        if task is not None and not task.done():
-            return
-        self._reconnect_resync_debounce_task = asyncio.create_task(
-            self._flush_reconnect_resync(),
-            name="engine-market-ws-reconnect-resync",
-        )
-
-    async def _flush_reconnect_resync(self) -> None:
-        delay = max(
-            0.0,
-            float(getattr(self._settings, "market_ws_reconnect_resync_delay_sec", 3.0)),
-        )
-        if delay > 0:
-            await asyncio.sleep(delay)
-        async with self._reconnect_resync_lock:
-            while self._reconnect_resync_pending:
-                batch = sorted(self._reconnect_resync_pending)
-                self._reconnect_resync_pending.clear()
-                await self._resync_symbol_books(batch, reason="reconnect")
-
-    def _book_resync_concurrency(self, reason: str) -> int:
-        if reason == "reconnect":
-            return max(
-                1,
-                int(getattr(self._settings, "book_resync_reconnect_concurrency", 3)),
-            )
-        return max(1, int(getattr(self._settings, "book_resync_concurrency", 8)))
+        await book_resync_runtime.on_market_ws_reconnect(self, symbols)
 
     async def _run_book_resync_workers(
         self,
@@ -1998,46 +1806,12 @@ class Engine:
         concurrency: int,
         worker: Callable[[str], Awaitable[None]],
     ) -> int:
-        """Run ``worker(symbol)`` with a fixed pool size (no N-task gather storms)."""
-        if not symbols:
-            return 0
-        limit = min(max(1, concurrency), len(symbols))
-        sym_iter = iter(symbols)
-        iter_lock = asyncio.Lock()
-        failures = 0
-        fail_lock = asyncio.Lock()
-
-        async def _runner() -> None:
-            nonlocal failures
-            while True:
-                async with iter_lock:
-                    try:
-                        sym = next(sym_iter)
-                    except StopIteration:
-                        return
-                try:
-                    await worker(sym)
-                except Exception:  # noqa: BLE001
-                    logger.exception("book resync worker failed for %s", sym)
-                    async with fail_lock:
-                        failures += 1
-                await asyncio.sleep(0)
-
-        await asyncio.gather(*(_runner() for _ in range(limit)))
-        return failures
+        return await book_resync_runtime.run_book_resync_workers(
+            self, symbols, concurrency=concurrency, worker=worker,
+        )
 
     async def _cancel_reconnect_resync_task(self) -> None:
-        task = self._reconnect_resync_debounce_task
-        if task is None:
-            return
-        self._reconnect_resync_debounce_task = None
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        except Exception:  # noqa: BLE001
-            logger.exception("reconnect resync task shutdown raised")
+        await book_resync_runtime.cancel_reconnect_resync_task(self)
 
     async def _resync_symbol_books(
         self,
@@ -2047,80 +1821,13 @@ class Engine:
         invalidate: bool = True,
         publish_startup: bool = False,
     ) -> None:
-        if not symbols:
-            return
-        logger.info("%s: resyncing %d symbol L2 book(s)", reason, len(symbols))
-        normalized = [s.upper() for s in symbols]
-        if invalidate:
-            self._md_quality.invalidate(normalized)
-            for sym in normalized:
-                self._books.get(sym).invalidate()
-
-        self._bulk_resync_symbols.update(normalized)
-        total = len(normalized)
-        done = 0
-        done_lock = asyncio.Lock()
-        show_progress = publish_startup or self._state.status is EngineStatus.RUNNING
-
-        if show_progress and reason != "startup":
-            self._book_resync = StartupProgress(
-                phase="books",
-                label="Resyncing L2 order books after reconnect…",
-                done=0,
-                total=total,
-            )
-            logger.info("book resync started (%s): %d symbols", reason, total)
-            await self._publish_book_resync()
-
-        async def _one(symbol: str) -> None:
-            nonlocal done
-            async with done_lock:
-                in_flight = done
-            if publish_startup:
-                await self._set_startup(
-                    "books",
-                    "Syncing L2 order books…",
-                    done=in_flight,
-                    total=total,
-                    symbol=symbol,
-                )
-            await self._snapshot_book(symbol)
-            await asyncio.sleep(0)
-            async with done_lock:
-                done += 1
-                completed = done
-            if publish_startup:
-                await self._set_startup(
-                    "books",
-                    "Syncing L2 order books…",
-                    done=completed,
-                    total=total,
-                    symbol=symbol,
-                )
-            elif self._book_resync is not None and (
-                completed % 8 == 0 or completed == total
-            ):
-                await self._publish_book_resync(done=completed, total=total, symbol=symbol)
-
-        try:
-            failures = await self._run_book_resync_workers(
-                normalized,
-                concurrency=self._book_resync_concurrency(reason),
-                worker=_one,
-            )
-            if failures:
-                logger.warning(
-                    "%s book resync: %d/%d snapshots failed",
-                    reason,
-                    failures,
-                    len(normalized),
-                )
-        finally:
-            self._bulk_resync_symbols.difference_update(normalized)
-
-        if self._book_resync is not None and reason != "startup":
-            self._book_resync = None
-            await self._publish_book_resync(clear=True)
+        await book_resync_runtime.resync_symbol_books(
+            self,
+            symbols,
+            reason=reason,
+            invalidate=invalidate,
+            publish_startup=publish_startup,
+        )
 
     async def _on_trade(self, trade: TapeTrade) -> None:
         self._state.last_tick_ts = time.time()
@@ -2236,7 +1943,7 @@ class Engine:
         now = time.time()
         if interval > 0 and self._last_funding_poll_ts > 0 and now - self._last_funding_poll_ts < interval:
             return
-        rest = getattr(self._gateway, "_rest", None)
+        rest = mm_universe_runtime.gateway_rest_client(self._gateway)
         if rest is None or not hasattr(rest, "premium_index"):
             return
         self._last_funding_poll_ts = now
@@ -2626,7 +2333,7 @@ class Engine:
             label = (strat.display_label or strat.name).strip()
             sym_n = len(strat.symbols())
             if mm_core.is_mm_strategy(strat.name):
-                parts.append(f"MM2 {sym_n} syms")
+                parts.append(f"{label} {sym_n} syms")
             else:
                 sig_n = sig_counts.get(strat.name, 0)
                 parts.append(f"{label} {sym_n} syms sig={sig_n}")
@@ -3041,33 +2748,8 @@ class Engine:
         symbol: str | None = None,
         clear: bool = False,
     ) -> None:
-        if clear:
-            logger.info("book resync complete")
-            await self._bus.publish(
-                Event(type=EventType.STATUS, payload={"kind": "book_resync", "clear": True}),
-            )
-            return
-        br = self._book_resync
-        if br is None:
-            return
-        if done is not None:
-            br.done = done
-        if total is not None:
-            br.total = total
-        if symbol is not None:
-            br.symbol = symbol
-        await self._bus.publish(
-            Event(
-                type=EventType.STATUS,
-                payload={
-                    "kind": "book_resync",
-                    "phase": br.phase,
-                    "label": br.label,
-                    "done": br.done,
-                    "total": br.total,
-                    "symbol": br.symbol,
-                },
-            ),
+        await book_resync_runtime.publish_book_resync(
+            self, done=done, total=total, symbol=symbol, clear=clear,
         )
 
     async def _publish_status(self) -> None:

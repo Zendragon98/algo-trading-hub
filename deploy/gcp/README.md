@@ -212,4 +212,6 @@ Do not route trading traffic to instances where `/ready` is false during intenti
 | [`scripts/sync-runs-to-gcs.sh`](scripts/sync-runs-to-gcs.sh) | Backup JSONL runs |
 | [`terraform/`](terraform/) | Optional VM + disk + firewall + GCS |
 
+**GitHub auto-deploy (push to `main`):** [`GITHUB_ACTIONS_SETUP.md`](GITHUB_ACTIONS_SETUP.md)
+
 Related: [`../vercel/README.md`](../vercel/README.md) · [`../../cloudbuild.yaml`](../../cloudbuild.yaml) · [`../../docs/OPERATIONS.md`](../../docs/OPERATIONS.md) · [`../../docs/SECURITY.md`](../../docs/SECURITY.md)

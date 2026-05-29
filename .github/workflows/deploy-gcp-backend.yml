@@ -1,0 +1,67 @@
+# Push to main → build backend image (Cloud Build) → pull & restart on Compute Engine VM.
+#
+# One-time setup: deploy/gcp/GITHUB_ACTIONS_SETUP.md
+# Required GitHub secret: GCP_SA_KEY (JSON key for github-actions-deploy@...)
+
+name: Deploy backend to GCP
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "cloudbuild.yaml"
+      - ".gcloudignore"
+      - "deploy/gcp/docker-compose.yml"
+      - "deploy/gcp/env.gcp.example"
+      - ".github/workflows/deploy-gcp-backend.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-gcp-backend
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: perfect-entry-497811-v1
+  REGION: us-central1
+  ZONE: us-central1-a
+  INSTANCE: algo-trading-engine
+  REPOSITORY: algo-trading
+  COMPOSE_DIR: /opt/algo-trading-hub/deploy/gcp
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Build and push image (Cloud Build)
+        run: |
+          gcloud builds submit \
+            --project="${{ env.PROJECT_ID }}" \
+            --config=cloudbuild.yaml \
+            --substitutions="_REGION=${{ env.REGION }},_REPOSITORY=${{ env.REPOSITORY }}"
+
+      - name: Restart engine container on VM
+        run: |
+          gcloud compute ssh "${{ env.INSTANCE }}" \
+            --project="${{ env.PROJECT_ID }}" \
+            --zone="${{ env.ZONE }}" \
+            --tunnel-through-iap \
+            --quiet \
+            --command="cd ${{ env.COMPOSE_DIR }} && sudo docker compose pull && sudo docker compose up -d && sleep 5 && curl -sf http://127.0.0.1:8000/health"

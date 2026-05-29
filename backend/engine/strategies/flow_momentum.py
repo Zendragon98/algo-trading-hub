@@ -23,6 +23,7 @@ from common.types import Signal
 from common.universe_bootstrap import is_auto_symbol_list
 
 from ..market_data.feature_store import Features
+from .market_making.core import signed_tape_pressure
 from .position_sync import plan_directional_signal, side_from_qty
 from .strategy_base import StrategyBase
 
@@ -41,18 +42,11 @@ class _SymbolState:
 
 
 def _tape_pressure(feat: Features, settings: Settings) -> float:
-    """Signed tape pressure in [-1, 1]: positive = buyers lifting asks."""
-    mode = (settings.flow_tape_mode or "volume").strip().lower()
-    if mode == "count":
-        total = feat.tape_bid_hit_count + feat.tape_ask_hit_count
-        min_tr = max(1, int(settings.flow_min_tape_trades))
-        if total < min_tr:
-            return 0.0
-        return (feat.tape_ask_hit_count - feat.tape_bid_hit_count) / float(total)
-    total = feat.bid_hit_ratio + feat.ask_hit_ratio
-    if total <= 1e-12:
-        return 0.0
-    return feat.ask_hit_ratio - feat.bid_hit_ratio
+    return signed_tape_pressure(
+        feat,
+        mode=settings.flow_tape_mode or "volume",
+        min_tape_trades=int(settings.flow_min_tape_trades),
+    )
 
 
 def _flow_direction(

@@ -246,9 +246,36 @@ export type BreakerStatusDTO = {
   detail: string;
 };
 
+export type BreakerDefinitionDTO = {
+  code: string;
+  severity: "minor" | "major";
+  scope: "engine" | "symbol" | "parent";
+  label: string;
+  description: string;
+  group:
+    | "market_data"
+    | "execution"
+    | "portfolio"
+    | "reconciliation"
+    | "market_making"
+    | "operator";
+  default_enabled: boolean;
+  disableable: boolean;
+};
+
 export type BreakerListDTO = {
   active: BreakerStatusDTO[];
   history: BreakerStatusDTO[];
+  registry?: BreakerDefinitionDTO[];
+  enabled?: Record<string, boolean>;
+};
+
+export type BreakerEnabledPatchDTO = {
+  code?: string;
+  enabled?: boolean;
+  patch?: Record<string, boolean>;
+  confirm_live_disable?: boolean;
+  confirm_token?: string;
 };
 
 export type DailyReportDTO = {
@@ -372,7 +399,9 @@ export const api = {
   pause: () => request<StatusDTO>("/api/control/pause", { method: "POST" }),
   resume: () => request<StatusDTO>("/api/control/resume", { method: "POST" }),
   stop: () => request<StatusDTO>("/api/control/stop", { method: "POST" }),
-  /** Stop engine and exit the backend process (same as killing `python main.py`). */
+  /** Flatten + stop engine; API process keeps running (dashboard E-Stop). */
+  kill: () => request<StatusDTO>("/api/control/kill", { method: "POST" }),
+  /** Stop engine and exit the backend process — use only when you intend to restart the server. */
   shutdown: () => request<StatusDTO>("/api/control/shutdown", { method: "POST" }),
   flatten: () => request<StatusDTO>("/api/control/flatten", { method: "POST" }),
   setRisk: (max_risk_pct: number) =>
@@ -387,7 +416,9 @@ export const api = {
     }),
 
   getSettings: () => request<SettingsPayloadDTO>("/api/settings"),
-  patchSettings: (patch: SettingsDTO) =>
+  patchSettings: (
+    patch: SettingsDTO & { confirm_live_disable?: boolean; confirm_token?: string },
+  ) =>
     request<SettingsPayloadDTO>("/api/settings", {
       method: "PATCH",
       body: JSON.stringify(patch),
@@ -395,6 +426,11 @@ export const api = {
 
   reportsLatest: () => request<DailyReportDTO>("/api/reports/latest"),
   listBreakers: () => request<BreakerListDTO>("/api/control/breakers"),
+  patchBreakerEnabled: (body: BreakerEnabledPatchDTO) =>
+    request<BreakerListDTO>("/api/control/breakers/enabled", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   rearmBreakers: (body: { code?: string; target?: string } = {}) =>
     request<BreakerListDTO>("/api/control/breakers/rearm", {
       method: "POST",
@@ -568,10 +604,27 @@ export function toBreakerStatus(d: BreakerStatusDTO): import("@/components/algo/
   };
 }
 
+function toBreakerDefinition(
+  d: BreakerDefinitionDTO,
+): import("@/components/algo/types").BreakerDefinition {
+  return {
+    code: d.code,
+    severity: d.severity,
+    scope: d.scope,
+    label: d.label,
+    description: d.description,
+    group: d.group,
+    defaultEnabled: d.default_enabled,
+    disableable: d.disableable,
+  };
+}
+
 export function toBreakerList(d: BreakerListDTO): import("@/components/algo/types").BreakerList {
   return {
     active: d.active.map(toBreakerStatus),
     history: d.history.map(toBreakerStatus),
+    registry: (d.registry ?? []).map(toBreakerDefinition),
+    enabled: d.enabled ?? {},
   };
 }
 

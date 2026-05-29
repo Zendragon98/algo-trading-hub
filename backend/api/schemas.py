@@ -265,9 +265,39 @@ class BreakerStatusDTO(BaseModel):
     detail: str = ""
 
 
+class BreakerDefinitionDTO(BaseModel):
+    code: str
+    severity: Literal["minor", "major"]
+    scope: Literal["engine", "symbol", "parent"]
+    label: str
+    description: str
+    group: Literal[
+        "market_data",
+        "execution",
+        "portfolio",
+        "reconciliation",
+        "market_making",
+        "operator",
+    ]
+    default_enabled: bool = True
+    disableable: bool = True
+
+
 class BreakerListDTO(BaseModel):
     active: list[BreakerStatusDTO]
     history: list[BreakerStatusDTO]
+    registry: list[BreakerDefinitionDTO] = Field(default_factory=list)
+    enabled: dict[str, bool] = Field(default_factory=dict)
+
+
+class BreakerEnabledPatchDTO(BaseModel):
+    """Patch one or more breaker enable flags."""
+
+    code: str | None = None
+    enabled: bool | None = None
+    patch: dict[str, bool] | None = None
+    confirm_live_disable: bool = False
+    confirm_token: str = ""
 
 
 class BreakerRearmDTO(BaseModel):

@@ -11,13 +11,13 @@ from dataclasses import dataclass, field
 from common.config import Settings
 from common.types import QuoteIntent, Signal
 
-from ..market_data.feature_store import Features
-from ..market_data.own_quote_book import OwnBookState
-from . import mm_core
-from .market_making import MarketMakingStrategy
-from .mm_calibrated import mm2_fee_edge_floor_bps, mm2_fee_round_trip_bps, mm_float
-from .mm_symbol_params import required_min_spread_bps
-from .strategy_base import StrategyBase
+from ...market_data.feature_store import Features
+from ...market_data.own_quote_book import OwnBookState
+from . import core as mm_core
+from .calibrated import mm2_fee_edge_floor_bps, mm2_fee_round_trip_bps, mm_float
+from .symbol_params import required_min_spread_bps
+from .universe import resolve_mm2_symbols
+from ..strategy_base import StrategyBase
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class MarketMakingV2Strategy(StrategyBase):
         self._window = float(settings.mm2_skew_window_sec)
         if self._window <= 0:
             raise ValueError("MM2_SKEW_WINDOW_SEC must be positive")
-        self._symbols = self._resolve_universe(settings)
+        self._symbols = resolve_mm2_symbols(settings)
         self._state: dict[str, _SymbolState] = {}
         self._equity_provider: EquityProvider | None = None
         self._own_provider: OwnBookProvider | None = None
@@ -52,18 +52,7 @@ class MarketMakingV2Strategy(StrategyBase):
     def refresh_settings(self, settings: Settings) -> None:
         self._settings = settings
         self._window = float(settings.mm2_skew_window_sec)
-        self._symbols = self._resolve_universe(settings)
-
-    @staticmethod
-    def _resolve_universe(settings: Settings) -> list[str]:
-        configured = [
-            s.strip().upper() for s in (settings.mm2_symbols or []) if s.strip()
-        ]
-        if configured:
-            if len(configured) == 1 and configured[0] == "AUTO":
-                return MarketMakingStrategy._auto_universe(settings)
-            return sorted(set(configured))
-        return MarketMakingStrategy._engine_symbol_universe(settings)
+        self._symbols = resolve_mm2_symbols(settings)
 
     def manages_own_risk(self) -> bool:
         return bool(self._settings.mm_institutional_risk_enabled)

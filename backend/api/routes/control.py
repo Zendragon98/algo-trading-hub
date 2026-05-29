@@ -14,8 +14,14 @@ from common.enums import EngineStatus
 from engine.core.engine import Engine
 from engine.risk.circuit_breaker import BreakerStatus
 
+from ..breaker_patch import (
+    breaker_registry_dtos,
+    build_breaker_enabled_settings_patch,
+)
 from ..dependencies import get_engine
 from ..schemas import (
+    BreakerDefinitionDTO,
+    BreakerEnabledPatchDTO,
     BreakerListDTO,
     BreakerRearmDTO,
     BreakerStatusDTO,
@@ -44,6 +50,16 @@ def _status(engine: Engine) -> StatusDTO:
 
 def _breaker_dto(status: BreakerStatus) -> BreakerStatusDTO:
     return BreakerStatusDTO(**status.to_dict())
+
+
+def _breaker_list(engine: Engine) -> BreakerListDTO:
+    breaker = engine.risk.breaker
+    return BreakerListDTO(
+        active=[_breaker_dto(s) for s in breaker.active()],
+        history=[_breaker_dto(s) for s in breaker.history()],
+        registry=[BreakerDefinitionDTO(**row) for row in breaker_registry_dtos()],
+        enabled=dict(engine.settings.breaker_enabled),
+    )
 
 
 def _log_control_ok(action: str, engine: Engine) -> None:
@@ -101,6 +117,23 @@ async def resume(engine: Engine = Depends(get_engine)) -> StatusDTO:
 async def stop(engine: Engine = Depends(get_engine)) -> StatusDTO:
     await _run_or_500("stop", engine.stop)
     _log_control_ok("stop", engine)
+    return _status(engine)
+
+
+@router.post("/kill", response_model=StatusDTO)
+async def kill(engine: Engine = Depends(get_engine)) -> StatusDTO:
+    """Emergency stop: flatten, stop the engine, keep the API process running.
+
+    Dashboard **E-Stop** uses this so operators can press **Start** again without
+    restarting the server VM or ``python main.py``. For process exit use
+    ``POST /api/control/shutdown`` (not exposed in the default UI).
+    """
+
+    async def _go() -> None:
+        await engine.stop(force_flatten=True)
+
+    await _run_or_500("kill", _go)
+    _log_control_ok("kill", engine)
     return _status(engine)
 
 
@@ -188,12 +221,37 @@ async def set_strategy(
 
 @router.get("/breakers", response_model=BreakerListDTO)
 async def list_breakers(engine: Engine = Depends(get_engine)) -> BreakerListDTO:
-    """Active + recent circuit-breaker breaches."""
-    breaker = engine.risk.breaker
-    return BreakerListDTO(
-        active=[_breaker_dto(s) for s in breaker.active()],
-        history=[_breaker_dto(s) for s in breaker.history()],
-    )
+    """Active + recent circuit-breaker breaches, registry, and enable flags."""
+    return _breaker_list(engine)
+
+
+@router.patch("/breakers/enabled", response_model=BreakerListDTO)
+async def patch_breaker_enabled(
+    body: BreakerEnabledPatchDTO,
+    engine: Engine = Depends(get_engine),
+) -> BreakerListDTO:
+    """Enable or disable individual circuit-breaker codes at runtime."""
+    if body.patch:
+        patch_body = body.patch
+    elif body.code is not None and body.enabled is not None:
+        patch_body = {body.code: body.enabled}
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide patch={code: bool, ...} or code + enabled",
+        )
+    try:
+        settings_patch = build_breaker_enabled_settings_patch(
+            engine.settings,
+            patch_body,
+            confirm_live_disable=body.confirm_live_disable,
+            confirm_token=body.confirm_token,
+        )
+        engine.apply_settings_patch(settings_patch)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    logger.info("control breakers enabled patch=%s", patch_body)
+    return _breaker_list(engine)
 
 
 @router.post("/breakers/rearm", response_model=BreakerListDTO)
@@ -225,10 +283,7 @@ async def rearm_breakers(
         body.target,
         sorted(cleared) if cleared else "none",
     )
-    return BreakerListDTO(
-        active=[_breaker_dto(s) for s in breaker.active()],
-        history=[_breaker_dto(s) for s in breaker.history()],
-    )
+    return _breaker_list(engine)
 
 
 @router.post("/breakers/trip", response_model=BreakerListDTO)
@@ -251,8 +306,4 @@ async def trip_breakers(
         body.pause,
         body.detail or "-",
     )
-    breaker = engine.risk.breaker
-    return BreakerListDTO(
-        active=[_breaker_dto(s) for s in breaker.active()],
-        history=[_breaker_dto(s) for s in breaker.history()],
-    )
+    return _breaker_list(engine)

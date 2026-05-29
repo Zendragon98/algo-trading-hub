@@ -86,7 +86,7 @@ def test_clamp_targets_no_cross_in_intent() -> None:
         position_qty=0.0,
         equity=10_000.0,
         skew_avg=0.0,
-        strategy_name="market_making",
+        strategy_name="market_making_v2",
     )
     if intent.bid_price is not None:
         assert intent.bid_price < feat.best_ask
@@ -114,7 +114,7 @@ def test_position_limit_blocks_bid() -> None:
         position_qty=6.0,
         equity=10_000.0,
         skew_avg=0.0,
-        strategy_name="market_making",
+        strategy_name="market_making_v2",
     )
     assert intent.bid_price is None
 
@@ -139,7 +139,7 @@ def test_compute_quote_intent_has_two_sides() -> None:
         position_qty=0.0,
         equity=10_000.0,
         skew_avg=0.0,
-        strategy_name="market_making",
+        strategy_name="market_making_v2",
     )
     assert intent.bid_price is not None
     assert intent.ask_price is not None
@@ -170,7 +170,7 @@ def test_long_inventory_lowers_reservation_and_skews_spread() -> None:
         position_qty=1.0,
         equity=10_000.0,
         skew_avg=0.0,
-        strategy_name="market_making",
+        strategy_name="market_making_v2",
     )
     assert intent.inventory_ratio > 0.9
     assert intent.reservation_mid < intent.venue_mid
@@ -276,7 +276,7 @@ def test_entry_risk_moderate_widens_half_spread() -> None:
         position_qty=0.0,
         equity=10_000.0,
         skew_avg=0.0,
-        strategy_name="market_making",
+        strategy_name="market_making_v2",
     )
     assert intent.bid_price is not None
     assert "risk=moderate" in intent.reason

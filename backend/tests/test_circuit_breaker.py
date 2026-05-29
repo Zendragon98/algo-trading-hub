@@ -109,6 +109,22 @@ def test_parent_scope_isolation() -> None:
     assert not cb.is_blocked(BreakerScope.SYMBOL, "BTCUSDT")
 
 
+def test_disabled_code_does_not_trip() -> None:
+    cb = CircuitBreaker()
+    cb.set_enabled(lambda code: code != "stale_tick")
+    assert cb.trip(_minor("stale_tick", BreakerScope.SYMBOL, target="BTCUSDT")) is None
+    assert not cb.is_blocked(BreakerScope.SYMBOL, "BTCUSDT")
+    assert cb.trip(_minor("wide_spread", BreakerScope.SYMBOL, target="BTCUSDT")) is not None
+
+
+def test_clear_disabled_codes() -> None:
+    cb = CircuitBreaker()
+    cb.trip(_minor("stale_tick", BreakerScope.SYMBOL, target="BTCUSDT", cooldown_sec=10))
+    cleared = cb.clear_disabled_codes(["stale_tick"])
+    assert cleared == {"stale_tick"}
+    assert not cb.is_blocked(BreakerScope.SYMBOL, "BTCUSDT")
+
+
 def test_minor_retrip_while_cooling_does_not_extend_cooldown() -> None:
     cb = CircuitBreaker()
     first = cb.trip(

@@ -19,7 +19,7 @@ def _sig(symbol: str, side: Side, qty: float, **kw) -> Signal:
 def test_nets_opposing_single_leg_signals() -> None:
     tagged = [
         ("sma_crossover", _sig("BTCUSDT", Side.BUY, 1.0)),
-        ("market_making", _sig("BTCUSDT", Side.SELL, 0.3)),
+        ("market_making_v2", _sig("BTCUSDT", Side.SELL, 0.3)),
     ]
     result = net_strategy_signals(tagged)
     assert len(result.loose) == 1
@@ -28,7 +28,7 @@ def test_nets_opposing_single_leg_signals() -> None:
     assert net.signal.side is Side.BUY
     assert abs(net.signal.qty - 0.7) < 1e-9
     assert net.contributions["sma_crossover"] == 1.0
-    assert net.contributions["market_making"] == -0.3
+    assert net.contributions["market_making_v2"] == -0.3
 
 
 def test_cancels_fully_opposing_signals() -> None:

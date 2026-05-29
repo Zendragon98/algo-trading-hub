@@ -145,9 +145,28 @@ export type BreakerStatus = {
   detail: string;
 };
 
+export type BreakerDefinition = {
+  code: string;
+  severity: "minor" | "major";
+  scope: "engine" | "symbol" | "parent";
+  label: string;
+  description: string;
+  group:
+    | "market_data"
+    | "execution"
+    | "portfolio"
+    | "reconciliation"
+    | "market_making"
+    | "operator";
+  defaultEnabled: boolean;
+  disableable: boolean;
+};
+
 export type BreakerList = {
   active: BreakerStatus[];
   history: BreakerStatus[];
+  registry: BreakerDefinition[];
+  enabled: Record<string, boolean>;
 };
 
 export type BacktestDataset = {

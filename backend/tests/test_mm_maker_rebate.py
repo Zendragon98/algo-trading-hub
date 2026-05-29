@@ -4,7 +4,7 @@ from common.config import Settings
 from engine.market_data.feature_store import Features
 from engine.market_data.own_quote_book import OwnBookState
 from engine.strategies import mm_core
-from engine.strategies.market_making_v2 import MarketMakingV2Strategy
+from engine.strategies.market_making import MarketMakingV2Strategy
 from engine.strategies.mm_calibrated import (
     mm2_fee_edge_floor_bps,
     mm2_fee_round_trip_bps,
@@ -96,7 +96,7 @@ def test_quote_inside_touch_pegs_one_tick_inside_spread() -> None:
         position_qty=0.0,
         equity=10_000.0,
         skew_avg=0.0,
-        strategy_name="market_making",
+        strategy_name="market_making_v2",
     )
     assert intent.bid_price == 99.81
     assert intent.ask_price == 100.19
@@ -128,7 +128,7 @@ def test_quote_at_touch_pegs_to_best_bid_ask() -> None:
         position_qty=0.0,
         equity=10_000.0,
         skew_avg=0.0,
-        strategy_name="market_making",
+        strategy_name="market_making_v2",
     )
     assert intent.bid_price == 99.98
     assert intent.ask_price == 100.02

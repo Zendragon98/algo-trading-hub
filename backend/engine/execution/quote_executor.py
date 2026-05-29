@@ -19,7 +19,6 @@ from ..risk.venue_sizing import venue_cap_qty, venue_min_qty, venue_qty_in_bound
 from .mm_execution import (
     cancel_reason,
     chase_should_replace,
-    clamp_targets_no_cross,
     climb_next_price,
     ladder_level_targets,
     parse_ladder_weights,
@@ -27,6 +26,7 @@ from .mm_execution import (
     tick_from_feat,
     within_place_zone,
 )
+from .quote_clamp import clamp_targets_no_cross
 
 logger = logging.getLogger(__name__)
 

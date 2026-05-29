@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import time as _time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -93,6 +93,7 @@ class CircuitBreaker:
 
     def __init__(self, bus: EventBus | None = None) -> None:
         self._bus = bus
+        self._is_enabled: Callable[[str], bool] = lambda _code: True
         # Active breach key -> status. Key is (code, target) so distinct
         # breaches don't overwrite each other (e.g. stale_tick on ETHUSDT
         # vs BTCUSDT can both be active simultaneously).
@@ -102,15 +103,28 @@ class CircuitBreaker:
         self._history: list[BreakerStatus] = []
         self._history_size = 100
 
+    def set_enabled(self, predicate: Callable[[str], bool]) -> None:
+        """Runtime gate: return False from ``predicate(code)`` to suppress new trips."""
+        self._is_enabled = predicate
+
     # --- Trip / clear ---
 
-    def trip(self, breach: Breach) -> BreakerStatus:
+    def trip(self, breach: Breach) -> BreakerStatus | None:
         """Record `breach` and return its live status.
 
         Idempotent: re-tripping a breach that's already active refreshes
         the timestamp + detail but does NOT downgrade severity (a minor
         cannot demote a latched major).
+
+        Returns ``None`` when the code is disabled via ``set_enabled``.
         """
+        if not self._is_enabled(breach.code):
+            logger.debug(
+                "breaker trip suppressed (disabled): code=%s target=%s",
+                breach.code,
+                breach.target or "-",
+            )
+            return None
         key = (breach.code, breach.target)
         now = _time.time()
         existing = self._active.get(key)
@@ -159,8 +173,8 @@ class CircuitBreaker:
     def rearm(self, code: str | None = None, target: str | None = None) -> int:
         """Operator-driven re-arm. Returns count of cleared breaches.
 
-        - rearm()                   -> clear ALL latched (majors)
-        - rearm(code=X)             -> clear all latched for `code`
+        - rearm()                   -> clear ALL active breaches
+        - rearm(code=X)             -> clear all active for `code`
         - rearm(code=X, target=Y)   -> clear that specific breach
         """
         cleared = 0
@@ -173,6 +187,19 @@ class CircuitBreaker:
             self._archive(status, reason="rearmed")
             del self._active[key]
             cleared += 1
+        return cleared
+
+    def clear_disabled_codes(self, codes: Iterable[str]) -> set[str]:
+        """Clear active breaches for each code in ``codes``. Returns cleared codes."""
+        code_set = set(codes)
+        cleared: set[str] = set()
+        for key in list(self._active.keys()):
+            status = self._active[key]
+            if status.code not in code_set:
+                continue
+            self._archive(status, reason="disabled")
+            del self._active[key]
+            cleared.add(status.code)
         return cleared
 
     def tick(self) -> None:

@@ -14,7 +14,7 @@ from engine.market_data.mid_tracker import MidReturnTracker  # noqa: E402
 from engine.market_data.own_quote_book import OwnBookState  # noqa: E402
 from engine.market_data.symbol_calibration import invalidate_cache  # noqa: E402
 from engine.risk.mm_flow_guard import MmFlowGuard  # noqa: E402
-from engine.strategies.market_making_v2 import MarketMakingV2Strategy  # noqa: E402
+from engine.strategies.market_making import MarketMakingV2Strategy  # noqa: E402
 from engine.strategies.mm_calibrated import mm2_fee_round_trip_bps, mm2_spread_buffer_bps  # noqa: E402
 
 

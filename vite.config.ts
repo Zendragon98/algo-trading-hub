@@ -36,7 +36,14 @@ export default defineConfig(({ command }) => {
       tsconfigPaths(),
       tailwindcss(),
       tanstackStart({ server: { entry: "server" } }),
-      ...(isBuild && deployTarget === "vercel" ? [nitro()] : []),
+      ...(isBuild && deployTarget === "vercel"
+        ? [
+            nitro({
+              preset: "vercel",
+              vercel: { entryFormat: "node" },
+            }),
+          ]
+        : []),
       react(),
       // Cloudflare plugin only for Workers bundles (not used on Vercel).
       ...(isBuild && deployTarget === "cloudflare" ? [cloudflare()] : []),

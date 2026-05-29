@@ -8,10 +8,12 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import ValidationError
 
+from common.breaker_registry import merge_breaker_enabled
 from common.config import Settings
 from common.universe_bootstrap import needs_auto_universe_resolve, resolve_binance_auto_universe
 from engine.core.engine import Engine
 
+from ..breaker_patch import assert_live_major_disable_allowed
 from ..dependencies import get_engine
 
 logger = logging.getLogger(__name__)
@@ -47,7 +49,23 @@ async def patch_settings(
     ``api_host`` / ``api_port`` need an API restart to change bind address.
     """
     try:
-        merged = {**engine.settings.model_dump(mode="json"), **patch}
+        clean = dict(patch)
+        confirm_live_disable = bool(clean.pop("confirm_live_disable", False))
+        confirm_token = str(clean.pop("confirm_token", ""))
+        be_patch = clean.get("breaker_enabled")
+        if isinstance(be_patch, dict):
+            partial = {str(k): bool(v) for k, v in be_patch.items()}
+            assert_live_major_disable_allowed(
+                engine.settings,
+                partial,
+                confirm_live_disable=confirm_live_disable,
+                confirm_token=confirm_token,
+            )
+            clean["breaker_enabled"] = merge_breaker_enabled(
+                partial,
+                base=engine.settings.breaker_enabled,
+            )
+        merged = {**engine.settings.model_dump(mode="json"), **clean}
         probe = Settings.model_validate(merged)
         if needs_auto_universe_resolve(probe):
             expanded = await resolve_binance_auto_universe(probe)
@@ -62,7 +80,7 @@ async def patch_settings(
                 "mm2_universe_auto",
                 "flow_universe_auto",
             ):
-                patch[key] = getattr(expanded, key)
+                clean[key] = getattr(expanded, key)
         sym_keys = {
             "symbols",
             "sma_symbols",
@@ -72,9 +90,9 @@ async def patch_settings(
             "mm2_symbols",
         }
         symbols_before: set[str] | None = None
-        if sym_keys & patch.keys():
+        if sym_keys & clean.keys():
             symbols_before = set(engine._resolve_market_symbols())
-        new_s = engine.apply_settings_patch(patch)
+        new_s = engine.apply_settings_patch(clean)
         if symbols_before is not None:
             symbols_after = set(engine._resolve_market_symbols())
             if symbols_after != symbols_before:
@@ -86,6 +104,6 @@ async def patch_settings(
     except Exception as exc:  # noqa: BLE001
         logger.exception("settings patch failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    logger.info("settings patched keys=%s", sorted(patch.keys()))
+    logger.info("settings patched keys=%s", sorted(clean.keys()))
     raw = new_s.model_dump(mode="json")
     return {"ok": True, "settings": _mask_secrets(raw)}

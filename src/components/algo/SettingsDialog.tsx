@@ -23,6 +23,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, type SettingsDTO } from "@/lib/api";
+import { notifyError, notifySuccess } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -191,7 +192,10 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
   const strategyKeys = useMemo(() => allKeys.filter(isStrategyParamKey), [allKeys]);
   const systemKeys = useMemo(() => allKeys.filter(isSystemKey), [allKeys]);
   const riskKeys = useMemo(
-    () => allKeys.filter((k) => !isStrategyParamKey(k) && !isSystemKey(k)),
+    () =>
+      allKeys.filter(
+        (k) => !isStrategyParamKey(k) && !isSystemKey(k) && k !== "breaker_enabled",
+      ),
     [allKeys],
   );
 
@@ -517,10 +521,13 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
       const res = await api.patchSettings(patch);
       setBaseline(res.settings);
       setDraft({ ...res.settings });
+      notifySuccess("Engine settings saved");
       onSaved?.();
       onOpenChange(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Save failed");
+      const msg = e instanceof Error ? e.message : "Save failed";
+      setError(msg);
+      notifyError(e, msg);
     } finally {
       setSaving(false);
     }
@@ -576,6 +583,12 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
                   <StrategyTabFields />
                 </TabsContent>
                 <TabsContent value="risk" className="mt-0">
+                  <p className="mb-3 text-[11px] leading-relaxed text-muted-foreground">
+                    Per-circuit-breaker toggles and presets live on the dashboard{" "}
+                    <strong>Circuit breakers</strong> panel. Quick limit knobs (daily loss %, cooldowns,
+                    WS stale) and ops toggles are under <strong>CONTROL → Quick limits</strong> on the
+                    main page.
+                  </p>
                   {riskKeys.length === 0 ? (
                     <p className="text-sm text-muted-foreground">No keys in this group.</p>
                   ) : (
@@ -590,7 +603,7 @@ export function SettingsDialog({ open, onOpenChange, onSaved, activeStrategyLabe
                   )}
                 </TabsContent>
                 <TabsContent value="all" className="mt-0">
-                  {fieldsScroll(allKeys)}
+                  {fieldsScroll(allKeys.filter((k) => k !== "breaker_enabled"))}
                 </TabsContent>
               </>
             )}

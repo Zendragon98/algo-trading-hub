@@ -42,7 +42,7 @@ from engine.persistence.market_capture import create_capturer
 from engine.persistence.run_bootstrap import bootstrap_run, shutdown_bootstrap
 from engine.strategies.blended_signals import BlendedSignalsStrategy
 from engine.strategies.flow_momentum import FlowMomentumStrategy
-from engine.strategies.market_making_v2 import MarketMakingV2Strategy
+from engine.strategies.market_making.strategy import MarketMakingV2Strategy
 from engine.strategies.pairs_trading import PairsTradingStrategy
 from engine.strategies.sma_crossover import SmaCrossoverStrategy
 from gateways.factory import create_gateway

@@ -62,7 +62,7 @@ async def test_refresh_submits_bid_and_ask() -> None:
     ex = QuoteExecutor(om, own, Settings(mm_quote_enabled=True))
     intent = QuoteIntent(
         symbol="BTCUSDT",
-        strategy_name="market_making",
+        strategy_name="market_making_v2",
         bid_price=99.0,
         bid_qty=0.01,
         ask_price=101.0,
@@ -158,7 +158,7 @@ async def test_ladder_mode_places_multiple_bids() -> None:
     )
     intent = QuoteIntent(
         symbol="BTCUSDT",
-        strategy_name="market_making",
+        strategy_name="market_making_v2",
         bid_price=100.0,
         bid_qty=0.03,
         ask_price=None,

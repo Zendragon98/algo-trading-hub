@@ -8,7 +8,7 @@ os.environ.setdefault("BINANCE_API_SECRET", "test")
 from common.config import Settings  # noqa: E402
 from engine.market_data.feature_store import Features  # noqa: E402
 from engine.market_data.own_quote_book import OwnBookState  # noqa: E402
-from engine.strategies.market_making_v2 import MarketMakingV2Strategy  # noqa: E402
+from engine.strategies.market_making import MarketMakingV2Strategy  # noqa: E402
 
 
 def _gate_test_settings(**overrides: object) -> Settings:

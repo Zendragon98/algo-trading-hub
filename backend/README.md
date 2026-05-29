@@ -251,7 +251,7 @@ backend/
   pyproject.toml             pytest + ruff config
   README.md                  this file
   AGENTS.md                  engineering conventions (layers, tests, ruff)
-  .env.example               minimal env template (defaults live in common/config.py)
+  .env.example               minimal env template (defaults live in common/config/)
 
   common/                    config (`Settings`), EventBus, enums, shared dataclasses
   gateways/                  abstract venue interface + concrete adapters
@@ -534,11 +534,11 @@ Multi-indicator ensemble for single-leg crypto: **EMA trend**, **MACD momentum**
 
 Boot: `STRATEGY=flow_momentum` (aliases `flow`, `momentum`).
 
-### Strategy — `engine/strategies/market_making_v2.py` (+ legacy `market_making.py`)
+### Strategy — `engine/strategies/market_making/`
 
 Institutional **two-sided market making** posts standing post-only bid/ask quotes via `QuoteExecutor` — **not** the VWAP wheel. Alpha strategies (`pairs_trading`, `sma_crossover`, `blended_signals`, `flow_momentum`) still route `Signal` → `ExecutionRouter` → `VwapExecutor`.
 
-**Use `market_making_v2` only.** `market_making` (v1) is deprecated: it lacks spread/skew/tape/vol-regime gates and is not registered in `main.py` / `engine/main_engine.py` or run in `STRATEGY=all`. The v1 module remains for universe helpers and unit tests.
+**Use `market_making_v2` only.** Legacy v1 was removed. Code lives under `engine/strategies/market_making/` (`strategy.py`, `core.py`, `universe.py`, …). Env alias `STRATEGY=market_making` still normalizes to v2 via `normalize_strategy_name`.
 
 | Path | Execution |
 |------|-----------|
@@ -684,17 +684,23 @@ Pre-submit guards (`SubmitGuard`) enforce three additional ceilings without trip
 
 Engine `stop()` market-outs residuals before disconnect when `FLATTEN_ON_STOP=true` (default) via the same flatten path and waits up to `FLATTEN_TIMEOUT_SEC` for the venue to report flat.
 
+**Per-breaker enable flags:** `Settings.breaker_enabled` (`dict[str, bool]`, defaults in `common/breaker_registry.py`) gates whether each code may trip. Disabled codes are suppressed in `CircuitBreaker.trip()` and any active breach for that code is cleared on patch. `operator_halt` is always enabled (manual halt only). Legacy `MD_CROSSED_BOOK_BREAKER` maps to `breaker_enabled["md_crossed_book"]`.
+
 Operator endpoints:
 
 ```
-GET  /api/control/breakers                    # active + history
-POST /api/control/breakers/trip               # body: {detail?, flatten?, pause?}; operator halt
-POST /api/control/breakers/rearm              # clears latched majors + resets baselines (streak, daily anchor, session/HWM equity, exec TCA history) for removed codes
+GET   /api/control/breakers                   # active + history + registry + enabled map
+PATCH /api/control/breakers/enabled           # body: {patch: {code: bool, ...}} or {code, enabled}
+POST  /api/control/breakers/trip              # body: {detail?, flatten?, pause?}; operator halt
+POST  /api/control/breakers/rearm             # clears latched majors + resets baselines for removed codes
+PATCH /api/settings                           # may include breaker_enabled partial merge
 ```
 
-The dashboard **Halt** button calls `breakers/trip` (trading halt + flatten + pause). **Kill** calls `shutdown`: flatten all venue positions, cancel open orders, `Engine.stop()`, then exit the Python process — it is not the same as the periodic reconcile kill-switch.
+In **LIVE** mode, disabling a **major** breaker requires `confirm_live_disable: true` and `confirm_token: "DISABLE LIVE BREAKERS"` on the PATCH body.
 
-**Paper / testnet tuning:** breaker state is in-memory only (cleared on restart). Tighten `MAX_DRAWDOWN_PCT`, `HWM_DRAWDOWN_KILL_PCT`, or `DAILY_LOSS_KILL_PCT` in `common/config.py` if you want earlier automatic halts on small paper accounts. `WS_STALE_PAUSE_SEC` trips a MINOR engine breach (pauses entries, no auto-flatten).
+The dashboard **Circuit breakers** panel toggles each code, applies presets (**Full protection**, **Non-stop MM**, **Connectivity only**), and shows active trips. **Halt** offers halt-only / halt+pause / halt+flatten variants. **Resume** appears when the engine is paused. **E-Stop** calls `POST /api/control/kill` (flatten + `Engine.stop()`, API process stays up so **Start** works again). `POST /api/control/shutdown` still exits the process for operators/CI — not wired to the default UI.
+
+**Paper / testnet tuning:** breaker state is in-memory only (cleared on restart). Tighten `MAX_DRAWDOWN_PCT`, `HWM_DRAWDOWN_KILL_PCT`, or `DAILY_LOSS_KILL_PCT` in `common/config/settings.py` (or the matching `sections/*.py` mixin) if you want earlier automatic halts on small paper accounts. `WS_STALE_PAUSE_SEC` trips a MINOR engine breach (pauses entries, no auto-flatten).
 
 ### Code structure & quality
 
@@ -707,7 +713,7 @@ See `AGENTS.md`. Highlights:
 
 ## Configuration reference
 
-Defaults are defined on the `Settings` class in `common/config.py` (single source of truth). Prefer editing that file for risk, spread, and strategy knobs; use `backend/.env` or environment variables mainly for secrets and deployment-specific overrides — `.env.example` stays minimal.
+Defaults are defined on the `Settings` class in `common/config/` (`settings.py` + `sections/*` mixins). Prefer editing the relevant section file for risk, spread, and strategy knobs; use `backend/.env` or environment variables mainly for secrets and deployment-specific overrides — `.env.example` stays minimal.
 
 Loaded via `pydantic-settings`. Defaults shown below.
 
@@ -784,7 +790,7 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | `LOG_FILE_BACKUP_COUNT`      | `5`                                  | Keep N rotated `app.log` backups |
 | `MAX_TICK_AGE_SEC`           | `5.0`                                | Stale-tick veto threshold (per symbol) |
 | `MAX_ENTRY_SPREAD_BPS`       | `25.0`                               | Wide-spread veto when dynamic spread is off (`spread_dynamic_enabled=false`) |
-| `SPREAD_DYNAMIC_ENABLED` / `SPREAD_BASELINE_ALPHA` / `SPREAD_WIDE_MULTIPLIER` / `SPREAD_WIDE_FLOOR_BPS` / `SPREAD_WIDE_CEILING_BPS` | see `Settings` | EWMA spread gate — **edit defaults in `common/config.py`** |
+| `SPREAD_DYNAMIC_ENABLED` / `SPREAD_BASELINE_ALPHA` / `SPREAD_WIDE_MULTIPLIER` / `SPREAD_WIDE_FLOOR_BPS` / `SPREAD_WIDE_CEILING_BPS` | see `Settings` | EWMA spread gate — **edit defaults in `common/config/sections/mm2.py`** |
 | `MAX_SYMBOL_NOTIONAL_PCT`    | `0.20`                               | Per-symbol exposure cap (fraction of equity) |
 | `MIN_FREE_MARGIN_PCT`        | `0.0` (off)                          | Spot-style gross/equity headroom for new exposure; **on futures, `>0` often blocks constantly** because notionals exceed equity — keep `0` unless you tune it deliberately |
 | `MAX_OPEN_PARENTS`           | `16`                                 | Cap on simultaneous in-flight parents |
@@ -911,6 +917,7 @@ All payloads use the same field names as `src/components/algo/types.ts` so the f
 | POST   | `/api/control/pause`       |                     | new `StatusDTO`                      |
 | POST   | `/api/control/resume`      |                     | new `StatusDTO` (REST-syncs wallet, positions, open orders, then RUNNING) |
 | POST   | `/api/control/stop`        |                     | new `StatusDTO` (halts engine; API keeps running) |
+| POST   | `/api/control/kill`        |                     | Flatten + `Engine.stop()`; API stays up (dashboard **E-Stop**) |
 | POST   | `/api/control/shutdown`    |                     | Flatten + cancel + `Engine.stop()`, then exit process (`request_shutdown` in `main.py`) |
 | POST   | `/api/control/flatten`     |                     | Pause, flatten all venue positions (wait until flat or timeout), return `StatusDTO` (engine stays paused) |
 | POST   | `/api/control/strategy`    | `{name}`            | Hot-swap the active strategy (400 on unknown name); when the engine is **RUNNING**, REST-syncs positions + orders after a real change |
@@ -943,7 +950,7 @@ Highlights:
 - `test_portfolio_balance_merge.py` pins per-asset wallet merge: a partial `ACCOUNT_UPDATE` must not zero out unreported assets, and `seed_balances` / `update_balances` / `update_asset_balance` keep the per-asset map intact.
 - `test_strategy_toggle.py` covers `Engine.set_active_strategy` (only the active strategy ticks + receives fills), `StopLossMonitor.set_externally_managed` (newly-managed symbols disarm), and the multi-symbol SMA scanner (per-symbol state + equity-budgeted sizing).
 - `test_signal_netter.py` / `test_multi_strategy.py` cover `STRATEGY=all` signal netting and per-strategy ledger positions.
-- `test_market_making.py` covers skew/imbalance/tape composite, fade vs follow, full-universe `AUTO`, and `MM_MAX_ENTRIES_PER_TICK` capping.
+- `test_market_making_v2.py` covers MM2 spread gates, skew/tape, and quote behaviour.
 - `test_flatten_mode.py` covers per-leg market vs passive vs aggressive VWAP flatten selection.
 - `test_position_sync.py` covers `sync_from_venue` dropping flat symbols.
 - `test_order_reconcile.py` covers orphan cancel + breaker clear.

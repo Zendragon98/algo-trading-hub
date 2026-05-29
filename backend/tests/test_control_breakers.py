@@ -168,3 +168,60 @@ async def test_trip_breakers_api() -> None:
     body = resp.json()
     assert any(b["code"] == "operator_halt" for b in body["active"])
     engine.flatten.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_kill_stops_engine_without_shutdown_hook() -> None:
+    engine, gateway = _engine()
+    engine._state.status = EngineStatus.RUNNING
+    app = create_app(engine, EventBus())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/control/kill")
+    assert resp.status_code == 200
+    assert engine.status is EngineStatus.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_list_breakers_includes_registry_and_enabled() -> None:
+    engine, _ = _engine()
+    app = create_app(engine, EventBus())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/control/breakers")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["registry"]) >= 18
+    assert "stale_tick" in body["enabled"]
+
+
+@pytest.mark.asyncio
+async def test_patch_breaker_enabled_live_major_requires_confirm() -> None:
+    from common.enums import TradingMode
+
+    engine, _ = _engine()
+    engine._settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        symbols=["BTCUSDT"],
+        strategy="stub",
+        trading_mode=TradingMode.LIVE,
+    )
+    app = create_app(engine, EventBus())
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        denied = await client.patch(
+            "/api/control/breakers/enabled",
+            json={"patch": {"daily_loss": False}},
+        )
+        assert denied.status_code == 400
+        ok = await client.patch(
+            "/api/control/breakers/enabled",
+            json={
+                "patch": {"daily_loss": False},
+                "confirm_live_disable": True,
+                "confirm_token": "DISABLE LIVE BREAKERS",
+            },
+        )
+    assert ok.status_code == 200
+    assert engine.settings.is_breaker_enabled("daily_loss") is False

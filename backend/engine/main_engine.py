@@ -25,7 +25,7 @@ from .persistence.market_capture import create_capturer
 from .persistence.run_bootstrap import bootstrap_run, shutdown_bootstrap
 from .strategies.blended_signals import BlendedSignalsStrategy
 from .strategies.flow_momentum import FlowMomentumStrategy
-from .strategies.market_making_v2 import MarketMakingV2Strategy
+from .strategies.market_making.strategy import MarketMakingV2Strategy
 from .strategies.pairs_trading import PairsTradingStrategy
 from .strategies.sma_crossover import SmaCrossoverStrategy
 

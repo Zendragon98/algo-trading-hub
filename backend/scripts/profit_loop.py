@@ -91,18 +91,6 @@ STRATEGY_PATCHES: dict[str, dict[str, object]] = {
         "blend_risk_per_trade_pct": 0.12,
         "blend_max_entries_per_tick": 1,
     },
-    "market_making": {
-        "mm_symbols": LIQUID_SYMBOLS,
-        "mm_quote_half_spread_bps": 4.0,
-        "mm_symbol_half_spread_bps": {},
-        "mm_quote_use_venue_spread_floor": True,
-        "mm_skew_window_sec": 300.0,
-        "mm_cooldown_sec": 60.0,
-        "mm_max_entries_per_tick": 1,
-        "mm_risk_per_trade_pct": 0.0008,
-        "mm_min_tape_trades": 5,
-        "mm_min_samples": 8,
-    },
     "flow_momentum": {
         "flow_symbols": LIQUID_SYMBOLS[:5],
         "flow_tape_threshold": 0.12,
@@ -136,7 +124,6 @@ _MARKER_COUNTS: dict[str, re.Pattern[str]] = {
     "pairs_trading_usdt_usdc": re.compile(r"PAIRS (entry|exit)", re.I),
     "sma_crossover": re.compile(r"SMA (open|close)", re.I),
     "blended_signals": re.compile(r"BLEND (open|close)", re.I),
-    "market_making": re.compile(r"MM (tilt|open|close)", re.I),
     "market_making_v2": re.compile(r"MM2 (entry|exit|tilt|open|close)", re.I),
     "flow_momentum": re.compile(r"FLOW (open|close)", re.I),
 }
@@ -276,15 +263,6 @@ def _tune_from_cycle(
             sp["sma_risk_per_trade_pct"] = max(0.0004, float(sp.get("sma_risk_per_trade_pct", 0.0008)) - 0.0001)
             patch["sma_cooldown_sec"] = sp["sma_cooldown_sec"]
             patch["sma_risk_per_trade_pct"] = sp["sma_risk_per_trade_pct"]
-        elif name == "market_making":
-            sp["mm_quote_half_spread_bps"] = min(
-                8.0, float(sp.get("mm_quote_half_spread_bps", 4.0)) + 0.25,
-            )
-            sp["mm_cooldown_sec"] = min(120.0, float(sp.get("mm_cooldown_sec", 60.0)) + 10.0)
-            sp["mm_risk_per_trade_pct"] = max(0.0004, float(sp.get("mm_risk_per_trade_pct", 0.0008)) - 0.0001)
-            patch["mm_quote_half_spread_bps"] = sp["mm_quote_half_spread_bps"]
-            patch["mm_cooldown_sec"] = sp["mm_cooldown_sec"]
-            patch["mm_risk_per_trade_pct"] = sp["mm_risk_per_trade_pct"]
         elif name == "blended_signals":
             sp["blend_cooldown_sec"] = min(240.0, float(sp.get("blend_cooldown_sec", 120.0)) + 15.0)
             sp["blend_entry_threshold"] = min(0.55, float(sp.get("blend_entry_threshold", 0.35)) + 0.03)

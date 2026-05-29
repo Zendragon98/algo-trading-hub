@@ -104,7 +104,8 @@ Open the Vercel URL → the console should load KPIs once the engine is running 
 
 | Symptom | Fix |
 |---------|-----|
-| Vercel build OK but **404** on all routes | Ensure `nitro()` is in `vite.config.ts` for Vercel builds (`VERCEL=1` or `npm run build:vercel`). |
+| Vercel build OK but **404** on all routes | Ensure `nitro({ preset: "vercel" })` in `vite.config.ts`; `vercel.json` uses `"framework": "tanstack-start"`. |
+| **`Failed to fetch dynamically imported module`** / 404 on `/assets/index-*.js` | Stale deploy or wrong Nitro preset. **Redeploy** with “Clear build cache”; hard-refresh browser (Ctrl+Shift+R). Hashes in the URL must match one deploy. |
 | **CORS** errors in browser | Add exact Vercel origin to GCP `CORS_ORIGINS`. |
 | **Mixed content** | Page must be `https://` and `VITE_API_BASE` must be `https://` (not `http://`). |
 | WebSocket disconnects | Confirm nginx `/ws` upgrade config ([`../gcp/nginx/algo-trading.conf`](../gcp/nginx/algo-trading.conf)). |

@@ -6,8 +6,8 @@ import pytest
 
 from common.config import Settings
 from common.enums import MmExecutionMode, Side
+from engine.execution.quote_clamp import clamp_targets_no_cross
 from engine.execution.mm_execution import (
-    clamp_targets_no_cross,
     climb_next_price,
     ladder_level_targets,
     parse_ladder_weights,

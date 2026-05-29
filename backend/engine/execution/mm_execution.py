@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 
 from common.config import Settings
 from common.enums import MmExecutionMode, Side
 
-from ..strategies.mm_core import infer_price_tick
+from ..strategies.market_making.core import infer_price_tick_from_touch
 
 
 @dataclass(slots=True)
@@ -20,23 +19,6 @@ class LevelTarget:
 
 def _bps_factor(bps: float) -> float:
     return bps / 10_000.0
-
-
-def clamp_targets_no_cross(
-    bid: float | None,
-    ask: float | None,
-    *,
-    best_bid: float | None,
-    best_ask: float | None,
-    tick: float,
-) -> tuple[float | None, float | None]:
-    if tick <= 0:
-        return bid, ask
-    if bid is not None and best_ask is not None and best_ask > 0 and bid >= best_ask:
-        bid = best_ask - tick
-    if ask is not None and best_bid is not None and best_bid > 0 and ask <= best_bid:
-        ask = best_bid + tick
-    return bid, ask
 
 
 def min_place_bid(best_bid: float, place_range_bps: float) -> float:
@@ -216,13 +198,9 @@ def resolve_execution_mode(
 
 
 def tick_from_feat(best_bid: float | None, best_ask: float | None, mid: float, spread_bps: float | None) -> float:
-    from ..market_data.feature_store import Features
-
-    feat = Features(
-        symbol="",
-        mid=mid if mid > 0 else None,
+    return infer_price_tick_from_touch(
         best_bid=best_bid,
         best_ask=best_ask,
+        mid=mid,
         spread_bps=spread_bps,
     )
-    return infer_price_tick(feat)

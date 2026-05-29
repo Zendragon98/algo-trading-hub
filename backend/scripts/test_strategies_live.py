@@ -41,13 +41,6 @@ STRATEGIES: list[tuple[str, list[re.Pattern[str]]]] = [
         ],
     ),
     (
-        "market_making",
-        [
-            re.compile(r"MM (tilt|open|close)", re.I),
-            re.compile(r"VWAP P-", re.I),
-        ],
-    ),
-    (
         "blended_signals",
         [
             re.compile(r"BLEND (open|close)", re.I),

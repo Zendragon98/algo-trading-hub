@@ -110,10 +110,11 @@ REST control under **`/api/control/*`**. When `API_TOKEN` is set, **all** paths 
 | Flatten | `POST /api/control/flatten` | Pauses, cancels, syncs venue, closes legs — **remains paused** |
 | Strategy | `POST /api/control/strategy` | Hot-swap active strategy |
 | Risk | `PATCH /api/control/risk` | Updates live `max_risk_pct` |
-| Breakers | `GET/POST .../breakers` | Inspect, trip, re-arm |
-| Shutdown | `POST /api/control/shutdown` | Process exit when wired in `main.py` |
+| Breakers | `GET/PATCH/POST .../breakers` | Inspect, enable/disable per code, trip, re-arm |
+| E-Stop | `POST /api/control/kill` | Flatten + `Engine.stop()`; **API keeps running** — use **Start** again from the dashboard |
+| Shutdown | `POST /api/control/shutdown` | Process exit when wired in `main.py` (not the default UI button) |
 
-**Kill vs Halt:** “Kill” shuts down the **process**. “Halt” trips breakers and may flatten — it is the **trading** stop, not necessarily OS-level termination.
+**E-Stop vs Halt vs Shutdown:** **E-Stop** (dashboard) stops trading and flattens but leaves the API up so you can restart from the UI. **Halt** trips the `operator_halt` breaker and may pause without a full engine stop. **Shutdown** exits the Python process (VM restart or `python main.py` required).
 
 ---
 
@@ -125,6 +126,18 @@ REST control under **`/api/control/*`**. When `API_TOKEN` is set, **all** paths 
 2. Check venue status and account ListenKey lifecycle (Binance user stream).
 3. If stale while positions are open: treat dashboard as **indicative**; venue account/positions are ground truth.
 4. If `reconcile_mismatch` or heal events occurred: follow [Position sync](../backend/README.md#position--dashboard-sync) guidance; do not resume aggressive strategies until order + position reconcile are clean.
+
+### 4.1a Circuit-breaker toggles (dashboard)
+
+The **Circuit breakers** panel lists every code with an on/off switch. Changes apply immediately via `PATCH /api/control/breakers/enabled` (or `breaker_enabled` in `PATCH /api/settings`).
+
+| Preset | Typical use |
+|--------|-------------|
+| **Full protection** | All codes enabled (default) |
+| **Non-stop MM** | Disables symbol minors (`stale_tick`, `wide_spread`, MM flow guards, etc.); keeps portfolio kills and reconcile |
+| **Connectivity only** | Disables `stale_market_data`, `stale_user_data`, `order_reconcile_mismatch` for brief WS gaps |
+
+In **LIVE**, turning off a **major** kill switch requires typing `DISABLE LIVE BREAKERS` in the confirmation dialog. Do not disable `reconcile_mismatch` or portfolio kills unless you accept manual risk.
 
 ### 4.2 MAJOR circuit breaker latched
 
