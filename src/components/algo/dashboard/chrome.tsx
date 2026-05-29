@@ -26,6 +26,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { EM_DASH } from "@/lib/algo-format";
 import type { AlgoStatus, StartupProgress, StrategyInfo } from "@/components/algo/types";
 
 export function StartupProgressBanner(props: {
@@ -124,7 +125,7 @@ export function TopBar(props: {
                 Algo Console
               </div>
               <div className="text-sm font-semibold tracking-wide">
-                {strategy?.label ?? (props.backendReachable ? "Loading..." : "â€”")}
+                {strategy?.label ?? (props.backendReachable ? "Loading..." : EM_DASH)}
               </div>
             </div>
           </div>

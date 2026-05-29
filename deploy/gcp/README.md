@@ -188,6 +188,35 @@ Do not route trading traffic to instances where `/ready` is false during intenti
 
 ---
 
+## TLS troubleshooting (`ERR_CERT_AUTHORITY_INVALID`)
+
+The API hostname (`35-254-130-75.sslip.io` or your custom domain) must present a certificate trusted by the browser. The dashboard on Vercel calls `https://…/api/*` and `wss://…/ws`; if TLS fails, every request and the WebSocket show `net::ERR_CERT_AUTHORITY_INVALID`.
+
+**On the VM, verify Let's Encrypt:**
+
+```bash
+sudo openssl x509 -in /etc/letsencrypt/live/YOUR_HOST/fullchain.pem -noout -issuer -dates
+# issuer should contain "Let's Encrypt", not "Fortinet" or "self-signed"
+sudo certbot renew --dry-run
+curl -sI https://YOUR_HOST/health
+```
+
+Re-issue after IP change or failed first run:
+
+```bash
+sudo bash /opt/algo-trading-hub/deploy/gcp/scripts/vm-setup-nginx-sslip.sh 35-254-130-75.sslip.io
+```
+
+**Corporate SSL inspection (common on campus/VPN firewalls):** Some networks (e.g. Fortinet) replace the server's certificate with their own. Chrome then reports `ERR_CERT_AUTHORITY_INVALID` even when the VM cert is valid. Check the certificate issuer in the browser padlock — if it says **Fortinet** (or your org), not **Let's Encrypt**:
+
+- Use a network without SSL inspection (home/mobile hotspot), or
+- Install your organization's root CA on the device, or
+- Ask IT to bypass inspection for your API hostname.
+
+**Long-term:** Point a domain you control (e.g. `api.yourfirm.com`) at the VM IP and use [`nginx/algo-trading.conf`](nginx/algo-trading.conf) + certbot. That avoids sslip.io rate limits and is easier for IT allowlists.
+
+---
+
 ## Production checklist
 
 - [ ] VM in a VPC; API not on the public internet without TLS + IP allowlist or IAP

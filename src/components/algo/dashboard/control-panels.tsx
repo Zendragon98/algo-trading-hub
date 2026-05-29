@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   BREAKER_PRESET_CONNECTIVITY,
+  BREAKER_PRESET_DISABLE_MAJORS,
   BREAKER_PRESET_FULL,
   BREAKER_PRESET_NON_STOP_MM,
   LIVE_DISABLE_CONFIRM_TOKEN,
@@ -72,7 +73,7 @@ export function StrategyPicker({
         <span className="uppercase tracking-wider text-muted-foreground">Strategy</span>
         {strategies.length === 0 && (
           <span className="text-[11px] text-muted-foreground">
-            {backendReachable ? "Loadingâ€¦" : "Backend offline"}
+            {backendReachable ? "Loading\u2026" : "Backend offline"}
           </span>
         )}
       </div>
@@ -205,6 +206,8 @@ const PRESET_TOOLTIPS = {
     "Relax symbol-level entry guards (stale tick, wide spread, MM flow). Keeps portfolio kills and reconcile.",
   connectivity:
     "Ignore brief market/user WebSocket stale pauses and order reconcile lag so quoting can continue.",
+  disableMajors:
+    "Turn off all major kill switches (drawdown, daily loss, exec quality, reconcile). Clears latched trips. Requires confirmation in LIVE.",
 } as const;
 
 function majorsInPatch(
@@ -375,6 +378,24 @@ export function BreakersPanel({
               trading when tripped. <span className="font-medium text-foreground">Off</span> = ignored so
               trading can continue.
             </p>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  className="h-8 w-full text-[11px]"
+                  disabled={!backendReachable || pending}
+                  onClick={() => onPreset(BREAKER_PRESET_DISABLE_MAJORS)}
+                >
+                  Disable major kills (GCP non-stop)
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[280px] text-xs">
+                {PRESET_TOOLTIPS.disableMajors}
+              </TooltipContent>
+            </Tooltip>
 
             <div className="flex flex-wrap gap-1.5">
               {presetButton("Full protection", PRESET_TOOLTIPS.full, BREAKER_PRESET_FULL)}

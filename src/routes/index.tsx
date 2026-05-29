@@ -102,20 +102,28 @@ function Index() {
   const streamConnected = live.connected;
 
   const HEALTH_EXPANDED_STORAGE = "algo-health-expanded";
-  const [healthExpanded, setHealthExpanded] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem(HEALTH_EXPANDED_STORAGE) === "true";
-  });
+  const [healthExpanded, setHealthExpanded] = useState(false);
+  const healthExpandedReady = useRef(false);
   useEffect(() => {
+    if (!healthExpandedReady.current) {
+      setHealthExpanded(window.localStorage.getItem(HEALTH_EXPANDED_STORAGE) === "true");
+      healthExpandedReady.current = true;
+      return;
+    }
     window.localStorage.setItem(HEALTH_EXPANDED_STORAGE, healthExpanded ? "true" : "false");
   }, [healthExpanded]);
 
   const KPI_SCOPE_STORAGE = "algo-kpi-window";
-  const [kpiScope, setKpiScope] = useState<"rolling" | "session">(() => {
-    if (typeof window === "undefined") return "rolling";
-    return window.localStorage.getItem(KPI_SCOPE_STORAGE) === "session" ? "session" : "rolling";
-  });
+  const [kpiScope, setKpiScope] = useState<"rolling" | "session">("rolling");
+  const kpiScopeReady = useRef(false);
   useEffect(() => {
+    if (!kpiScopeReady.current) {
+      if (window.localStorage.getItem(KPI_SCOPE_STORAGE) === "session") {
+        setKpiScope("session");
+      }
+      kpiScopeReady.current = true;
+      return;
+    }
     window.localStorage.setItem(KPI_SCOPE_STORAGE, kpiScope);
   }, [kpiScope]);
 

@@ -1,5 +1,8 @@
 /** Shared formatters for the algo console KPIs and trade tables. */
 
+/** N/A cell placeholder (em dash). Unicode escape avoids source-file encoding issues. */
+export const EM_DASH = "\u2014";
+
 export type ClosedTradePerfVm = {
   winRatePct: number;
   profitFactor: number | null;
@@ -32,9 +35,13 @@ export function formatUsdPayoffCell(n: number): string {
   return "0.00";
 }
 
+export function formatNegativeUsd(n: number): string {
+  return `-$${formatUsdPayoffCell(Math.abs(n))}`;
+}
+
 export function formatSignedRealizedPnl(n: number | null | undefined): string {
-  if (n == null || Number.isNaN(n)) return "—";
-  const sign = n >= 0 ? "+" : "−";
+  if (n == null || Number.isNaN(n)) return EM_DASH;
+  const sign = n >= 0 ? "+" : "-";
   return `${sign}$${formatUsdPayoffCell(Math.abs(n))}`;
 }
 

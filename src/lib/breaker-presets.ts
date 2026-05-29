@@ -43,3 +43,15 @@ export const BREAKER_PRESET_CONNECTIVITY: Record<string, boolean> = {
   stale_user_data: false,
   order_reconcile_mismatch: false,
 };
+
+/** Disable all major kill switches; operator halt stays manual-only. */
+export const BREAKER_PRESET_DISABLE_MAJORS: Record<string, boolean> = {
+  ...BREAKER_PRESET_FULL,
+  exec_quality: false,
+  max_drawdown: false,
+  hwm_drawdown: false,
+  daily_loss: false,
+  consecutive_losses: false,
+  reconcile_mismatch: false,
+  group_unwind_failed: false,
+};

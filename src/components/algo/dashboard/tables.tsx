@@ -3,7 +3,7 @@ import { ChevronDown, TrendingDown, TrendingUp } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { formatSignedRealizedPnl } from "@/lib/algo-format";
+import { EM_DASH, formatSignedRealizedPnl } from "@/lib/algo-format";
 import type { LogEntry, Position, Trade } from "@/components/algo/types";
 export function PositionsTable({
   positions,
@@ -89,7 +89,7 @@ export function PositionsTable({
 
 export function TradesTable({ trades }: { trades: Trade[] }) {
   const fmtPrice = (v: number | null) =>
-    v === null ? "â€”" : v.toLocaleString(undefined, { maximumFractionDigits: 6 });
+    v === null ? EM_DASH : v.toLocaleString(undefined, { maximumFractionDigits: 6 });
 
   return (
     <div className="overflow-x-auto">
@@ -146,7 +146,7 @@ export function TradesTable({ trades }: { trades: Trade[] }) {
                       : "text-bear",
                 )}
               >
-                {t.action === "open" ? "â€”" : formatSignedRealizedPnl(t.pnl)}
+                {t.action === "open" ? EM_DASH : formatSignedRealizedPnl(t.pnl)}
               </td>
             </tr>
           ))}

@@ -5,9 +5,13 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import {
   type ClosedTradePerfVm,
+  EM_DASH,
+  formatNegativeUsd,
   formatSignedRealizedPnl,
   formatUsdPayoffCell,
 } from "@/lib/algo-format";
+
+const TIMES = "\u00D7";
 export function WinRateKpiCard({
   perf,
   scope,
@@ -48,7 +52,9 @@ export function WinRateKpiCard({
   const netTone =
     netFromCloses > 0 ? "text-bull" : netFromCloses < 0 ? "text-bear" : "text-muted-foreground";
   const netFormatted =
-    netFromCloses >= 0 ? `+$${formatUsdPayoffCell(netFromCloses)}` : `âˆ’$${formatUsdPayoffCell(Math.abs(netFromCloses))}`;
+    netFromCloses >= 0
+      ? `+$${formatUsdPayoffCell(netFromCloses)}`
+      : formatNegativeUsd(netFromCloses);
 
   const expectancyTone =
     expectancy != null && expectancy > 0
@@ -57,7 +63,7 @@ export function WinRateKpiCard({
         ? "text-bear"
         : "text-muted-foreground";
   const expectancyFormatted =
-    expectancy != null ? formatSignedRealizedPnl(expectancy) : "â€”";
+    expectancy != null ? formatSignedRealizedPnl(expectancy) : EM_DASH;
 
   const wrVsBreakeven =
     breakevenWrPct != null
@@ -161,7 +167,7 @@ export function WinRateKpiCard({
             <div className="h-full bg-bear transition-[width] duration-500" style={{ width: `${lossSeg}%` }} />
           </div>
           <p className="mt-1 font-mono text-[10px] text-muted-foreground">
-            {scope === "session" ? "Session · " : "Rolling (â‰¤200) · "}
+            {scope === "session" ? "Session · " : "Rolling (\u2264200) · "}
             {closed} realized closes · {winSeg.toFixed(0)} / {flatSeg.toFixed(0)} / {lossSeg.toFixed(0)}% W / BE / L
           </p>
 
@@ -173,13 +179,13 @@ export function WinRateKpiCard({
               <div>
                 <p className="font-mono text-[9px] uppercase tracking-wide text-muted-foreground">Avg win</p>
                 <p className="mt-0.5 font-mono text-sm tabular-nums text-bull">
-                  {avgWin != null ? `+$${formatUsdPayoffCell(avgWin)}` : "â€”"}
+                  {avgWin != null ? `+$${formatUsdPayoffCell(avgWin)}` : EM_DASH}
                 </p>
               </div>
               <div className="text-right">
                 <p className="font-mono text-[9px] uppercase tracking-wide text-muted-foreground">Avg loss</p>
                 <p className="mt-0.5 font-mono text-sm tabular-nums text-bear">
-                  {avgLoss != null ? `âˆ’$${formatUsdPayoffCell(avgLoss)}` : "â€”"}
+                  {avgLoss != null ? formatNegativeUsd(avgLoss) : EM_DASH}
                 </p>
               </div>
               <div>
@@ -193,15 +199,15 @@ export function WinRateKpiCard({
                         ? "text-bear"
                         : "text-muted-foreground",
                   )}
-                  title="Average win Ã· average loss â€” how much you make per $1 lost"
+                  title="Average win / average loss - how much you make per $1 lost"
                 >
                   {payoffRatio != null ? (
                     <>
                       {payoffRatio.toFixed(2)}
-                      <span className="text-xs text-muted-foreground">Ã—</span>
+                      <span className="text-xs text-muted-foreground">{TIMES}</span>
                     </>
                   ) : (
-                    "â€”"
+                    EM_DASH
                   )}
                 </p>
               </div>
@@ -230,7 +236,9 @@ export function WinRateKpiCard({
                 <span className="text-muted-foreground"> at this avg win/loss · actual </span>
                 <span className="tabular-nums text-foreground">{winRatePct.toFixed(1)}%</span>
                 <span className="text-muted-foreground">
-                  {wrVsBreakeven === "at-or-above" ? " (at or above)" : " (below â€” need higher WR or larger wins)"}
+                  {wrVsBreakeven === "at-or-above"
+                    ? " (at or above)"
+                    : " (below breakeven - need higher WR or larger wins)"}
                 </span>
               </p>
             ) : null}
@@ -263,7 +271,7 @@ export function WinRateKpiCard({
 
             <div className="flex items-baseline justify-between gap-3 font-mono text-sm tabular-nums">
               <span className="text-bull">{`+$${formatUsdPayoffCell(grossWin)}`}</span>
-              <span className="text-bear">{`âˆ’$${formatUsdPayoffCell(grossLoss)}`}</span>
+              <span className="text-bear">{formatNegativeUsd(grossLoss)}</span>
             </div>
           </div>
 
@@ -282,14 +290,15 @@ export function WinRateKpiCard({
               {profitFactor != null ? (
                 <>
                   {profitFactor.toFixed(2)}
-                  <span className="text-sm text-muted-foreground">Ã—</span>
+                  <span className="text-sm text-muted-foreground">{TIMES}</span>
                 </>
               ) : grossWin > 0 && grossLoss <= 1e-12 ? (
                 <>
-                  âˆž<span className="text-sm text-muted-foreground">Ã—</span>
+                  {"\u221E"}
+                  <span className="text-sm text-muted-foreground">{TIMES}</span>
                 </>
               ) : (
-                <span className="text-muted-foreground">â€”</span>
+                <span className="text-muted-foreground">{EM_DASH}</span>
               )}
             </span>
           </div>
@@ -301,23 +310,23 @@ export function WinRateKpiCard({
 
           <details className="group mt-2 border border-border/50 bg-muted/15 font-mono text-[10px] leading-relaxed text-muted-foreground [&_summary::-webkit-details-marker]:hidden">
             <summary className="cursor-pointer select-none px-2 py-1.5 text-[10px] uppercase tracking-wide hover:bg-muted/30">
-              <span className="text-muted-foreground">â“˜ Methodology · </span>
+              <span className="text-muted-foreground">Methodology · </span>
               <span className="normal-case tracking-normal opacity-70">PnL sources & factor definition</span>
             </summary>
             <div className="border-t border-border/40 px-2 py-2 text-[10px]">
-              <strong className="text-foreground">Rolling</strong> is the last â‰¤200 realized-PnL closes;{" "}
+              <strong className="text-foreground">Rolling</strong> is the last {"\u2264"}200 realized-PnL closes;{" "}
               <strong className="text-foreground">Session</strong> is all such closes since the backend process started (a
               restart resets it). Session KPI values refresh with{" "}
               <code className="rounded bg-muted/60 px-0.5">GET /api/state</code> (about every 5s). The rolling view matches live
               WebSocket fills. Binance Futures uses field{" "}
-              <code className="rounded bg-muted/60 px-0.5">rp</code> when it is non-zero; otherwise the console uses{' '}
-              <span className="whitespace-nowrap">(exit âˆ’ entry) Ã— closed qty</span>. If{' '}
+              <code className="rounded bg-muted/60 px-0.5">rp</code> when it is non-zero; otherwise the console uses{" "}
+              <span className="whitespace-nowrap">(exit - entry) {TIMES} closed qty</span>. If{" "}
               <code className="rounded bg-muted/60 px-0.5">rp</code> looks like dust vs that economics (e.g. sub-cent vs several
               dollars), the engine keeps the computed slice PnL. <strong className="text-foreground">Avg win/loss</strong> are
-              mean P&L on winning vs losing closes; <strong className="text-foreground">payoff (R)</strong> = avg win Ã· avg
-              loss; <strong className="text-foreground">expectancy</strong> = net Ã· closes;{" "}
-              <strong className="text-foreground">breakeven WR</strong> = avg loss Ã· (avg win + avg loss). Profit factor =
-              Î£&nbsp;positive closes Ã· Î£&nbsp;|negative closes|. Excludes transfers, funding, and fees unless the venue folds
+              mean P&L on winning vs losing closes; <strong className="text-foreground">payoff (R)</strong> = avg win / avg
+              loss; <strong className="text-foreground">expectancy</strong> = net / closes;{" "}
+              <strong className="text-foreground">breakeven WR</strong> = avg loss / (avg win + avg loss). Profit factor =
+              {"\u03A3"} positive closes / {"\u03A3"} |negative closes|. Excludes transfers, funding, and fees unless the venue folds
               them into{' '}
               <code className="rounded bg-muted/60 px-0.5">rp</code>. Dollar labels use extra precision when totals are small
               so they reconcile with the factor; RECENT TRADES uses the same idea so tiny realized amounts are not shown as

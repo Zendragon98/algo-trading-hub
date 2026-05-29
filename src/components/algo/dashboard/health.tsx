@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { CLOCK_SKEW_WARN_MS } from "@/components/algo/dashboard/constants";
+import { EM_DASH } from "@/lib/algo-format";
 import type { AlgoStatus, SystemHealth } from "@/components/algo/types";
 export function latencyP95Display(
   latency: SystemHealth["latency"],
@@ -17,7 +18,7 @@ export function latencyP95Display(
 ): { value: string; ok: boolean } {
   const bucket = latency[key];
   if (!bucket || bucket.count < 1) {
-    return { value: "â€”", ok: true };
+    return { value: EM_DASH, ok: true };
   }
   const p95 = bucket.p95;
   return {
@@ -28,7 +29,7 @@ export function latencyP95Display(
 
 export function userDataAgeDisplay(health: SystemHealth): { value: string; ok: boolean } {
   if (health.userDataAgeSec < 0) {
-    return { value: "â€”", ok: true };
+    return { value: EM_DASH, ok: true };
   }
   const age = `${health.userDataAgeSec.toFixed(1)}s`;
   if (health.userDataStale) {
@@ -45,7 +46,7 @@ export function userDataAgeDisplay(health: SystemHealth): { value: string; ok: b
 
 export function clockSkewDisplay(health: SystemHealth): { value: string; ok: boolean } {
   if (!health.clockSkewSynced) {
-    return { value: "â€”", ok: true };
+    return { value: EM_DASH, ok: true };
   }
   const ms = Math.abs(health.clockSkewMs);
   return {
@@ -136,7 +137,7 @@ export function SystemHealthPanel({
             <HealthChip
               label="Tick age"
               value={
-                health.tickAgeSec >= 0 ? `${health.tickAgeSec.toFixed(1)}s` : "â€”"
+                health.tickAgeSec >= 0 ? `${health.tickAgeSec.toFixed(1)}s` : EM_DASH
               }
               ok={health.tickAgeSec >= 0 && health.tickAgeSec < 15}
             />
@@ -160,11 +161,11 @@ export function SystemHealthPanel({
               ok={health.activeBreakers.length === 0}
             />
             <HealthChip
-              label="p95 tickâ†’submit"
+              label="p95 tick\u2192submit"
               {...latencyP95Display(health.latency, "tick_to_submit_ms", 500)}
             />
             <HealthChip
-              label="p95 submitâ†’ack"
+              label="p95 submit\u2192ack"
               {...latencyP95Display(health.latency, "submit_to_ack_ms", 500)}
             />
             <HealthChip label="Clock skew" {...clockSkewDisplay(health)} />
@@ -189,7 +190,7 @@ export function SystemHealthPanel({
                   {sym} gaps={h.sequence_gaps} age=
                   {h.last_diff_age_ms >= 0
                     ? `${(h.last_diff_age_ms / 1000).toFixed(0)}s`
-                    : "â€”"}
+                    : EM_DASH}
                 </span>
               ))}
             </div>
