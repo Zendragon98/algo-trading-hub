@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
@@ -20,7 +20,6 @@ import { Slider } from "@/components/ui/slider";
 import { Separator } from "@/components/ui/separator";
 import { EquityChart } from "@/components/algo/EquityChart";
 import { PositionChartDialog } from "@/components/algo/PositionChartDialog";
-import { SettingsDialog } from "@/components/algo/SettingsDialog";
 import {
   BreakersPanel,
   ControlLimitsPanel,
@@ -130,7 +129,6 @@ function Index() {
   const [risk, setRisk] = useState<number[]>([35]);
   const riskHydrated = useRef(false);
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [controlPending, setControlPending] = useState<"start" | "flatten" | null>(null);
 
@@ -430,7 +428,6 @@ function Index() {
         onEStop={onEStop}
         onHaltTrading={onHaltTrading}
         onFlatten={onFlatten}
-        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       <main className="mx-auto max-w-[1500px] px-4 pb-10 pt-6 lg:px-8">
@@ -707,16 +704,6 @@ function Index() {
         onOpenChange={(o) => !o && setChartSymbol(null)}
       />
 
-      <SettingsDialog
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        onSaved={() => void live.refresh()}
-        activeStrategyLabel={
-          strategy?.name === "all" && strategies.length > 0
-            ? `All (${strategies.map((s) => s.label).join(", ")})`
-            : (strategy?.label ?? null)
-        }
-      />
     </div>
   );
 }

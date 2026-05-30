@@ -53,7 +53,7 @@ The following are **not** guarded by `API_TOKEN` in middleware:
 
 ### 2.3 Frontend token (`VITE_API_TOKEN`)
 
-`src/lib/api.ts` injects `Authorization` for **mutating** `/api/control` requests when `VITE_API_TOKEN` is set.
+`src/lib/api.ts` injects `Authorization` for **all** `/api/control` requests (including `GET /api/control/breakers`) when `VITE_API_TOKEN` is set.
 
 **Critical limitation:** Vite bakes this into the **client JavaScript bundle**. Anyone who can load the UI can extract the token. Mitigations:
 

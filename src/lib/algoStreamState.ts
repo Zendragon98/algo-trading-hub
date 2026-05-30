@@ -130,6 +130,8 @@ export const TERMINAL_ORDER_STATUSES: ReadonlyArray<WorkingOrder["status"]> = [
 export const TRADING_STATE_SYNC_MS = 5_000;
 /** Debounce rapid WS reconnects before pulling a full snapshot. */
 export const WS_RESYNC_DEBOUNCE_MS = 250;
+/** Coalesce non-urgent WS events before triggering a React update. */
+export const WS_EVENT_BATCH_MS = 250;
 
 const LATENCY_KEYS = new Set([
   "tick_to_signal_ms",
@@ -338,6 +340,77 @@ export function systemHealthFromStatus(
   };
 }
 
+function systemHealthDisplayKey(health: SystemHealth): string {
+  return JSON.stringify({
+    ...health,
+    tickAgeSec: Math.floor(health.tickAgeSec),
+    userDataAgeSec: Math.floor(health.userDataAgeSec),
+  });
+}
+
+export function isUrgentWsEvent(event: WsEvent): boolean {
+  switch (event.type) {
+    case "fill":
+    case "order":
+    case "parent":
+    case "execution":
+    case "breaker":
+    case "log":
+      return true;
+    case "status": {
+      const data = event.data;
+      if (data.status !== undefined) return true;
+      if (data.kind === "book_resync") return true;
+      if (data.replay_summary) return true;
+      return false;
+    }
+    default:
+      return false;
+  }
+}
+
+/** Drop superseded high-frequency status snapshots within one batch. */
+export function coalesceWsEventBatch(events: WsEvent[]): WsEvent[] {
+  if (events.length <= 1) return events;
+  const out: WsEvent[] = [];
+  let lastSystemHealth: WsEvent | null = null;
+  let lastLatencyMetrics: WsEvent | null = null;
+
+  for (const event of events) {
+    if (event.type === "status" && event.data.kind === "system_health") {
+      lastSystemHealth = event;
+      continue;
+    }
+    if (event.type === "status" && event.data.kind === "latency_metrics") {
+      lastLatencyMetrics = event;
+      continue;
+    }
+    if (lastSystemHealth) {
+      out.push(lastSystemHealth);
+      lastSystemHealth = null;
+    }
+    if (lastLatencyMetrics) {
+      out.push(lastLatencyMetrics);
+      lastLatencyMetrics = null;
+    }
+    out.push(event);
+  }
+  if (lastSystemHealth) out.push(lastSystemHealth);
+  if (lastLatencyMetrics) out.push(lastLatencyMetrics);
+  return out;
+}
+
+export function applyWsEvents(
+  prev: AlgoStream,
+  events: WsEvent[],
+  parentClosePending: Map<string, PendingParentClose>,
+): AlgoStream {
+  return coalesceWsEventBatch(events).reduce(
+    (state, event) => applyWsEvent(state, event, parentClosePending),
+    prev,
+  );
+}
+
 export function aggregateExecutionHistory(
   history: ExecutionParent[],
 ): ExecutionAggregate {
@@ -405,10 +478,14 @@ export function applyWsEvent(
       }
 
       if (data.kind === "system_health") {
-        return {
-          ...next,
-          systemHealth: systemHealthFromStatus(prev.systemHealth, data),
-        };
+        const systemHealth = systemHealthFromStatus(prev.systemHealth, data);
+        if (
+          prev.systemHealth &&
+          systemHealthDisplayKey(prev.systemHealth) === systemHealthDisplayKey(systemHealth)
+        ) {
+          return next;
+        }
+        return { ...next, systemHealth };
       }
 
       if (data.kind === "latency_metrics") {

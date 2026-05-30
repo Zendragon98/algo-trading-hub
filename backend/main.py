@@ -154,12 +154,15 @@ async def _run() -> None:
     # reference to where capital is actually flowing. Done after engine
     # construction because the Portfolio + volume cache live inside the
     # Engine.
+    def _venue_position_qty(symbol: str) -> float:
+        pos = engine._positions.get(symbol)  # noqa: SLF001
+        return pos.qty if pos is not None else 0.0
+
     def _position_qty_for(strat_name: str):
         def provider(symbol: str) -> float:
             if engine.is_multi_strategy_mode():  # noqa: SLF001
                 return engine.strategy_ledger.qty(strat_name, symbol)  # noqa: SLF001
-            pos = engine._positions.get(symbol)  # noqa: SLF001
-            return pos.qty if pos is not None else 0.0
+            return _venue_position_qty(symbol)
 
         return provider
 
@@ -185,7 +188,8 @@ async def _run() -> None:
             strat.attach_mm2_active_symbols_provider(_mm2_symbols_for_blend)
         if isinstance(strat, MarketMakingV2Strategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
-            strat.attach_position_provider(_position_qty_for(strat.name))
+            # MM inventory skew must reflect venue exposure (flow/SMA may share symbols).
+            strat.attach_position_provider(_venue_position_qty)
 
     autostart = bool(settings.engine_autostart)
     if args.engine:

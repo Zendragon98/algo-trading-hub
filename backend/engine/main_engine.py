@@ -98,12 +98,15 @@ async def run() -> None:
             engine.attach_market_capturer(capturer)
             bootstrap.market_capturer = capturer
 
+    def _venue_position_qty(symbol: str) -> float:
+        pos = engine._positions.get(symbol)  # noqa: SLF001
+        return pos.qty if pos is not None else 0.0
+
     def _position_qty_for(strat_name: str):
         def provider(symbol: str) -> float:
             if engine.is_multi_strategy_mode():  # noqa: SLF001
                 return engine.strategy_ledger.qty(strat_name, symbol)  # noqa: SLF001
-            pos = engine._positions.get(symbol)  # noqa: SLF001
-            return pos.qty if pos is not None else 0.0
+            return _venue_position_qty(symbol)
 
         return provider
 
@@ -129,7 +132,7 @@ async def run() -> None:
             strat.attach_mm2_active_symbols_provider(_mm2_symbols_for_blend)
         if isinstance(strat, MarketMakingV2Strategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
-            strat.attach_position_provider(_position_qty_for(strat.name))
+            strat.attach_position_provider(_venue_position_qty)
 
     await engine.start()
 

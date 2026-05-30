@@ -30,9 +30,8 @@ function authHeaders(): Record<string, string> {
   return { authorization: `Bearer ${API_TOKEN}` };
 }
 
-function isControlMutation(path: string, method?: string): boolean {
-  const m = (method ?? "GET").toUpperCase();
-  return path.startsWith("/api/control") && m !== "GET" && m !== "HEAD";
+function isControlRoute(path: string): boolean {
+  return path.startsWith("/api/control");
 }
 
 function httpToWsBase(httpOrEmpty: string): string {
@@ -353,7 +352,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     "content-type": "application/json",
     ...(init?.headers as Record<string, string> | undefined),
   };
-  if (isControlMutation(path, init?.method)) {
+  if (isControlRoute(path)) {
     Object.assign(headers, authHeaders());
   }
   const response = await fetch(`${API_BASE}${path}`, {

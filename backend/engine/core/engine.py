@@ -2268,9 +2268,10 @@ class Engine:
             return
         await self._dispatch_signals(signals)
 
-    async def _evaluate_mm_quotes(self, strat: StrategyBase) -> None:
+    async def _evaluate_mm_quotes(self, strat: StrategyBase) -> tuple[int, int]:
+        """Run MM quote logic. Returns ``(active_quotes, gated_symbols)`` for summaries."""
         if not self._settings.mm_quote_enabled:
-            return
+            return 0, 0
         equity = self._portfolio.snapshot().equity
         feats: dict[str, Any] = {}
         for sym in strat.symbols():
@@ -2283,14 +2284,21 @@ class Engine:
                 self._breaker.trip(breach)
             feats[sym] = feat
         if not hasattr(strat, "on_tick_quotes"):
-            return
+            return 0, 0
         try:
             intents = list(strat.on_tick_quotes(feats))
         except Exception:  # noqa: BLE001
             logger.exception("strategy %s on_tick_quotes raised", strat.name)
-            return
+            return 0, 0
+        active_quotes = 0
+        gated = 0
         verbose_mm_log = not self.is_multi_strategy_mode()
         for intent in intents:
+            has_quote = intent.bid_price is not None or intent.ask_price is not None
+            if has_quote:
+                active_quotes += 1
+            elif intent.reason:
+                gated += 1
             if intent.reservation_mid > 0 or intent.reason:
                 obs: list[str] = []
                 if intent.spread_bps is not None:
@@ -2312,11 +2320,13 @@ class Engine:
                 else:
                     logger.debug("%s | %s", headline, intent.reason or "")
         await self._refresh_mm_quote_intents(intents)
+        return active_quotes, gated
 
     def _maybe_log_multi_strategy_summary(
         self,
         *,
         sig_counts: dict[str, int],
+        mm_quote_counts: dict[str, tuple[int, int]] | None = None,
     ) -> None:
         """Periodic LIVE LOG line so STRATEGY=all shows every loaded strategy."""
         if not self.is_multi_strategy_mode():
@@ -2333,7 +2343,14 @@ class Engine:
             label = (strat.display_label or strat.name).strip()
             sym_n = len(strat.symbols())
             if mm_core.is_mm_strategy(strat.name):
-                parts.append(f"{label} {sym_n} syms")
+                mm_stats = (mm_quote_counts or {}).get(strat.name)
+                if mm_stats is not None:
+                    quotes_n, gated_n = mm_stats
+                    parts.append(
+                        f"{label} {sym_n} syms quotes={quotes_n} gated={gated_n}"
+                    )
+                else:
+                    parts.append(f"{label} {sym_n} syms")
             else:
                 sig_n = sig_counts.get(strat.name, 0)
                 parts.append(f"{label} {sym_n} syms sig={sig_n}")
@@ -2346,9 +2363,10 @@ class Engine:
         sig_counts: dict[str, int] = {}
         symbol_union: set[str] = set()
         alpha_strategies: list[StrategyBase] = []
+        mm_quote_counts: dict[str, tuple[int, int]] = {}
         for strat in self._strategies:
             if mm_core.is_mm_strategy(strat.name):
-                await self._evaluate_mm_quotes(strat)
+                mm_quote_counts[strat.name] = await self._evaluate_mm_quotes(strat)
             else:
                 alpha_strategies.append(strat)
                 symbol_union.update(strat.symbols())
@@ -2363,7 +2381,10 @@ class Engine:
                     sig_counts[strat.name] = sig_counts.get(strat.name, 0) + 1
             except Exception:  # noqa: BLE001
                 logger.exception("strategy %s on_tick raised", strat.name)
-        self._maybe_log_multi_strategy_summary(sig_counts=sig_counts)
+        self._maybe_log_multi_strategy_summary(
+            sig_counts=sig_counts,
+            mm_quote_counts=mm_quote_counts,
+        )
         if not tagged:
             return
         result = net_strategy_signals(tagged)

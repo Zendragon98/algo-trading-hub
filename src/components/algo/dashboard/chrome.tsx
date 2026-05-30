@@ -96,7 +96,6 @@ export function TopBar(props: {
   onEStop: () => void;
   onHaltTrading: (opts?: { flatten?: boolean; pause?: boolean }) => void;
   onFlatten: () => void;
-  onOpenSettings?: () => void;
 }) {
   const { status, uptimeSec, paperMode, strategy } = props;
   const statusMeta = {
@@ -154,11 +153,11 @@ export function TopBar(props: {
           <Button size="sm" variant="outline" className="border-border" asChild>
             <Link to="/backtesting">Backtest</Link>
           </Button>
-          {props.onOpenSettings && (
-            <Button size="sm" variant="outline" onClick={props.onOpenSettings} className="border-border">
+          <Button size="sm" variant="outline" className="border-border" asChild>
+            <Link to="/settings">
               <Settings2 className="size-4" /> Settings
-            </Button>
-          )}
+            </Link>
+          </Button>
           {status === "paused" && props.onResume ? (
             <Button
               size="sm"

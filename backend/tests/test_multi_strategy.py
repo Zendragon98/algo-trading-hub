@@ -14,12 +14,31 @@ from collections.abc import Iterable  # noqa: E402
 from common.config import Settings  # noqa: E402
 from common.enums import Side  # noqa: E402
 from common.events import EventBus  # noqa: E402
-from common.types import ChildOrder, Kline, Position, Signal  # noqa: E402
+from common.types import ChildOrder, Kline, Position, QuoteIntent, Signal  # noqa: E402
 from engine.core.engine import ALL_STRATEGIES_MODE, Engine  # noqa: E402
 from engine.market_data.feature_store import Features  # noqa: E402
 from engine.strategies.flow_momentum import FlowMomentumStrategy  # noqa: E402
 from engine.strategies.strategy_base import StrategyBase  # noqa: E402
 from gateways.gateway_interface import GatewayInterface, SymbolFilters  # noqa: E402
+
+
+class _MmStubStrategy(StrategyBase):
+    name = "market_making_v2"
+    display_label = "MM stub"
+    description = "stub"
+
+    def __init__(self) -> None:
+        self.quote_tick_count = 0
+
+    def symbols(self) -> list[str]:
+        return ["BTCUSDT"]
+
+    def on_tick(self, features: dict[str, Features]) -> Iterable[Signal]:
+        return []
+
+    def on_tick_quotes(self, features: dict[str, Features]) -> list[QuoteIntent]:
+        self.quote_tick_count += 1
+        return []
 
 
 class _EmitStrategy(StrategyBase):
@@ -113,6 +132,15 @@ async def test_flow_momentum_ticks_in_all_mode() -> None:
     engine.set_active_strategy(ALL_STRATEGIES_MODE)
     await engine._evaluate_strategies()
     assert flow_tick == 1
+
+
+@pytest.mark.asyncio
+async def test_market_making_quotes_in_all_mode() -> None:
+    mm = _MmStubStrategy()
+    engine = _engine([_EmitStrategy("alpha", "ETHUSDT"), mm])
+    engine.set_active_strategy(ALL_STRATEGIES_MODE)
+    await engine._evaluate_strategies()
+    assert mm.quote_tick_count == 1
 
 
 @pytest.mark.asyncio

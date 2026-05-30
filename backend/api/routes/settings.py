@@ -10,6 +10,8 @@ from pydantic import ValidationError
 
 from common.breaker_registry import merge_breaker_enabled
 from common.config import Settings
+from common.config.aliases import normalize_strategy_name
+from common.enums import EngineStatus
 from common.universe_bootstrap import needs_auto_universe_resolve, resolve_binance_auto_universe
 from engine.core.engine import Engine
 
@@ -93,6 +95,15 @@ async def patch_settings(
         if sym_keys & clean.keys():
             symbols_before = set(engine._resolve_market_symbols())
         new_s = engine.apply_settings_patch(clean)
+        if "strategy" in clean:
+            try:
+                strat_changed = engine.set_active_strategy(
+                    normalize_strategy_name(str(clean["strategy"]))
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if strat_changed and engine.status is EngineStatus.RUNNING:
+                await engine.refresh_market_universe()
         if symbols_before is not None:
             symbols_after = set(engine._resolve_market_symbols())
             if symbols_after != symbols_before:

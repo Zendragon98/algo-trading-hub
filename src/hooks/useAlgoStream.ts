@@ -1,16 +1,18 @@
 // WebSocket + polling hook for the live console. Pure state reducers live in
 // `lib/algoStreamState.ts`.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, startTransition } from "react";
 
 import { api, getAlgoWsUrl, toBreakerList, type WsEvent } from "@/lib/api";
 import {
   applyBackendOffline,
   applyTradingState,
-  applyWsEvent,
+  applyWsEvents,
   createEmptyAlgoStream,
+  isUrgentWsEvent,
   numSetting,
   TRADING_STATE_SYNC_MS,
+  WS_EVENT_BATCH_MS,
   WS_RESYNC_DEBOUNCE_MS,
   type AlgoStream,
 } from "@/lib/algoStreamState";
@@ -173,6 +175,44 @@ export function useAlgoStream(): AlgoStream {
       ensureFallbackPoll();
     };
 
+    const wsQueueRef: WsEvent[] = [];
+    let wsFlushRaf: number | null = null;
+    let wsFlushTimer: number | null = null;
+
+    const flushWsQueue = () => {
+      wsFlushRaf = null;
+      if (wsFlushTimer !== null) {
+        window.clearTimeout(wsFlushTimer);
+        wsFlushTimer = null;
+      }
+      if (cancelled || wsQueueRef.length === 0) return;
+      const batch = wsQueueRef.splice(0);
+      startTransition(() => {
+        setStream((prev) => applyWsEvents(prev, batch, parentClosePendingRef.current));
+      });
+    };
+
+    const scheduleWsFlush = (urgent: boolean) => {
+      if (cancelled) return;
+      if (urgent) {
+        if (wsFlushTimer !== null) {
+          window.clearTimeout(wsFlushTimer);
+          wsFlushTimer = null;
+        }
+        if (wsFlushRaf === null) {
+          wsFlushRaf = window.requestAnimationFrame(flushWsQueue);
+        }
+        return;
+      }
+      if (wsFlushRaf !== null || wsFlushTimer !== null) return;
+      wsFlushTimer = window.setTimeout(flushWsQueue, WS_EVENT_BATCH_MS);
+    };
+
+    const enqueueWsEvent = (event: WsEvent) => {
+      wsQueueRef.push(event);
+      scheduleWsFlush(isUrgentWsEvent(event));
+    };
+
     ws.onmessage = (msg) => {
       let event: WsEvent;
       try {
@@ -183,7 +223,7 @@ export function useAlgoStream(): AlgoStream {
       if (event.type === "status" && event.data.uptime_sec !== undefined) {
         startedAtRef.current = Date.now() / 1000 - event.data.uptime_sec;
       }
-      setStream((prev) => applyWsEvent(prev, event, parentClosePendingRef.current));
+      enqueueWsEvent(event);
     };
 
     return () => {
@@ -191,6 +231,15 @@ export function useAlgoStream(): AlgoStream {
       document.removeEventListener("visibilitychange", onVisibility);
       ws.close();
       wsRef.current = null;
+      wsQueueRef.length = 0;
+      if (wsFlushRaf !== null) {
+        window.cancelAnimationFrame(wsFlushRaf);
+        wsFlushRaf = null;
+      }
+      if (wsFlushTimer !== null) {
+        window.clearTimeout(wsFlushTimer);
+        wsFlushTimer = null;
+      }
       if (wsResyncTimerRef.current !== null) {
         window.clearTimeout(wsResyncTimerRef.current);
         wsResyncTimerRef.current = null;
