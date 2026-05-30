@@ -30,6 +30,8 @@ def _settings(**overrides: object) -> Settings:
         "flow_trail_stop_bps": 0.0,
         "flow_max_hold_sec": 120.0,
         "flow_exit_tape_threshold": 0.05,
+        "flow_exit_tape_frac": 0.45,
+        "flow_exit_confirm_ticks": 1,
         "flow_qty": 0.01,
         "flow_skip_toxic": False,
         "flow_pnl_verify_log_interval_sec": 0.0,
@@ -91,6 +93,64 @@ def test_stop_loss_exit() -> None:
     assert signals[0].reduce_only
     assert signals[0].side is Side.SELL
     assert "flow_stop_loss" in signals[0].reason
+
+
+def test_max_hold_exit_after_configured_seconds() -> None:
+    strat = FlowMomentumStrategy(_settings(flow_max_hold_sec=90.0))
+    strat.attach_position_provider(lambda _s: 0.01)
+    state = strat._state_for("BTCUSDT", 3)
+    state.fill_vwap = 100.0
+    state.entry_ts = time.time() - 91.0
+    state.open_side = 1
+
+    feats = {"BTCUSDT": _feat(tape=0.20, imb=0.12, mid=100.0)}
+    signals = list(strat.on_tick(feats))
+    assert len(signals) == 1
+    assert "flow_max_hold" in signals[0].reason
+
+
+def test_sync_does_not_reset_hold_clock_on_flat_flicker() -> None:
+    qty = {"v": 0.01}
+
+    def provider(_s: str) -> float:
+        return float(qty["v"])
+
+    strat = FlowMomentumStrategy(_settings(flow_max_hold_sec=90.0))
+    strat.attach_position_provider(provider)
+    state = strat._state_for("BTCUSDT", 3)
+    state.fill_vwap = 100.0
+    state.entry_ts = time.time() - 91.0
+    state.open_side = 1
+
+    qty["v"] = 0.0
+    list(strat.on_tick({"BTCUSDT": _feat(tape=0.20, imb=0.12, mid=100.0)}))
+    assert state.entry_ts > 0
+
+    qty["v"] = 0.01
+    signals = list(strat.on_tick({"BTCUSDT": _feat(tape=0.20, imb=0.12, mid=100.0)}))
+    assert len(signals) == 1
+    assert "flow_max_hold" in signals[0].reason
+
+
+def test_momentum_fade_exit_before_reversal() -> None:
+    strat = FlowMomentumStrategy(
+        _settings(
+            flow_tape_threshold=0.10,
+            flow_exit_tape_threshold=0.08,
+            flow_exit_tape_frac=0.45,
+        )
+    )
+    strat.attach_position_provider(lambda _s: 0.01)
+    state = strat._state_for("BTCUSDT", 3)
+    state.fill_vwap = 100.0
+    state.entry_ts = time.time()
+    state.open_side = 1
+
+    # Tape still positive but below fade_thr (0.10 * 0.45 = 0.045)
+    feats = {"BTCUSDT": _feat(tape=0.03, imb=0.02, mid=100.0)}
+    signals = list(strat.on_tick(feats))
+    assert len(signals) == 1
+    assert "flow_fade" in signals[0].reason
 
 
 def test_flow_reversal_exit_on_short() -> None:

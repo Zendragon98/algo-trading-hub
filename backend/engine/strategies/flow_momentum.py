@@ -45,6 +45,7 @@ EquityProvider = Callable[[], float]
 @dataclass(slots=True)
 class _SymbolState:
     confirm: deque[int] = field(default_factory=deque)
+    exit_confirm: deque[int] = field(default_factory=deque)
     signal_mid: float = 0.0
     fill_vwap: float = 0.0
     fill_qty_abs: float = 0.0
@@ -157,6 +158,7 @@ class FlowMomentumStrategy(StrategyBase):
             state.fill_qty_abs = 0.0
             state.entry_ts = 0.0
             state.peak_pnl_bps = 0.0
+            state.exit_confirm.clear()
             return
         if price is not None and price > 0 and qty > 0:
             state.fill_vwap, state.fill_qty_abs = apply_attributed_fill_vwap(
@@ -216,7 +218,9 @@ class FlowMomentumStrategy(StrategyBase):
                 pos_qty=pos_qty,
                 mid=mid,
                 tape=tape,
+                imb=imb,
                 now=now,
+                tape_thr=tape_thr,
                 exit_tape=exit_tape,
             )
             if exit_sig is not None:
@@ -269,9 +273,8 @@ class FlowMomentumStrategy(StrategyBase):
             entries += 1
             state.last_action_ts = now
             state.signal_mid = mid
-            state.entry_ts = now
-            state.open_side = direction
             state.peak_pnl_bps = 0.0
+            state.exit_confirm.clear()
             signal_log_emit(
                 logger,
                 f"FLOW open {sig.side.value.upper()} {symbol} qty={sig.qty:.8f} "
@@ -292,6 +295,37 @@ class FlowMomentumStrategy(StrategyBase):
         )
         return signals
 
+    def _tape_exit_pressure(
+        self,
+        *,
+        pos_side: int,
+        tape: float,
+        imb: float,
+        tape_thr: float,
+        exit_tape: float,
+        fade_frac: float,
+        imb_min: float,
+    ) -> int:
+        """+1 = pressure to exit long, -1 = pressure to exit short, 0 = none."""
+        fade_thr = tape_thr * fade_frac if fade_frac > 0 else 0.0
+        if pos_side > 0:
+            if tape <= -exit_tape:
+                return 1
+            if fade_thr > 0 and 0.0 < tape < fade_thr:
+                return 1
+            if imb_min > 0 and imb <= -imb_min:
+                return 1
+            return 0
+        if pos_side < 0:
+            if tape >= exit_tape:
+                return -1
+            if fade_thr > 0 and -fade_thr < tape < 0.0:
+                return -1
+            if imb_min > 0 and imb >= imb_min:
+                return -1
+            return 0
+        return 0
+
     def _maybe_exit(
         self,
         *,
@@ -301,7 +335,9 @@ class FlowMomentumStrategy(StrategyBase):
         pos_qty: float,
         mid: float,
         tape: float,
+        imb: float,
         now: float,
+        tape_thr: float,
         exit_tape: float,
     ) -> Signal | None:
         if pos_side == 0:
@@ -327,8 +363,10 @@ class FlowMomentumStrategy(StrategyBase):
         )
 
         pnl = snap.exit_bps
-        hold = now - state.entry_ts if state.entry_ts > 0 else 0.0
         s = self._settings
+        if state.entry_ts <= 0:
+            state.entry_ts = now
+        hold = now - state.entry_ts
         tp = float(s.flow_take_profit_bps)
         sl = float(s.flow_stop_loss_bps)
         max_hold = float(s.flow_max_hold_sec)
@@ -359,10 +397,38 @@ class FlowMomentumStrategy(StrategyBase):
                 f"flow_max_hold pnl_bps={pnl:.2f} hold_sec={hold:.1f} "
                 f"entry={snap.entry_source}"
             )
-        elif pos_side > 0 and tape <= -exit_tape:
-            reason = f"flow_reversal tape={tape:+.3f} pnl_bps={pnl:.2f}"
-        elif pos_side < 0 and tape >= exit_tape:
-            reason = f"flow_reversal tape={tape:+.3f} pnl_bps={pnl:.2f}"
+        else:
+            fade_frac = float(s.flow_exit_tape_frac)
+            imb_min = float(s.flow_imbalance_min)
+            exit_n = max(1, int(s.flow_exit_confirm_ticks))
+            pressure = self._tape_exit_pressure(
+                pos_side=pos_side,
+                tape=tape,
+                imb=imb,
+                tape_thr=tape_thr,
+                exit_tape=exit_tape,
+                fade_frac=fade_frac,
+                imb_min=imb_min,
+            )
+            state.exit_confirm.append(pressure)
+            while len(state.exit_confirm) > exit_n:
+                state.exit_confirm.popleft()
+            if (
+                len(state.exit_confirm) >= exit_n
+                and pressure != 0
+                and all(p == pressure for p in state.exit_confirm)
+            ):
+                fade_thr = tape_thr * fade_frac if fade_frac > 0 else 0.0
+                if pressure > 0 and tape <= -exit_tape:
+                    kind = "flow_reversal"
+                elif pressure < 0 and tape >= exit_tape:
+                    kind = "flow_reversal"
+                else:
+                    kind = "flow_fade"
+                reason = (
+                    f"{kind} tape={tape:+.3f} imb={imb:+.3f} "
+                    f"fade_thr={fade_thr:+.3f} pnl_bps={pnl:.2f}"
+                )
 
         if reason is None:
             return None
@@ -386,19 +452,11 @@ class FlowMomentumStrategy(StrategyBase):
         return sig
 
     def _sync_state(self, state: _SymbolState, symbol: str, mid: float, now: float) -> None:
+        """Mirror live position side; do not reset hold clock on ledger flicker."""
         pos_side = side_from_qty(self._position_qty(symbol))
-        if pos_side != state.open_side:
-            if pos_side == 0:
-                state.signal_mid = 0.0
-                state.fill_vwap = 0.0
-                state.fill_qty_abs = 0.0
-                state.entry_ts = 0.0
-                state.peak_pnl_bps = 0.0
-            else:
-                state.peak_pnl_bps = 0.0
-                if state.entry_ts <= 0:
-                    state.entry_ts = now
-            state.open_side = pos_side
+        if pos_side != state.open_side and pos_side != 0:
+            state.peak_pnl_bps = 0.0
+        state.open_side = pos_side
 
     def _state_for(self, symbol: str, confirm_n: int) -> _SymbolState:
         state = self._state.get(symbol)

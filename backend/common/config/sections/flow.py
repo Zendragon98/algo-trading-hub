@@ -13,6 +13,9 @@ class FlowMixin(BaseModel):
     flow_min_tape_trades: int = 5
     flow_tape_threshold: float = 0.12
     flow_exit_tape_threshold: float = 0.06
+    # Exit long when tape falls below entry_thr * frac (momentum faded, not reversed).
+    flow_exit_tape_frac: float = 0.45
+    flow_exit_confirm_ticks: int = 1
     flow_imbalance_min: float = 0.05
     flow_confirm_ticks: int = 3
     flow_require_depletion: bool = False
