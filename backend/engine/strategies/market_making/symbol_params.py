@@ -349,7 +349,7 @@ def required_min_spread_bps(
         if floor is None:
             floor = symbol_class_min_spread_bps(symbol)
         if floor is not None:
-            return float(floor)
+            return max(0.01, float(floor))
     if params.min_spread_bps is not None:
         return max(fee_floor, params.min_spread_bps)
     if explicit_min_spread_bps > 0:

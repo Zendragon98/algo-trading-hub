@@ -358,6 +358,11 @@ def compute_half_spreads_bps(
     elif inv_ratio < 0:
         ask_half += skew * (-inv_ratio)
         bid_half = max(min_half, bid_half - skew * (-inv_ratio))
+    spread = feat.spread_bps
+    if spread is not None and spread > 0:
+        cap = max(0.25, float(spread) * 0.48)
+        bid_half = min(bid_half, cap)
+        ask_half = min(ask_half, cap)
     return bid_half, ask_half
 
 
