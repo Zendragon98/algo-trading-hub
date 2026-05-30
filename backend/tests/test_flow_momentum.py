@@ -34,6 +34,8 @@ def _settings(**overrides: object) -> Settings:
         "flow_exit_confirm_ticks": 1,
         "flow_qty": 0.01,
         "flow_skip_toxic": False,
+        "flow_require_depletion": False,
+        "flow_min_tape_velocity": 0.0,
         "flow_pnl_verify_log_interval_sec": 0.0,
     }
     base.update(overrides)
@@ -45,6 +47,8 @@ def _feat(
     tape: float = 0.0,
     imb: float = 0.0,
     mid: float = 100.0,
+    dep: float = 0.0,
+    tape_velocity: float = 2.0,
 ) -> Features:
     ask = 0.5 + tape / 2.0
     bid = 1.0 - ask
@@ -56,6 +60,8 @@ def _feat(
         ask_hit_ratio=ask,
         tape_bid_hit_count=50,
         tape_ask_hit_count=50,
+        depth_depletion_asym=dep,
+        tape_velocity=tape_velocity,
     )
 
 
@@ -77,6 +83,21 @@ def test_long_entry_after_confirm_ticks() -> None:
     assert signals[0].side is Side.BUY
     assert not signals[0].reduce_only
     assert "flow_momentum_enter" in signals[0].reason
+
+
+def test_entry_blocked_without_depletion_when_required() -> None:
+    strat = FlowMomentumStrategy(
+        _settings(flow_require_depletion=True, flow_confirm_ticks=3)
+    )
+    strat.attach_position_provider(lambda _s: 0.0)
+    feats = {"BTCUSDT": _feat(tape=0.20, imb=0.12, dep=0.0)}
+    for _ in range(5):
+        assert list(strat.on_tick(feats)) == []
+    feats_ok = {"BTCUSDT": _feat(tape=0.20, imb=0.12, dep=0.15)}
+    signals = []
+    for _ in range(3):
+        signals = list(strat.on_tick(feats_ok))
+    assert len(signals) == 1
 
 
 def test_stop_loss_exit() -> None:

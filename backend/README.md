@@ -528,7 +528,7 @@ Multi-indicator ensemble for single-leg crypto: **EMA trend**, **MACD momentum**
 **Tape-flow momentum** — the complement to MM fade. When the public tape keeps lifting offers (buyers aggressive) or hitting bids (sellers aggressive), market makers get run over; this strategy **enters with** that flow across the full MM scan universe.
 
 - **Universe:** `FLOW_SYMBOLS=AUTO` (empty = AUTO) — full MM scan universe (pins + midcaps, same as `MM_SYMBOLS=AUTO`). Explicit CSV overrides.
-- **Entry:** `FLOW_TAPE_THRESHOLD` + aligned `FLOW_IMBALANCE_MIN` for `FLOW_CONFIRM_TICKS` consecutive ticks (`volume` or `count` tape mode).
+- **Entry:** `FLOW_TAPE_THRESHOLD` + aligned `FLOW_IMBALANCE_MIN` for `FLOW_CONFIRM_TICKS` consecutive ticks (`volume` or `count` tape mode). Defaults bias against late chase: `FLOW_CONFIRM_TICKS=8`, `FLOW_TAPE_THRESHOLD=0.20`, `FLOW_REQUIRE_DEPLETION=true`, `FLOW_MIN_TAPE_VELOCITY=1.0`, `FLOW_COOLDOWN_SEC=60`, `FLOW_MAX_ENTRIES_PER_TICK=1`.
 - **Exit:** in-strategy (`manages_own_risk()` True): `FLOW_STOP_LOSS_BPS`, `FLOW_TAKE_PROFIT_BPS`, `FLOW_MAX_HOLD_SEC`, and tape reversal past `FLOW_EXIT_TAPE_THRESHOLD`.
 - **Execution:** `Signal` → `ExecutionRouter` → `VwapExecutor` (same as SMA/blend).
 
