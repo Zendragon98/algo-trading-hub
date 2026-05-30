@@ -292,8 +292,6 @@ class MarketMakingV2Strategy(StrategyBase):
             explicit_min_edge_bps=float(self._settings.mm2_min_edge_bps),
             calibrated_only=calibrated_only,
         )
-        if spread < required:
-            required = max(0.01, spread * 0.99)
         return spread >= required
 
     def _own(self, symbol: str) -> OwnBookState:

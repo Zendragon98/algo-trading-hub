@@ -335,26 +335,20 @@ def required_min_spread_bps(
     """Minimum venue spread (bps) before posting two-sided MM quotes.
 
     When ``calibrated_only`` is True (MM2_SPREAD_GATE_MODE=calibrated), uses
-    per-symbol ``min_spread_bps`` from calibration/overrides/tier defaults —
-    not fee round-trip (tight testnet books can be < fee RT; edge is in quote width).
+    per-symbol ``min_spread_bps`` from calibration plus fee/buffer floor.
 
     Otherwise aligns the spread gate with quote width: ``max(fee, 2 × half_spread)``.
     """
     fee_floor = mm2_fee_edge_floor_bps(symbol, settings)
     params = resolve_mm_params(symbol, settings, feat)
-    if calibrated_only:
-        floor = params.min_spread_bps
-        if floor is None and explicit_min_spread_bps > 0:
-            floor = explicit_min_spread_bps
-        if floor is None:
-            floor = symbol_class_min_spread_bps(symbol)
-        if floor is not None:
-            return max(0.01, float(floor))
     if params.min_spread_bps is not None:
         return max(fee_floor, params.min_spread_bps)
     if explicit_min_spread_bps > 0:
         return max(fee_floor, explicit_min_spread_bps)
     if calibrated_only:
+        tier = symbol_class_min_spread_bps(symbol)
+        if tier is not None:
+            return max(fee_floor, tier)
         return fee_floor
     if explicit_min_edge_bps > 0:
         return max(fee_floor, explicit_min_edge_bps)
