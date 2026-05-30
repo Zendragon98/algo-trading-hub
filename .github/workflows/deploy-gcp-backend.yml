@@ -50,19 +50,9 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-      - name: Build and push image (Cloud Build)
+      - name: Build, push, and restart on VM (Cloud Build)
         run: |
           gcloud builds submit \
             --project="${{ env.PROJECT_ID }}" \
             --config=cloudbuild.yaml \
-            --substitutions="_REGION=${{ env.REGION }},_REPOSITORY=${{ env.REPOSITORY }}"
-
-      - name: Restart engine container on VM
-        run: |
-          REMOTE_SCRIPT='cd ${{ env.COMPOSE_DIR }} && sudo docker compose pull && sudo docker compose up -d && for i in $(seq 1 24); do curl -sf http://127.0.0.1:8000/health && exit 0; sleep 5; done; exit 1'
-          gcloud compute ssh "${{ env.INSTANCE }}" \
-            --project="${{ env.PROJECT_ID }}" \
-            --zone="${{ env.ZONE }}" \
-            --tunnel-through-iap \
-            --quiet \
-            --command="$REMOTE_SCRIPT"
+            --substitutions="_REGION=${{ env.REGION }},_REPOSITORY=${{ env.REPOSITORY }},_ZONE=${{ env.ZONE }},_INSTANCE=${{ env.INSTANCE }},_COMPOSE_DIR=${{ env.COMPOSE_DIR }}"

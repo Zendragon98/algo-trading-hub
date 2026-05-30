@@ -13,6 +13,9 @@ substitutions:
   _REGION: us-central1
   _REPOSITORY: algo-trading
   _IMAGE: backend
+  _ZONE: us-central1-a
+  _INSTANCE: algo-trading-engine
+  _COMPOSE_DIR: /opt/algo-trading-hub/deploy/gcp
 
 steps:
   - name: gcr.io/cloud-builders/docker
@@ -29,6 +32,18 @@ steps:
       - push
       - --all-tags
       - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        gcloud compute ssh "${_INSTANCE}" \
+          --project="$PROJECT_ID" \
+          --zone="${_ZONE}" \
+          --tunnel-through-iap \
+          --quiet \
+          --command='cd ${_COMPOSE_DIR} && sudo docker compose pull && sudo docker compose up -d && for i in $(seq 1 24); do curl -sf http://127.0.0.1:8000/health && exit 0; sleep 5; done; exit 1'
 
 images:
   - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:latest
