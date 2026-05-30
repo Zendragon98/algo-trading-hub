@@ -50,6 +50,12 @@ gcloud iam service-accounts add-iam-policy-binding "${PN}-compute@developer.gser
   --member="serviceAccount:$SA_EMAIL" `
   --role="roles/iam.serviceAccountUser"
 
+gcloud compute instances add-iam-policy-binding algo-trading-engine `
+  --zone=us-central1-a `
+  --project=$PROJECT `
+  --member="serviceAccount:$SA_EMAIL" `
+  --role="roles/compute.osAdminLogin"
+
 gcloud iam service-accounts keys create github-deploy-key.json `
   --iam-account=$SA_EMAIL `
   --project=$PROJECT
@@ -102,7 +108,7 @@ Manual run: **Actions** → **Deploy backend to GCP** → **Run workflow**.
 | `GCP_SA_KEY` missing | Add secret (step 2) |
 | Cloud Build fails in ~2s on “Build and push image” | Grant project roles above to `github-actions-deploy`, then grant **`roles/iam.serviceAccountUser`** on the **default build SA** (usually `PROJECT_NUMBER-compute@developer.gserviceaccount.com` — run `gcloud builds get-default-service-account`). Legacy `PROJECT_NUMBER@cloudbuild.gserviceaccount.com` only applies on older projects. |
 | `_cloudbuild` bucket forbidden | Grant `storage.admin` to `github-actions-deploy`; grant `artifactregistry.writer` to the default build SA (see above) |
-| SSH / IAP failed | VM running; firewall `algo-trading-allow-ssh-iap`; SA has `iap.tunnelResourceAccessor` + `compute.osAdminLogin` |
+| SSH / IAP failed (VM step fails in ~5s) | VM running; firewall allows IAP TCP/22; SA has `iap.tunnelResourceAccessor` + project `compute.osAdminLogin`; also bind **`roles/compute.osAdminLogin` on the VM instance** for `github-actions-deploy` |
 | `docker compose` path wrong | Ensure `/opt/algo-trading-hub/deploy/gcp` exists on VM (initial setup) |
 | Build OK, old code still running | Check Actions log for “Restart engine”; run SSH step manually |
 

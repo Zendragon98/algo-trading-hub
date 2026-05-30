@@ -57,6 +57,15 @@ Write-Host "Binding roles/iam.serviceAccountUser on $cloudBuildSa ..."
   --member="serviceAccount:$SA_EMAIL" `
   --role="roles/iam.serviceAccountUser" | Out-Null
 
+$instance = if ($env:GCP_INSTANCE) { $env:GCP_INSTANCE } else { "algo-trading-engine" }
+$zone = if ($env:GCP_ZONE) { $env:GCP_ZONE } else { "us-central1-a" }
+Write-Host "Binding roles/compute.osAdminLogin on VM $instance ..."
+& $gcloud compute instances add-iam-policy-binding $instance `
+  --zone=$zone `
+  --project=$PROJECT `
+  --member="serviceAccount:$SA_EMAIL" `
+  --role="roles/compute.osAdminLogin" | Out-Null
+
 if (Test-Path $KEY_FILE) {
   Remove-Item $KEY_FILE -Force
 }

@@ -2,7 +2,7 @@
 #
 # One-time setup: deploy/gcp/GITHUB_ACTIONS_SETUP.md
 # Required GitHub secret: GCP_SA_KEY (JSON key for github-actions-deploy@...)
-# Also grant roles/iam.serviceAccountUser on the default Cloud Build SA (see GITHUB_ACTIONS_SETUP.md).
+# IAM: actAs on default Cloud Build SA + osAdminLogin on VM instance (see GITHUB_ACTIONS_SETUP.md).
 
 name: Deploy backend to GCP
 
