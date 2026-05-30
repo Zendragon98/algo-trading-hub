@@ -203,7 +203,10 @@ async def set_strategy(
     try:
         changed = engine.set_active_strategy(body.name)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        msg = str(exc)
+        if "strategy swap rate limited" in msg:
+            raise HTTPException(status_code=429, detail=msg) from exc
+        raise HTTPException(status_code=400, detail=msg) from exc
     if changed and engine.status is EngineStatus.RUNNING:
         refreshed = await _run_or_500("strategy/market", engine.refresh_market_universe)
         if refreshed and not engine.rest_heavily_throttled():

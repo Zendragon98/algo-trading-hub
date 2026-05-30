@@ -14,5 +14,6 @@ data/jobs/*
 data/cache/*
 data/klines/*
 tests
+scripts/test_strategies_live.py
 *.md
 .git

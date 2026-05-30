@@ -111,7 +111,10 @@ async def patch_settings(
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.errors()) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        msg = str(exc)
+        if "strategy swap rate limited" in msg:
+            raise HTTPException(status_code=429, detail=msg) from exc
+        raise HTTPException(status_code=400, detail=msg) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("settings patch failed")
         raise HTTPException(status_code=500, detail=str(exc)) from exc

@@ -401,6 +401,7 @@ class Engine:
         self._book_resync: StartupProgress | None = None
         self._book_resync_serial_lock = asyncio.Lock()
         self._book_resync_token: int = 0
+        self._last_strategy_swap_ts: float = 0.0
         self._last_logged_status: str | None = None
         self._last_ops_health_signature: tuple[object, ...] | None = None
         self._last_forced_reconcile_ts: float = 0.0
@@ -591,6 +592,7 @@ class Engine:
             raise ValueError(f"unknown strategy {name!r}; available: {available}")
         if normalised == self._active_strategy_name:
             return False
+        self._enforce_strategy_swap_cooldown()
         previous = self._active_strategy_name
         self._active_strategy_name = normalised
         self._stop_monitor.set_externally_managed(self._compute_externally_managed())
@@ -608,7 +610,26 @@ class Engine:
                 normalised,
                 sym_n,
             )
+        self._record_strategy_swap()
         return True
+
+    def _enforce_strategy_swap_cooldown(self) -> None:
+        min_iv = float(getattr(self._settings, "strategy_swap_min_interval_sec", 0.0))
+        if min_iv <= 0:
+            return
+        last = self._last_strategy_swap_ts
+        if last <= 0:
+            return
+        elapsed = time.time() - last
+        if elapsed < min_iv:
+            wait = min_iv - elapsed
+            raise ValueError(
+                f"strategy swap rate limited: wait {wait:.0f}s "
+                f"(STRATEGY_SWAP_MIN_INTERVAL_SEC={min_iv:g})"
+            )
+
+    def _record_strategy_swap(self) -> None:
+        self._last_strategy_swap_ts = time.time()
 
     def apply_breaker_rearm_side_effects(self, cleared_codes: set[str]) -> None:
         """Reset subsystem baselines when operator rearms latched breakers.

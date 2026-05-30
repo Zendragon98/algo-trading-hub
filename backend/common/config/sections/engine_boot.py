@@ -16,6 +16,9 @@ class EngineBootMixin(BaseModel):
     # Which strategy set to run: "pairs" | "sma" | "blend" | "flow" | "mm2" | "all".
     # STRATEGY=all: periodic LIVE LOG summary of every loaded strategy (seconds; 0 = off).
     multi_strategy_log_interval_sec: float = 60.0
+    # Minimum seconds between runtime strategy hot-swaps (control API / settings patch).
+    # 0 = no limit (dev). Use 5+ on deployed VMs to block soak-script / UI spam.
+    strategy_swap_min_interval_sec: float = 0.0
     # "all" runs every registered strategy with internal position netting.
     strategy: str = "pairs"
 

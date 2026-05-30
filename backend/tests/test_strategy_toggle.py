@@ -130,6 +130,21 @@ def test_set_active_strategy_accepts_all_mode() -> None:
     assert engine.is_multi_strategy_mode()
 
 
+def test_set_active_strategy_rate_limited() -> None:
+    pairs = _StubStrategy("pairs", "BTCUSDC", manages_risk=True)
+    sma = _StubStrategy("sma", "ETHUSDT", manages_risk=False)
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        symbols=["BTCUSDC", "ETHUSDT"],
+        strategy_swap_min_interval_sec=3600.0,
+    )
+    engine = Engine(settings=settings, bus=EventBus(), gateway=_MockGateway(), strategies=[pairs, sma])
+    engine.set_active_strategy("sma")
+    with pytest.raises(ValueError, match="strategy swap rate limited"):
+        engine.set_active_strategy("pairs")
+
+
 def test_unknown_boot_strategy_falls_back_to_first() -> None:
     """``settings.strategy`` not in registered names => first strategy wins."""
     pairs = _StubStrategy("pairs", "BTCUSDC", manages_risk=True)
