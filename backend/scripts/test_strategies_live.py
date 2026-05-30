@@ -88,7 +88,7 @@ STRATEGIES: list[tuple[str, list[re.Pattern[str]]]] = [
     ),
 ]
 
-# Ignore transient WS/transport noise under symbol resync (still review in profit_loop).
+# Ignore transient WS/transport noise under symbol resync during soak runs.
 _BENIGN_ERROR = re.compile(
     r"websockets\.client|data transfer failed|book snapshot failed|"
     r"transport:\s*$|WinError 121|semaphore timeout|listenKey keepalive failed|"
