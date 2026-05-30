@@ -19,7 +19,23 @@ import type {
 const RAW_BASE = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE;
 // In Vite dev, same-origin + `vite.config` proxy avoids CORS entirely (empty default).
 const DEFAULT_BASE = import.meta.env.DEV ? "" : "http://127.0.0.1:8000";
-export const API_BASE = (RAW_BASE ?? DEFAULT_BASE).replace(/\/$/, "");
+
+function resolveApiBase(raw: string | undefined): string {
+  let base = (raw ?? DEFAULT_BASE).replace(/\/$/, "");
+  // Misconfigured VITE_API_BASE=http://… on an https dashboard triggers misleading CORS
+  // errors (redirects omit ACAO). Upgrade remote hosts when the page is served over TLS.
+  if (
+    typeof window !== "undefined" &&
+    window.location.protocol === "https:" &&
+    base.startsWith("http://") &&
+    !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(base)
+  ) {
+    base = `https://${base.slice("http://".length)}`;
+  }
+  return base;
+}
+
+export const API_BASE = resolveApiBase(RAW_BASE);
 
 const API_TOKEN = (
   (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_TOKEN ?? ""

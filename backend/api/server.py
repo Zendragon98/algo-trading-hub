@@ -108,10 +108,12 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=app_settings.cors_origins,
-        # Allow local dev frontends (Vite, Storybook, etc.) regardless of port.
-        # This also covers cases where the browser reports `localhost` while the
-        # API is addressed via `127.0.0.1` (or vice versa).
-        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+        # Local dev (any port) + Vercel production/preview hosts for this project.
+        # Production still sets CORS_ORIGINS explicitly; the regex covers branch previews.
+        allow_origin_regex=(
+            r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+            r"|^https://algo-trading-hub(?:-[a-z0-9-]+)*\.vercel\.app$"
+        ),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

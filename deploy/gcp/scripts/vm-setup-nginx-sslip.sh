@@ -50,15 +50,25 @@ systemctl reload nginx
 
 certbot --nginx -d "${HOST}" --non-interactive --agree-tos --register-unsafely-without-email --redirect
 
-# Add WebSocket location to the certbot-managed SSL server block
+# Add WebSocket + CORS headers to the certbot-managed SSL server block
 python3 <<'PY'
 from pathlib import Path
-import re
 path = Path("/etc/nginx/sites-enabled/algo-trading")
 text = path.read_text()
-if "/ws" in text:
-    raise SystemExit(0)
-ws = '''
+
+if "map $http_origin $cors_allow_origin" not in text:
+    cors_map = '''
+map $http_origin $cors_allow_origin {
+    default "";
+    "~^https://algo-trading-hub(?:-[a-z0-9-]+)*\\.vercel\\.app$" $http_origin;
+    "http://localhost:5173" $http_origin;
+    "http://127.0.0.1:5173" $http_origin;
+}
+'''
+    text = cors_map + text
+
+if "/ws" not in text:
+    ws = '''
     location /ws {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
@@ -69,7 +79,17 @@ ws = '''
         proxy_send_timeout 86400s;
     }
 '''
-text = text.replace("location / {", ws + "\n    location / {", 1)
+    text = text.replace("location / {", ws + "\n    location / {", 1)
+
+if "Access-Control-Allow-Origin $cors_allow_origin" not in text:
+    cors_headers = '''
+    add_header Access-Control-Allow-Origin $cors_allow_origin always;
+    add_header Access-Control-Allow-Credentials true always;
+    add_header Vary Origin always;
+
+'''
+    text = text.replace("location / {", cors_headers + "    location / {", 1)
+
 path.write_text(text)
 PY
 
