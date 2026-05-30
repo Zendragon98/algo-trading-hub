@@ -80,36 +80,40 @@ def _payload_from_spread(symbol: str, half: float, min_spread: float, settings) 
 async def fetch_book_tickers(
     symbols: list[str],
     *,
-    rest_base: str,
+    settings,
 ) -> dict[str, tuple[float, float]]:
-    import aiohttp
+    """Fetch best bid/ask via the shared Binance REST client (no extra deps)."""
+    from gateways.binance.rest_client import BinanceRestClient
 
+    client = BinanceRestClient(
+        base_url=settings.binance_rest_base,
+        api_key=settings.binance_api_key,
+        api_secret=settings.binance_api_secret,
+    )
     out: dict[str, tuple[float, float]] = {}
-    url = f"{rest_base.rstrip('/')}/fapi/v1/ticker/bookTicker"
-    async with aiohttp.ClientSession() as session:
+    try:
+        want = {s.upper() for s in symbols}
         if len(symbols) <= 20:
             for sym in symbols:
-                async with session.get(url, params={"symbol": sym}) as resp:
-                    resp.raise_for_status()
-                    row = await resp.json()
-                    bid = float(row["bidPrice"])
-                    ask = float(row["askPrice"])
-                    out[sym.upper()] = (bid, ask)
+                rows = await client.book_ticker(sym)
+                if not rows:
+                    continue
+                row = rows[0]
+                out[sym.upper()] = (float(row["bidPrice"]), float(row["askPrice"]))
             return out
-        async with session.get(url) as resp:
-            resp.raise_for_status()
-            rows = await resp.json()
-        want = {s.upper() for s in symbols}
+        rows = await client.book_ticker(None)
         for row in rows:
             sym = str(row.get("symbol", "")).upper()
             if sym in want:
                 out[sym] = (float(row["bidPrice"]), float(row["askPrice"]))
+    finally:
+        await client.close()
     return out
 
 
 async def run_seed(symbols: list[str]) -> Path:
     settings = get_settings()
-    quotes = await fetch_book_tickers(symbols, rest_base=settings.binance_rest_base)
+    quotes = await fetch_book_tickers(symbols, settings=settings)
     payloads: dict[str, SymbolCalibrationPayload] = {}
     for sym in symbols:
         sym_u = sym.upper()
@@ -127,7 +131,12 @@ async def run_seed(symbols: list[str]) -> Path:
 
 def _resolve_symbols(args: argparse.Namespace, settings) -> list[str]:
     if args.from_mm_symbols or (len(args.symbols) == 1 and args.symbols[0].upper() == "AUTO"):
-        raw = settings.mm2_symbols if settings.strategy == "market_making_v2" else settings.mm_symbols
+        raw = (
+            settings.mm2_symbols
+            if args.from_mm_symbols
+            or settings.strategy in ("market_making_v2", "market_making", "all")
+            else settings.mm_symbols
+        )
         from common.universe_bootstrap import is_auto_symbol_list
 
         if is_auto_symbol_list(raw):
