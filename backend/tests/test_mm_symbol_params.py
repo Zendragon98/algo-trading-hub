@@ -73,6 +73,26 @@ def test_required_min_spread_calibration_respects_fee_floor() -> None:
     assert required == 6.0
 
 
+def test_calibrated_spread_gate_ignores_fee_floor() -> None:
+    s = Settings(
+        symbol_calibration_path="",
+        mm_spread_calibration_path="",
+        post_only_enabled=True,
+        mm2_maker_fee_bps=2.0,
+        mm2_spread_buffer_bps=2.0,
+        mm2_assume_maker_rebate=False,
+        mm_symbol_quote_overrides={"BTCUSDT": {"min_spread_bps": 0.5}},
+    )
+    feat = Features(symbol="BTCUSDT", mid=100.0, spread_bps=2.4)
+    required = required_min_spread_bps(
+        "BTCUSDT",
+        s,
+        feat,
+        calibrated_only=True,
+    )
+    assert required == 0.5
+
+
 def test_required_min_spread_fee_floor_when_book_tighter_than_quotes() -> None:
     s = Settings(
         symbol_calibration_path="",
