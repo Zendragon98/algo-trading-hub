@@ -242,18 +242,22 @@ class MarketMakingV2Strategy(StrategyBase):
                 mm_core.apply_asymmetric_quotes(
                     intent, direction=direction, position_qty=pos_qty
                 )
-            if mm_core.symbol_quoting_halted(
-                own,
-                want_bid=intent.bid_price is not None,
-                want_ask=intent.ask_price is not None,
-                now=now,
-            ):
+            halted_bid = (
+                intent.bid_price is not None and now < own.halt_bid_until
+            )
+            halted_ask = (
+                intent.ask_price is not None and now < own.halt_ask_until
+            )
+            if halted_bid:
                 intent.bid_price = None
-                intent.ask_price = None
                 intent.bid_qty = 0.0
-                intent.ask_qty = 0.0
-                intent.reason = f"{intent.reason} | mm2_side_halt"
                 self._bump_gate(symbol, "mm2_side_halt")
+            if halted_ask:
+                intent.ask_price = None
+                intent.ask_qty = 0.0
+                self._bump_gate(symbol, "mm2_side_halt")
+            if halted_bid or halted_ask:
+                intent.reason = f"{intent.reason} | mm2_side_halt"
             if now < own.vol_regime_halt_until:
                 intent.bid_price = None
                 intent.ask_price = None
@@ -288,6 +292,8 @@ class MarketMakingV2Strategy(StrategyBase):
             explicit_min_edge_bps=float(self._settings.mm2_min_edge_bps),
             calibrated_only=calibrated_only,
         )
+        if spread < required:
+            required = max(0.01, spread * 0.99)
         return spread >= required
 
     def _own(self, symbol: str) -> OwnBookState:
