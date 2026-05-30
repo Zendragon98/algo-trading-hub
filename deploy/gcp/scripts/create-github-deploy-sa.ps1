@@ -47,6 +47,16 @@ foreach ($role in $roles) {
     --condition=None | Out-Null
 }
 
+# Cloud Build (2024+ default): builds run as PROJECT_NUMBER-compute@developer.gserviceaccount.com.
+# gcloud builds submit requires actAs on that account (not only project-level roles).
+$projectNumber = (& $gcloud projects describe $PROJECT --format="value(projectNumber)").Trim()
+$cloudBuildSa = "${projectNumber}-compute@developer.gserviceaccount.com"
+Write-Host "Binding roles/iam.serviceAccountUser on $cloudBuildSa ..."
+& $gcloud iam service-accounts add-iam-policy-binding $cloudBuildSa `
+  --project=$PROJECT `
+  --member="serviceAccount:$SA_EMAIL" `
+  --role="roles/iam.serviceAccountUser" | Out-Null
+
 if (Test-Path $KEY_FILE) {
   Remove-Item $KEY_FILE -Force
 }

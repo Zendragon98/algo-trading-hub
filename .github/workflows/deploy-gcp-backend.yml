@@ -2,6 +2,7 @@
 #
 # One-time setup: deploy/gcp/GITHUB_ACTIONS_SETUP.md
 # Required GitHub secret: GCP_SA_KEY (JSON key for github-actions-deploy@...)
+# Also grant roles/iam.serviceAccountUser on the default Cloud Build SA (see GITHUB_ACTIONS_SETUP.md).
 
 name: Deploy backend to GCP
 
@@ -12,8 +13,7 @@ on:
       - "backend/**"
       - "cloudbuild.yaml"
       - ".gcloudignore"
-      - "deploy/gcp/docker-compose.yml"
-      - "deploy/gcp/env.gcp.example"
+      - "deploy/gcp/**"
       - ".github/workflows/deploy-gcp-backend.yml"
   workflow_dispatch:
 
