@@ -15,6 +15,7 @@ from ...market_data.feature_store import Features
 from ...market_data.own_quote_book import OwnBookState
 from . import core as mm_core
 from .calibrated import mm2_fee_edge_floor_bps, mm2_fee_round_trip_bps, mm_float
+from .settings_adapter import mm_settings_for
 from .symbol_params import required_min_spread_bps
 from .universe import resolve_mm2_symbols
 from ..position_sync import VenuePosition, VenuePositionProvider
@@ -157,7 +158,7 @@ class MarketMakingV2Strategy(StrategyBase):
             own = self._own(symbol)
             pos_qty = self._position_qty(symbol)
             fill_entry = self._fill_entry(symbol, own)
-            s = _Mm2SettingsAdapter(self._settings)
+            s = mm_settings_for(self._settings)
             mm_core.update_vol_regime_halt(own, feat, s, now=now)
             mm_core.update_consecutive_fill_halts(own, s, now=now)
             if (
@@ -424,50 +425,6 @@ class MarketMakingV2Strategy(StrategyBase):
             pnl_bps,
             exit_reason,
         )
-
-
-_MM2_FIELD_MAP = {
-    "mm_min_skew_bps": "mm2_min_skew_bps",
-    "mm_tape_confirm": "mm2_tape_confirm",
-    "mm_skew_scale": "mm2_skew_scale",
-    "mm_imbalance_scale": "mm2_imbalance_scale",
-    "mm_tape_scale": "mm2_tape_scale",
-    "mm_min_tape_trades": "mm2_min_tape_trades",
-    "mm_min_exit_profit_bps": "mm2_min_exit_profit_bps",
-    "mm_max_hold_sec": "mm2_max_hold_sec",
-    "mm_qty": "mm2_qty",
-    "mm_market_exit_loss_bps": "mm2_market_exit_loss_bps",
-    "mm_aggressive_exit_loss_bps": "mm2_aggressive_exit_loss_bps",
-    "mm_exit_inside_touch_bps": "mm2_exit_inside_touch_bps",
-    "mm_exit_stale_sec": "mm2_exit_stale_sec",
-    "mm_exit_scratch_bps": "mm2_exit_scratch_bps",
-    "mm_max_inventory_notional": "mm2_max_inventory_notional",
-    "mm_max_inventory_notional_total": "mm2_max_inventory_notional_total",
-    "mm_max_concurrent_positions": "mm2_max_concurrent_positions",
-    "mm_risk_widen_multiplier": "mm2_risk_widen_multiplier",
-    "mm_risk_size_damp": "mm2_risk_size_damp",
-    "mm_max_consecutive_same_side_fills": "mm2_max_consecutive_same_side_fills",
-    "mm_side_halt_sec": "mm2_side_halt_sec",
-    "mm_vol_regime_spike_mult": "mm2_vol_regime_spike_mult",
-    "mm_vol_regime_pause_sec": "mm2_vol_regime_pause_sec",
-    "mm_exit_aggressive_bps": "mm2_exit_aggressive_bps",
-    "mm_exit_loss_ramp_bps": "mm2_exit_loss_ramp_bps",
-    "mm_exit_cross_touch": "mm2_exit_cross_touch",
-    "mm_early_loss_hold_frac": "mm2_early_loss_hold_frac",
-}
-
-
-class _Mm2SettingsAdapter:
-    """Map mm2_* fields onto mm_* names for mm_core."""
-
-    def __init__(self, s: Settings) -> None:
-        self._s = s
-
-    def __getattr__(self, name: str) -> object:
-        alt = _MM2_FIELD_MAP.get(name)
-        if alt is not None:
-            return getattr(self._s, alt)
-        return getattr(self._s, name)
 
 
 def _tape_confirms(skew_avg: float, tape_p: float, threshold: float) -> bool:

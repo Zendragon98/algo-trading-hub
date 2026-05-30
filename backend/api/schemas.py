@@ -56,6 +56,7 @@ class StatusDTO(BaseModel):
     # when this is true so the operator never confuses a paper run with live.
     paper_mode: bool = False
     startup: StartupProgressDTO | None = None
+    book_resync: StartupProgressDTO | None = None
 
 
 class StrategyInfoDTO(BaseModel):

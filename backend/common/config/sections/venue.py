@@ -38,6 +38,9 @@ class VenueMixin(BaseModel):
     # Bounded parallel REST ``/depth`` during book resync (startup vs reconnect).
     book_resync_concurrency: int = 4
     book_resync_reconnect_concurrency: int = 2
+    # Per-symbol REST ``/depth`` timeout during resync; prevents a hung snapshot
+    # from leaving ``_book_resync`` set and freezing all strategies.
+    book_resync_symbol_timeout_sec: float = 45.0
 
     # --- IBKR (Interactive Brokers) ---
     # Defaults match the canonical paper-trading IB Gateway / TWS port (7497).

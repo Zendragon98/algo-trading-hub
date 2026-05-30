@@ -15,6 +15,7 @@ from ...market_data.own_quote_book import EntryLedger, OwnBookState
 from ...position.venue_pnl import inventory_pnl_bps
 from ..position_sync import VenuePosition
 from .calibrated import mm_float, mm_risk_float
+from .inventory_cap import resolve_mm_inventory_notional
 from .symbol_params import MmSymbolQuoteParams, resolve_mm_params
 
 from .ids import MM_STRATEGY_NAMES, is_mm_strategy
@@ -96,9 +97,7 @@ def inventory_ratio(
 ) -> float:
     if mid <= 0:
         return 0.0
-    notional_cap = float(settings.mm_max_inventory_notional)
-    if notional_cap <= 0 and equity > 0:
-        notional_cap = equity * float(settings.max_symbol_notional_pct)
+    notional_cap = resolve_mm_inventory_notional(settings, equity)
     if notional_cap <= 0:
         return 0.0
     qty = position_qty

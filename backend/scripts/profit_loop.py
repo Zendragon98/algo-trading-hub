@@ -2,12 +2,17 @@
 
 Each cycle: flatten -> soak each strategy (flatten between legs) -> analyze logs -> PATCH -> repeat.
 Requires backend on :8000 (python main.py --engine).
+
+DEV / LOCAL TEST ONLY — do not run unattended against a production or VM engine.
+Each cycle hot-swaps every strategy and flattens positions, which triggers L2
+book resync storms and can halt trading if pointed at a live deployment.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -22,6 +27,7 @@ from test_strategies_live import (  # noqa: E402
     _latest_log,
     _log_slice_since,
     _run_strategy,
+    configure_api,
 )
 from test_strategies_live import (
     STRATEGIES as _ALL_STRATEGIES,
@@ -304,7 +310,18 @@ def main() -> int:
     )
     parser.add_argument("--max-cycles", type=int, default=0, help="0 = unlimited")
     parser.add_argument("--strategies", nargs="*", default=[], help="Subset (default: all five)")
+    parser.add_argument(
+        "--api-url",
+        default=os.environ.get("ALGO_API_URL", "http://127.0.0.1:8000"),
+        help="Backend base URL (localhost only unless --allow-remote)",
+    )
+    parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="Allow targeting a remote engine (not recommended)",
+    )
     args = parser.parse_args()
+    configure_api(args.api_url, allow_remote=args.allow_remote)
     wait_sec = max(60, int(args.minutes * 60))
 
     try:

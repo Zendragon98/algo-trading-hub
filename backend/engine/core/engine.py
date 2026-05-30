@@ -61,6 +61,7 @@ from ..market_data.trade_tape import TradeTape
 from ..observability.alert_manager import AlertManager
 from ..observability.latency_tracker import LatencyTracker
 from ..orders.order_manager import OrderManager, _fill_to_dict, new_client_order_id
+from ..orders.order_state_machine import TERMINAL_ORDER_STATUSES
 from ..performance.fill_classification import classify_fill, position_before_fill
 from ..performance.performance_tracker import PerformanceTracker
 from ..persistence.journal import replay_wal_async
@@ -85,6 +86,7 @@ from ..risk.risk_manager import ExitIntent, RiskManager
 from ..risk.stop_loss import StopLossMonitor
 from ..risk.venue_sizing import venue_cap_qty, venue_min_qty, venue_qty_in_bounds
 from ..strategies.market_making import core as mm_core
+from ..strategies.market_making.settings_adapter import mm_settings_for
 from ..strategies.market_making.strategy import MarketMakingV2Strategy
 from ..strategies.signal_netter import NettedSignal, net_strategy_signals
 from ..strategies.strategy_base import StrategyBase
@@ -397,6 +399,8 @@ class Engine:
         self._alert_task: asyncio.Task[None] | None = None
         self._startup: StartupProgress | None = None
         self._book_resync: StartupProgress | None = None
+        self._book_resync_serial_lock = asyncio.Lock()
+        self._book_resync_token: int = 0
         self._last_logged_status: str | None = None
         self._last_ops_health_signature: tuple[object, ...] | None = None
         self._last_forced_reconcile_ts: float = 0.0
@@ -736,14 +740,33 @@ class Engine:
             ]
             return self._own_book.sync_working(sym_u, list(children))
 
+        def equity_provider() -> float:
+            try:
+                return float(self._portfolio.snapshot().equity)
+            except Exception:  # noqa: BLE001
+                return 0.0
+
         for strat in self._strategies:
             if isinstance(strat, MarketMakingV2Strategy):
                 strat.attach_position_provider(
-                    lambda s, pos=self._positions: (
-                        pos.get(s).qty if pos.get(s) is not None else 0.0
+                    lambda s, pos=self._positions, name=strat.name: (
+                        self._strategy_ledger.qty(name, s)
+                        if self.is_multi_strategy_mode()
+                        else (pos.get(s).qty if pos.get(s) is not None else 0.0)
                     ),
                 )
                 strat.attach_own_book_provider(own_provider)
+                strat.attach_equity_provider(equity_provider)
+                strat.attach_fill_vwap_provider(
+                    lambda sym, name=strat.name: self._strategy_ledger.fill_vwap(name, sym)
+                )
+
+    def _mm_quote_symbols(self) -> list[str]:
+        symbols: set[str] = set()
+        for strat in self._strategies:
+            if isinstance(strat, MarketMakingV2Strategy):
+                symbols.update(strat.symbols())
+        return sorted(symbols)
 
     def _sync_own_book(self, symbol: str) -> OwnBookState:
         sym = symbol.upper()
@@ -899,6 +922,7 @@ class Engine:
         if getattr(self._settings, "order_reconcile_on_startup", True):
             await self._set_startup("orders", "Reconciling open orders…")
             await self._order_reconciler.sync_startup()
+            self._quote_executor.seed_sessions_from_oms(self._mm_quote_symbols())
 
         await self._set_startup("user_ws", "Connecting user data stream…")
         subscribe_kw: dict[str, Any] = {
@@ -1122,6 +1146,7 @@ class Engine:
         if getattr(self._settings, "order_reconcile_on_startup", True):
             try:
                 await self._order_reconciler.sync_startup()
+                self._quote_executor.seed_sessions_from_oms(self._mm_quote_symbols())
             except Exception:  # noqa: BLE001
                 logger.exception("sync_trading_book_from_rest: order reconcile failed")
         logger.info(
@@ -1847,6 +1872,8 @@ class Engine:
         await self._oms.on_order_update(update)
         if update.status is OrderStatus.ACK:
             self._latency.on_venue_ack(update.symbol)
+        if is_mm_quote_child(update) and update.status in TERMINAL_ORDER_STATUSES:
+            self._quote_executor.prune_symbol(update.symbol)
 
     async def _on_fill(self, fill: Fill) -> None:
         # Exchange-reported fill price only for PnL; arrival vs VWAP slippage is in ExecutionTracker.
@@ -1938,7 +1965,9 @@ class Engine:
 
     def _on_mm_quote_reject(self, symbol: str, side: Side, code: int | None) -> None:
         own = self._own_book.state(symbol)
-        mm_core.note_mm_venue_reject(own, self._settings, side=side, code=code)
+        mm_core.note_mm_venue_reject(
+            own, mm_settings_for(self._settings), side=side, code=code
+        )
 
     async def _maybe_poll_funding(self) -> None:
         if not self._settings.mm_funding_enabled:
@@ -1976,6 +2005,7 @@ class Engine:
         mm_qty = self._strategy_ledger.qty(strategy_name, sym)
         adverse = self._micro.last_fill_adverse_bps(sym)
         self._own_book.on_level_fill(sym, fill, position_qty=mm_qty, adverse_bps=adverse)
+        self._quote_executor.prune_symbol(sym)
         strat = self._strategies_by_name.get(strategy_name)
         if strat is None or not hasattr(strat, "on_tick_quotes"):
             return
@@ -1992,7 +2022,8 @@ class Engine:
             fill_vwap=fill_vwap,
         )
         maker = bool(getattr(fill, "is_maker", False))
-        mm_core.on_mm_fill(own, feat, self._settings, side=fill.side.value, maker=maker)
+        mm_settings = mm_settings_for(self._settings)
+        mm_core.on_mm_fill(own, feat, mm_settings, side=fill.side.value, maker=maker)
         intents = list(strat.on_tick_quotes({sym: feat}))
         try:
             await self._refresh_mm_quote_intents(intents)

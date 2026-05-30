@@ -35,25 +35,26 @@ from .schemas import (
 )
 
 
+def _startup_dto(sp) -> StartupProgressDTO | None:
+    if sp is None:
+        return None
+    return StartupProgressDTO(
+        phase=sp.phase,
+        label=sp.label,
+        done=sp.done,
+        total=sp.total,
+        symbol=sp.symbol,
+    )
+
+
 def build_status_dto(engine: Engine) -> StatusDTO:
     snap = engine.snapshot()
-    sp = engine.startup_progress
-    startup = (
-        StartupProgressDTO(
-            phase=sp.phase,
-            label=sp.label,
-            done=sp.done,
-            total=sp.total,
-            symbol=sp.symbol,
-        )
-        if sp is not None
-        else None
-    )
     return StatusDTO(
         status=snap.status.value,
         uptime_sec=snap.uptime_sec,
         paper_mode=not engine.settings.is_live,
-        startup=startup,
+        startup=_startup_dto(engine.startup_progress),
+        book_resync=_startup_dto(engine.book_resync_progress),
     )
 
 

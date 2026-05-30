@@ -8,6 +8,7 @@ from time import time
 from common.config import Settings
 
 from ..position.venue_pnl import inventory_pnl_bps
+from ..strategies.market_making.inventory_cap import resolve_mm_inventory_notional
 from ..strategies.position_sync import VenuePosition
 from .funding_store import FundingRateStore
 from .microstructure_hub import MicrostructureHub
@@ -191,9 +192,7 @@ def _inventory_ratio(
     own_bid_qty: float,
     own_ask_qty: float,
 ) -> float:
-    notional_cap = float(settings.mm_max_inventory_notional)
-    if notional_cap <= 0 and equity > 0:
-        notional_cap = equity * float(settings.max_symbol_notional_pct)
+    notional_cap = resolve_mm_inventory_notional(settings, equity)
     if notional_cap <= 0 or mid <= 0:
         return 0.0
     qty = position_qty

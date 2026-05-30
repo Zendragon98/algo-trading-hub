@@ -15,6 +15,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Only strategy hot-swaps block the 1 Hz evaluation loop. Reconnect/gap resyncs
+# run on live WS-fed books; blocking every strategy on a flaky REST snapshot
+# caused multi-hour trading freezes in production.
+_STRATEGY_BLOCKING_REASONS = frozenset({"strategy_swap"})
+
 
 def schedule_gap_resync(engine: Engine) -> None:
     task = engine._gap_resync_task
@@ -40,7 +45,7 @@ async def drain_gap_resync(engine: Engine) -> None:
             return
         engine._resnapshot_inflight.add(symbol)
         try:
-            await engine._snapshot_book(symbol)
+            await snapshot_book_timed(engine, symbol, reason="gap")
         finally:
             engine._resnapshot_inflight.discard(symbol)
 
@@ -85,6 +90,29 @@ def book_resync_concurrency(engine: Engine, reason: str) -> int:
             int(getattr(engine._settings, "book_resync_reconnect_concurrency", 3)),
         )
     return max(1, int(getattr(engine._settings, "book_resync_concurrency", 8)))
+
+
+def book_resync_symbol_timeout_sec(engine: Engine) -> float:
+    return max(1.0, float(getattr(engine._settings, "book_resync_symbol_timeout_sec", 45.0)))
+
+
+async def snapshot_book_timed(engine: Engine, symbol: str, *, reason: str) -> bool:
+    """REST snapshot with timeout. Returns True on success."""
+    timeout = book_resync_symbol_timeout_sec(engine)
+    try:
+        await asyncio.wait_for(engine._snapshot_book(symbol), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "%s book resync: snapshot timed out after %.0fs for %s",
+            reason,
+            timeout,
+            symbol,
+        )
+        return False
+    except Exception:  # noqa: BLE001
+        logger.exception("%s book resync: snapshot failed for %s", reason, symbol)
+        return False
+    return True
 
 
 async def run_book_resync_workers(
@@ -138,6 +166,15 @@ async def cancel_reconnect_resync_task(engine: Engine) -> None:
         logger.exception("reconnect resync task shutdown raised")
 
 
+async def _clear_book_resync_if_current(engine: Engine, token: int) -> None:
+    if engine._book_resync is None:
+        return
+    if engine._book_resync_token != token:
+        return
+    engine._book_resync = None
+    await publish_book_resync(engine, clear=True)
+
+
 async def resync_symbol_books(
     engine: Engine,
     symbols: list[str],
@@ -148,6 +185,24 @@ async def resync_symbol_books(
 ) -> None:
     if not symbols:
         return
+    async with engine._book_resync_serial_lock:
+        await _resync_symbol_books_locked(
+            engine,
+            symbols,
+            reason=reason,
+            invalidate=invalidate,
+            publish_startup=publish_startup,
+        )
+
+
+async def _resync_symbol_books_locked(
+    engine: Engine,
+    symbols: list[str],
+    *,
+    reason: str,
+    invalidate: bool,
+    publish_startup: bool,
+) -> None:
     logger.info("%s: resyncing %d symbol L2 book(s)", reason, len(symbols))
     normalized = [s.upper() for s in symbols]
     if invalidate:
@@ -160,21 +215,30 @@ async def resync_symbol_books(
     done = 0
     done_lock = asyncio.Lock()
     show_progress = publish_startup or engine._state.status is EngineStatus.RUNNING
+    block_strategies = show_progress and reason in _STRATEGY_BLOCKING_REASONS
+    token = 0
 
-    if show_progress and reason != "startup":
+    if block_strategies:
         from .engine import StartupProgress
 
+        engine._book_resync_token += 1
+        token = engine._book_resync_token
         engine._book_resync = StartupProgress(
             phase="books",
-            label="Resyncing L2 order books after reconnect…",
+            label="Resyncing L2 order books after strategy change…",
             done=0,
             total=total,
         )
         logger.info("book resync started (%s): %d symbols", reason, total)
         await publish_book_resync(engine)
+    elif show_progress and reason != "startup":
+        logger.info("book resync started (%s): %d symbols (non-blocking)", reason, total)
+
+    failures = 0
+    fail_lock = asyncio.Lock()
 
     async def _one(symbol: str) -> None:
-        nonlocal done
+        nonlocal done, failures
         async with done_lock:
             in_flight = done
         if publish_startup:
@@ -185,7 +249,10 @@ async def resync_symbol_books(
                 total=total,
                 symbol=symbol,
             )
-        await engine._snapshot_book(symbol)
+        ok = await snapshot_book_timed(engine, symbol, reason=reason)
+        if not ok:
+            async with fail_lock:
+                failures += 1
         await asyncio.sleep(0)
         async with done_lock:
             done += 1
@@ -198,7 +265,7 @@ async def resync_symbol_books(
                 total=total,
                 symbol=symbol,
             )
-        elif engine._book_resync is not None and (
+        elif block_strategies and engine._book_resync is not None and (
             completed % 8 == 0 or completed == total
         ):
             await publish_book_resync(
@@ -206,7 +273,7 @@ async def resync_symbol_books(
             )
 
     try:
-        failures = await run_book_resync_workers(
+        await run_book_resync_workers(
             engine,
             normalized,
             concurrency=book_resync_concurrency(engine, reason),
@@ -221,10 +288,10 @@ async def resync_symbol_books(
             )
     finally:
         engine._bulk_resync_symbols.difference_update(normalized)
-
-    if engine._book_resync is not None and reason != "startup":
-        engine._book_resync = None
-        await publish_book_resync(engine, clear=True)
+        if block_strategies:
+            await _clear_book_resync_if_current(engine, token)
+        elif show_progress and reason != "startup":
+            logger.info("book resync complete (%s)", reason)
 
 
 async def publish_book_resync(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from common.config import Settings
@@ -13,8 +13,9 @@ from common.enums import MmExecutionMode, OrderType, Side
 from common.types import ChildOrder, ParentOrder, QuoteIntent
 from gateways.gateway_interface import SymbolFilters
 
-from ..market_data.own_quote_book import MM_QUOTE_NOTE_PREFIX, OwnLevel, OwnQuoteBook
+from ..market_data.own_quote_book import MM_QUOTE_NOTE_PREFIX, OwnLevel, OwnQuoteBook, is_mm_quote_child
 from ..orders.order_manager import OrderManager, new_client_order_id
+from ..orders.order_state_machine import WORKING_ORDER_STATUSES
 from ..risk.venue_sizing import venue_cap_qty, venue_min_qty, venue_qty_in_bounds
 from .mm_execution import (
     cancel_reason,
@@ -103,9 +104,73 @@ class QuoteExecutor:
         for sym in symbols:
             self._sessions.pop(sym.upper(), None)
 
+    def prune_symbol(self, symbol: str) -> None:
+        """Drop session entries whose child orders are no longer working."""
+        sym = symbol.upper()
+        sess = self._sessions.get(sym)
+        if sess is None:
+            return
+        self._prune_stale_levels(sess.bid_levels)
+        self._prune_stale_levels(sess.ask_levels)
+
+    def seed_sessions_from_oms(self, symbols: Iterable[str] | None = None) -> None:
+        """Adopt OMS working MM orders into empty executor sessions (startup)."""
+        if symbols is None:
+            seen: set[str] = set()
+            for child in self._om.working_children():
+                if is_mm_quote_child(child):
+                    seen.add(child.symbol.upper())
+            targets = sorted(seen)
+        else:
+            targets = [s.upper() for s in symbols]
+        for sym in targets:
+            self._seed_symbol_from_oms(sym)
+
+    def _is_child_working(self, child_id: str) -> bool:
+        child = self._om.child(child_id)
+        return child is not None and child.status in WORKING_ORDER_STATUSES
+
+    def _prune_stale_levels(self, levels: list[_WorkingQuote]) -> None:
+        levels[:] = [w for w in levels if self._is_child_working(w.child_id)]
+
+    def _seed_symbol_from_oms(self, symbol: str) -> None:
+        sym = symbol.upper()
+        sess = self._sessions.get(sym)
+        if sess is not None and (sess.bid_levels or sess.ask_levels):
+            self._prune_stale_levels(sess.bid_levels)
+            self._prune_stale_levels(sess.ask_levels)
+            if sess.bid_levels or sess.ask_levels:
+                return
+        children = [
+            c
+            for c in self._om.working_children()
+            if c.symbol.upper() == sym and is_mm_quote_child(c) and c.price is not None and c.qty > 0
+        ]
+        if not children:
+            return
+        sess = self._sessions.setdefault(sym, _SymbolSession())
+        for child in children:
+            remaining = child.qty - child.filled_qty
+            if remaining <= 0:
+                continue
+            wq = _WorkingQuote(
+                child.parent_id,
+                child.id,
+                child.side,
+                child.price,
+                remaining,
+                level_index=0,
+                posted_ts=child.created_at or time.time(),
+            )
+            if child.side is Side.BUY:
+                sess.bid_levels.append(wq)
+            else:
+                sess.ask_levels.append(wq)
+
     async def _refresh_symbol(self, intent: QuoteIntent) -> bool:
         sym = intent.symbol.upper()
         sess = self._sessions.setdefault(sym, _SymbolSession())
+        self.prune_symbol(sym)
         tick = tick_from_feat(
             intent.best_bid,
             intent.best_ask,
@@ -240,14 +305,21 @@ class QuoteExecutor:
         tick: float,
     ) -> bool:
         levels = sess.bid_levels if side is Side.BUY else sess.ask_levels
-        for extra in levels[1:]:
+        self._prune_stale_levels(levels)
+
+        while len(levels) > 1:
+            extra = levels.pop()
             await self._om.cancel(extra.child_id)
-        levels.clear()
 
         place_bps = float(self._settings.mm_place_range_bps)
         cancel_bps = float(self._settings.mm_cancel_range_bps)
         now = time.time()
         working = levels[0] if levels else None
+
+        if working is not None:
+            child = self._om.child(working.child_id)
+            if child is not None:
+                working.qty = max(0.0, child.qty - child.filled_qty)
 
         if working is not None:
             reason = cancel_reason(
@@ -270,7 +342,7 @@ class QuoteExecutor:
                 working.price, working.qty, price, qty, refresh_bps
             ):
                 return False
-            elif not chase and working.price == price and abs(working.qty - qty) / max(working.qty, 1e-12) < 0.05:
+            elif not chase and _quote_unchanged(working, price, qty, tick):
                 return False
             else:
                 if chase and chase_should_replace(working.price, working.qty, price, qty, refresh_bps):
@@ -311,8 +383,10 @@ class QuoteExecutor:
         tick: float,
     ) -> bool:
         levels = sess.bid_levels if side is Side.BUY else sess.ask_levels
+        self._prune_stale_levels(levels)
         for extra in levels[1:]:
             await self._om.cancel(extra.child_id)
+        del levels[1:]
         climb_ticks = max(1, int(self._settings.mm_climb_ticks_per_refresh))
         working = levels[0] if levels else None
         place_bps = float(self._settings.mm_place_range_bps)
@@ -377,6 +451,7 @@ class QuoteExecutor:
         tick: float,
     ) -> bool:
         levels = sess.bid_levels if side is Side.BUY else sess.ask_levels
+        self._prune_stale_levels(levels)
         n_levels = max(1, int(self._settings.mm_ladder_levels))
         spacing = max(1, int(self._settings.mm_ladder_spacing_ticks))
         weights = parse_ladder_weights(self._settings.mm_ladder_qty_weights, n_levels)
@@ -628,3 +703,17 @@ def _aggregate_level(levels: list[_WorkingQuote]) -> OwnLevel | None:
     )
     total_qty = sum(w.qty for w in levels)
     return OwnLevel(best.price, total_qty, best.child_id, posted_ts=best.posted_ts)
+
+
+def _quote_unchanged(
+    working: _WorkingQuote,
+    price: float,
+    qty: float,
+    tick: float,
+) -> bool:
+    tol = max(tick * 0.5, 1e-12)
+    if abs(working.price - price) >= tol:
+        return False
+    if working.qty > 0 and abs(qty - working.qty) / working.qty >= 0.05:
+        return False
+    return True

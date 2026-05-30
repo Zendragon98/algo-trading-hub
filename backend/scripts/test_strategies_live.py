@@ -6,22 +6,45 @@ Usage (backend must be up on :8000):
     python scripts/test_strategies_live.py --minutes 2 --strategy pairs_trading_usdt_usdc
 
 Between strategies: flatten, rearm breakers, hot-swap, then soak and scan logs.
+
+Localhost only by default. To hit a remote VM (not recommended for soak loops):
+    python scripts/test_strategies_live.py --api-url https://your-vm --allow-remote
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
-API = "http://127.0.0.1:8000"
+DEFAULT_API = "http://127.0.0.1:8000"
+API = os.environ.get("ALGO_API_URL", DEFAULT_API).rstrip("/")
 RUNS_DIR = Path(__file__).resolve().parents[1] / "data" / "runs"
 DEFAULT_MINUTES = 30
+
+
+def _is_local_api(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
+
+
+def configure_api(url: str, *, allow_remote: bool = False) -> None:
+    global API
+    normalized = url.rstrip("/")
+    if not _is_local_api(normalized) and not allow_remote:
+        raise SystemExit(
+            f"Refusing remote API {normalized!r} without --allow-remote "
+            "(soak scripts hot-swap strategies and flatten positions)."
+        )
+    API = normalized
+    os.environ["ALGO_API_URL"] = normalized
 
 STRATEGIES: list[tuple[str, list[re.Pattern[str]]]] = [
     (
@@ -261,7 +284,18 @@ def main() -> int:
         dest="only",
         help="Run only this strategy (repeatable)",
     )
+    parser.add_argument(
+        "--api-url",
+        default=os.environ.get("ALGO_API_URL", DEFAULT_API),
+        help=f"Backend base URL (default {DEFAULT_API})",
+    )
+    parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="Allow --api-url outside localhost (will hot-swap strategies on that host)",
+    )
     args = parser.parse_args()
+    configure_api(args.api_url, allow_remote=args.allow_remote)
     wait_sec = max(1, int(args.minutes * 60))
 
     try:

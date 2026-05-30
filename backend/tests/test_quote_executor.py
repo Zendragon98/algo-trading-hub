@@ -10,7 +10,7 @@ os.environ.setdefault("BINANCE_API_KEY", "test")
 os.environ.setdefault("BINANCE_API_SECRET", "test")
 
 from common.config import Settings  # noqa: E402
-from common.enums import MmExecutionMode, OrderStatus, Side  # noqa: E402
+from common.enums import MmExecutionMode, OrderStatus, OrderType, Side  # noqa: E402
 from common.events import EventBus  # noqa: E402
 from common.types import ChildOrder, QuoteIntent  # noqa: E402
 from engine.execution.quote_executor import QuoteExecutor  # noqa: E402
@@ -172,3 +172,106 @@ async def test_ladder_mode_places_multiple_bids() -> None:
     await ex.refresh([intent])
     buys = [o for o in gw.placed if o.side is Side.BUY]
     assert len(buys) == 3
+
+
+@pytest.mark.asyncio
+async def test_make_mode_does_not_duplicate_unchanged_quotes() -> None:
+    bus = EventBus()
+    gw = _MockGateway()
+    om = OrderManager(gw, bus)
+    own = OwnQuoteBook()
+    ex = QuoteExecutor(
+        om,
+        own,
+        Settings(mm_quote_enabled=True, mm_place_range_bps=0.0),
+    )
+    intent = QuoteIntent(
+        symbol="BTCUSDT",
+        strategy_name="market_making_v2",
+        bid_price=99.0,
+        bid_qty=0.01,
+        ask_price=101.0,
+        ask_qty=0.01,
+        reason="test",
+        best_bid=98.9,
+        best_ask=101.1,
+        venue_mid=100.0,
+    )
+    await ex.refresh([intent])
+    await ex.refresh([intent])
+    assert len(gw.placed) == 2
+
+
+@pytest.mark.asyncio
+async def test_prune_after_fill_allows_requote() -> None:
+    bus = EventBus()
+    gw = _MockGateway()
+    om = OrderManager(gw, bus)
+    own = OwnQuoteBook()
+    ex = QuoteExecutor(
+        om,
+        own,
+        Settings(mm_quote_enabled=True, mm_place_range_bps=0.0),
+    )
+    intent = QuoteIntent(
+        symbol="BTCUSDT",
+        strategy_name="market_making_v2",
+        bid_price=99.0,
+        bid_qty=0.01,
+        ask_price=None,
+        ask_qty=0.0,
+        reason="test",
+        best_bid=98.9,
+        best_ask=101.1,
+        venue_mid=100.0,
+    )
+    await ex.refresh([intent])
+    assert len(gw.placed) == 1
+    filled = gw.placed[0]
+    await om.on_order_update(
+        ChildOrder(
+            id=filled.id,
+            parent_id=filled.parent_id,
+            symbol=filled.symbol,
+            side=filled.side,
+            qty=filled.qty,
+            price=filled.price,
+            order_type=OrderType.LIMIT,
+            status=OrderStatus.FILLED,
+            filled_qty=filled.qty,
+        )
+    )
+    ex.prune_symbol("BTCUSDT")
+    await ex.refresh([intent])
+    assert len(gw.placed) == 2
+
+
+@pytest.mark.asyncio
+async def test_seed_sessions_from_oms_adopts_working_orders() -> None:
+    bus = EventBus()
+    gw = _MockGateway()
+    om = OrderManager(gw, bus)
+    own = OwnQuoteBook()
+    ex = QuoteExecutor(
+        om,
+        own,
+        Settings(mm_quote_enabled=True, mm_place_range_bps=0.0),
+    )
+    intent = QuoteIntent(
+        symbol="BTCUSDT",
+        strategy_name="market_making_v2",
+        bid_price=99.0,
+        bid_qty=0.01,
+        ask_price=None,
+        ask_qty=0.0,
+        reason="test",
+        best_bid=98.9,
+        best_ask=101.1,
+        venue_mid=100.0,
+    )
+    await ex.refresh([intent])
+    ex.clear_sessions(["BTCUSDT"])
+    ex.seed_sessions_from_oms(["BTCUSDT"])
+    await ex.refresh([intent])
+    assert len(gw.placed) == 1
+
