@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-05-30T00:00:00+00:00",
+  "source": "bundled_defaults",
+  "symbols": {
+    "BTCUSDT": {
+      "suggested_half_spread_bps": 1.2,
+      "suggested_min_spread_bps": 0.8
+    },
+    "ETHUSDT": {
+      "suggested_half_spread_bps": 1.8,
+      "suggested_min_spread_bps": 1.0
+    },
+    "SOLUSDT": {
+      "suggested_half_spread_bps": 3.5,
+      "suggested_min_spread_bps": 2.0
+    },
+    "BNBUSDT": {
+      "suggested_half_spread_bps": 2.5,
+      "suggested_min_spread_bps": 1.5
+    }
+  }
+}

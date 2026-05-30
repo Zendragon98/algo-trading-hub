@@ -1,0 +1,170 @@
+{
+  "generated_at": "2026-05-30T00:00:00+00:00",
+  "source": "bundled_defaults",
+  "symbols": {
+    "BTCUSDT": {
+      "samples": 0,
+      "mm": {
+        "half_spread_bps": 1.2,
+        "min_spread_bps": 0.8,
+        "reservation_inventory_bps": 8.0,
+        "inventory_spread_skew_bps": 4.0,
+        "toxic_widen_bps": 6.0,
+        "depletion_widen_bps": 4.0,
+        "skew_scale": 1.0,
+        "imbalance_scale": 8.0,
+        "tape_scale": 1.0,
+        "depletion_scale": 1.0,
+        "reservation_micro_weight": 0.35,
+        "jump_return_bps": 25.0,
+        "jump_vol_mult": 2.5,
+        "max_adverse_markout_bps": 12.0,
+        "scratch_loss_bps": 18.0,
+        "min_exit_profit_bps": 3.0,
+        "toxicity_threshold": 0.55,
+        "depletion_pull_ratio": 0.25,
+        "depletion_breaker_ratio": 0.2,
+        "min_skew_bps": 1.0,
+        "quote_size_pct": 0.02,
+        "venue_spread_mult": 1.0
+      },
+      "execution": {
+        "imbalance_threshold": 0.2,
+        "hit_ratio_threshold": 0.6,
+        "spread_wide_floor_bps": 2.0,
+        "spread_wide_ceiling_bps": 120.0
+      },
+      "risk": {
+        "max_entry_spread_bps": 80.0
+      },
+      "fees": {
+        "maker_fee_bps": 2.0,
+        "taker_fee_bps": 5.0,
+        "spread_buffer_bps": 1.5
+      }
+    },
+    "ETHUSDT": {
+      "samples": 0,
+      "mm": {
+        "half_spread_bps": 1.8,
+        "min_spread_bps": 1.0,
+        "reservation_inventory_bps": 10.0,
+        "inventory_spread_skew_bps": 5.0,
+        "toxic_widen_bps": 8.0,
+        "depletion_widen_bps": 5.0,
+        "skew_scale": 1.0,
+        "imbalance_scale": 8.0,
+        "tape_scale": 1.0,
+        "depletion_scale": 1.0,
+        "reservation_micro_weight": 0.35,
+        "jump_return_bps": 30.0,
+        "jump_vol_mult": 2.5,
+        "max_adverse_markout_bps": 14.0,
+        "scratch_loss_bps": 20.0,
+        "min_exit_profit_bps": 4.0,
+        "toxicity_threshold": 0.55,
+        "depletion_pull_ratio": 0.25,
+        "depletion_breaker_ratio": 0.2,
+        "min_skew_bps": 1.2,
+        "quote_size_pct": 0.02,
+        "venue_spread_mult": 1.0
+      },
+      "execution": {
+        "imbalance_threshold": 0.2,
+        "hit_ratio_threshold": 0.6,
+        "spread_wide_floor_bps": 3.0,
+        "spread_wide_ceiling_bps": 150.0
+      },
+      "risk": {
+        "max_entry_spread_bps": 100.0
+      },
+      "fees": {
+        "maker_fee_bps": 2.0,
+        "taker_fee_bps": 5.0,
+        "spread_buffer_bps": 2.0
+      }
+    },
+    "SOLUSDT": {
+      "samples": 0,
+      "mm": {
+        "half_spread_bps": 3.5,
+        "min_spread_bps": 2.0,
+        "reservation_inventory_bps": 12.0,
+        "inventory_spread_skew_bps": 6.0,
+        "toxic_widen_bps": 10.0,
+        "depletion_widen_bps": 6.0,
+        "skew_scale": 1.0,
+        "imbalance_scale": 8.0,
+        "tape_scale": 1.0,
+        "depletion_scale": 1.0,
+        "reservation_micro_weight": 0.35,
+        "jump_return_bps": 40.0,
+        "jump_vol_mult": 2.5,
+        "max_adverse_markout_bps": 16.0,
+        "scratch_loss_bps": 24.0,
+        "min_exit_profit_bps": 5.0,
+        "toxicity_threshold": 0.55,
+        "depletion_pull_ratio": 0.28,
+        "depletion_breaker_ratio": 0.22,
+        "min_skew_bps": 1.5,
+        "quote_size_pct": 0.02,
+        "venue_spread_mult": 1.0
+      },
+      "execution": {
+        "imbalance_threshold": 0.22,
+        "hit_ratio_threshold": 0.6,
+        "spread_wide_floor_bps": 4.0,
+        "spread_wide_ceiling_bps": 200.0
+      },
+      "risk": {
+        "max_entry_spread_bps": 120.0
+      },
+      "fees": {
+        "maker_fee_bps": 2.0,
+        "taker_fee_bps": 5.0,
+        "spread_buffer_bps": 2.5
+      }
+    },
+    "BNBUSDT": {
+      "samples": 0,
+      "mm": {
+        "half_spread_bps": 2.5,
+        "min_spread_bps": 1.5,
+        "reservation_inventory_bps": 10.0,
+        "inventory_spread_skew_bps": 5.0,
+        "toxic_widen_bps": 8.0,
+        "depletion_widen_bps": 5.0,
+        "skew_scale": 1.0,
+        "imbalance_scale": 8.0,
+        "tape_scale": 1.0,
+        "depletion_scale": 1.0,
+        "reservation_micro_weight": 0.35,
+        "jump_return_bps": 32.0,
+        "jump_vol_mult": 2.5,
+        "max_adverse_markout_bps": 14.0,
+        "scratch_loss_bps": 22.0,
+        "min_exit_profit_bps": 4.0,
+        "toxicity_threshold": 0.55,
+        "depletion_pull_ratio": 0.26,
+        "depletion_breaker_ratio": 0.21,
+        "min_skew_bps": 1.2,
+        "quote_size_pct": 0.02,
+        "venue_spread_mult": 1.0
+      },
+      "execution": {
+        "imbalance_threshold": 0.2,
+        "hit_ratio_threshold": 0.6,
+        "spread_wide_floor_bps": 3.0,
+        "spread_wide_ceiling_bps": 160.0
+      },
+      "risk": {
+        "max_entry_spread_bps": 100.0
+      },
+      "fees": {
+        "maker_fee_bps": 2.0,
+        "taker_fee_bps": 5.0,
+        "spread_buffer_bps": 2.0
+      }
+    }
+  }
+}

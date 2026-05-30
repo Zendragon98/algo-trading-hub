@@ -43,7 +43,20 @@ steps:
           --zone="${_ZONE}" \
           --tunnel-through-iap \
           --quiet \
-          --command='cd ${_COMPOSE_DIR} && sudo docker compose pull && sudo docker compose up -d && for i in $(seq 1 24); do curl -sf http://127.0.0.1:8000/health && exit 0; sleep 5; done; exit 1'
+          --command='set -euo pipefail
+        cd ${_COMPOSE_DIR}
+        sudo docker compose pull
+        sudo docker compose up -d --force-recreate --remove-orphans
+        for i in $(seq 1 48); do
+          if curl -sf http://127.0.0.1:8000/health; then
+            exit 0
+          fi
+          sleep 5
+        done
+        echo "health check failed after 240s"
+        sudo docker compose ps
+        sudo docker compose logs --tail=60
+        exit 1'
 
 images:
   - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:latest

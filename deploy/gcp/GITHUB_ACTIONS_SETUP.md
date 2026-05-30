@@ -108,9 +108,10 @@ Manual run: **Actions** → **Deploy backend to GCP** → **Run workflow**.
 | `GCP_SA_KEY` missing | Add secret (step 2) |
 | Cloud Build fails in ~2s on “Build and push image” | Grant project roles above to `github-actions-deploy`, then grant **`roles/iam.serviceAccountUser`** on the **default build SA** (usually `PROJECT_NUMBER-compute@developer.gserviceaccount.com` — run `gcloud builds get-default-service-account`). Legacy `PROJECT_NUMBER@cloudbuild.gserviceaccount.com` only applies on older projects. |
 | `_cloudbuild` bucket forbidden | Grant `storage.admin` to `github-actions-deploy`; grant `artifactregistry.writer` to the default build SA (see above) |
-| SSH / IAP failed (VM step fails in ~5s) | VM running; firewall allows IAP TCP/22; SA has `iap.tunnelResourceAccessor` + project `compute.osAdminLogin`; also bind **`roles/compute.osAdminLogin` on the VM instance** for `github-actions-deploy` |
+| SSH / IAP failed (VM step fails in ~5s) | **Do not SSH from GitHub Actions** — VM restart runs inside Cloud Build (step 3 of `cloudbuild.yaml`) using the default build SA. If that step fails: VM running; IAP TCP/22 allowed; default build SA has `iap.tunnelResourceAccessor` + `compute.osAdminLogin` on the VM instance |
+| Health check failed after recreate (~4 min) | Container crash on boot — check Cloud Build log for `docker compose logs`; common causes: bad `.env`, `ENGINE_AUTOSTART=true` with invalid keys |
 | `docker compose` path wrong | Ensure `/opt/algo-trading-hub/deploy/gcp` exists on VM (initial setup) |
-| Build OK, old code still running | Check Actions log for “Restart engine”; run SSH step manually |
+| Build OK, old code still running | Cloud Build runs `docker compose up -d --force-recreate`; if stale, SSH to VM and run pull + recreate manually |
 
 ---
 

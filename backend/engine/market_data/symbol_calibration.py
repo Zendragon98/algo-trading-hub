@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -122,6 +123,33 @@ _warned_missing: set[str] = set()
 
 def default_calibration_path() -> Path:
     return _backend_data_dir() / "symbol_calibration.json"
+
+
+def _bundled_defaults_dir() -> Path:
+    return Path(__file__).resolve().parent.parent.parent / "calibration_defaults"
+
+
+def ensure_calibration_files() -> list[Path]:
+    """Copy bundled calibration into ``backend/data`` when missing.
+
+    Production mounts ``/app/data`` over the image tree; seed once so MM
+    spread/jump knobs are not left at bare Settings defaults.
+    """
+    dest_dir = _backend_data_dir()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    bundled = _bundled_defaults_dir()
+    seeded: list[Path] = []
+    for name in ("symbol_calibration.json", "mm_spread_calibration.json"):
+        dest = dest_dir / name
+        if dest.exists():
+            continue
+        src = bundled / name
+        if not src.is_file():
+            continue
+        shutil.copy2(src, dest)
+        seeded.append(dest)
+        logger.info("seeded calibration from bundle: %s", dest)
+    return seeded
 
 
 def _parse_symbol_fields(raw: dict) -> dict[str, float]:

@@ -366,6 +366,8 @@ def _parse_symbol_filters(info: dict[str, Any]) -> dict[str, SymbolFilters]:
         max_qty_limit: float | None = None
         max_qty_market: float | None = None
         min_notional: float | None = None
+        price_pct_up: float | None = None
+        price_pct_down: float | None = None
         for f in sym.get("filters") or []:
             ft = f.get("filterType")
             if ft == "LOT_SIZE":
@@ -396,6 +398,9 @@ def _parse_symbol_filters(info: dict[str, Any]) -> dict[str, SymbolFilters]:
                     or _safe_float(f.get("minNotionalValue"))
                 )
                 min_notional = mn or min_notional
+            elif ft == "PERCENT_PRICE":
+                price_pct_up = _safe_float(f.get("multiplierUp")) or price_pct_up
+                price_pct_down = _safe_float(f.get("multiplierDown")) or price_pct_down
         caps = [c for c in (max_qty_limit, max_qty_market) if c is not None]
         max_qty = min(caps) if caps else None
         out[symbol] = SymbolFilters(
@@ -407,6 +412,8 @@ def _parse_symbol_filters(info: dict[str, Any]) -> dict[str, SymbolFilters]:
             max_qty_limit=max_qty_limit,
             max_qty_market=max_qty_market,
             min_notional=min_notional,
+            price_pct_up=price_pct_up,
+            price_pct_down=price_pct_down,
         )
     return out
 

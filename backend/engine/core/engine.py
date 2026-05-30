@@ -67,6 +67,7 @@ from ..persistence.journal import replay_wal_async
 from ..portfolio.portfolio import Portfolio
 from ..position.position_tracker import PositionTracker
 from ..position.strategy_ledger import StrategyPositionLedger
+from ..position.venue_pnl import venue_position_from
 from ..risk.circuit_breaker import (
     Breach,
     BreakerScope,
@@ -262,6 +263,7 @@ class Engine:
             gateway=gateway,
             portfolio=self._portfolio,
             positions=self._positions,
+            venue_qty_for=self._positions.venue_qty,
         )
         self._executor.set_limit_collar_check(self._pretrade.check_limit_collar)
         self._latency = LatencyTracker(bus=bus)
@@ -1915,10 +1917,12 @@ class Engine:
                     fill.parent_id, parent.max_slippage_bps,
                 )
         parent = self._oms.parent(fill.parent_id) if fill.parent_id else None
+        self._record_strategy_ledger_fill(fill, parent)
         if parent is not None and mm_core.is_mm_strategy(parent.strategy_name):
             await self._handle_mm_fill(fill, parent.strategy_name)
 
         self._notify_strategies_on_fill(fill)
+        self._finalize_attributed_parent_if_complete(fill, parent)
 
     def _on_markout_observation(self, obs: MarkoutObservation) -> None:
         try:
@@ -1969,15 +1973,24 @@ class Engine:
         if mid <= 0:
             return
         self._micro.on_fill(sym, fill, mid, time.time(), strategy_name=strategy_name)
-        pos = self._positions.get(sym) or Position(symbol=sym)
+        mm_qty = self._strategy_ledger.qty(strategy_name, sym)
         adverse = self._micro.last_fill_adverse_bps(sym)
-        self._own_book.on_level_fill(sym, fill, position_qty=pos.qty, adverse_bps=adverse)
+        self._own_book.on_level_fill(sym, fill, position_qty=mm_qty, adverse_bps=adverse)
         strat = self._strategies_by_name.get(strategy_name)
         if strat is None or not hasattr(strat, "on_tick_quotes"):
             return
         equity = self._portfolio.snapshot().equity
         own = self._sync_own_book(sym)
-        feat = self._features.snapshot(sym, own=own, position_qty=pos.qty, equity=equity)
+        fill_vwap = self._strategy_ledger.fill_vwap(strategy_name, sym)
+        pos = self._positions.get(sym)
+        feat = self._features.snapshot(
+            sym,
+            own=own,
+            position_qty=mm_qty,
+            equity=equity,
+            venue=venue_position_from(pos),
+            fill_vwap=fill_vwap,
+        )
         maker = bool(getattr(fill, "is_maker", False))
         mm_core.on_mm_fill(own, feat, self._settings, side=fill.side.value, maker=maker)
         intents = list(strat.on_tick_quotes({sym: feat}))
@@ -1986,13 +1999,17 @@ class Engine:
         except Exception:  # noqa: BLE001 -- fill handler must not break user_ws
             logger.exception("MM quote refresh after fill failed for %s", sym)
 
-    def _notify_strategies_on_fill(self, fill: Fill) -> None:
+    def _record_strategy_ledger_fill(
+        self,
+        fill: Fill,
+        parent: ParentOrder | None,
+    ) -> None:
+        """Update per-strategy qty + fill VWAP once per venue fill."""
         parent_id = fill.parent_id or ""
-        parent = self._oms.parent(parent_id) if parent_id else None
         attr = self._parent_attribution.get(parent_id) if parent_id else None
 
         if self.is_multi_strategy_mode() and attr:
-            self._apply_attributed_fill(fill, parent_id, attr, parent)
+            self._apply_attributed_ledger_delta(fill, parent_id, attr, parent)
             return
 
         strategy_name = parent.strategy_name if parent else ""
@@ -2001,7 +2018,41 @@ class Engine:
             and strategy_name
             and strategy_name in self._strategies_by_name
         ):
-            self._strategy_ledger.apply_fill(strategy_name, fill.symbol, fill.side, fill.qty)
+            self._strategy_ledger.apply_fill(
+                strategy_name,
+                fill.symbol,
+                fill.side,
+                fill.qty,
+                price=fill.price,
+            )
+            return
+
+        if not self.is_multi_strategy_mode():
+            active = self._strategies_by_name.get(self._active_strategy_name)
+            if active is not None:
+                self._strategy_ledger.apply_fill(
+                    active.name,
+                    fill.symbol,
+                    fill.side,
+                    fill.qty,
+                    price=fill.price,
+                )
+
+    def _notify_strategies_on_fill(self, fill: Fill) -> None:
+        parent_id = fill.parent_id or ""
+        parent = self._oms.parent(parent_id) if parent_id else None
+        attr = self._parent_attribution.get(parent_id) if parent_id else None
+
+        if self.is_multi_strategy_mode() and attr:
+            self._notify_attributed_strategy_fills(fill, parent_id, attr, parent)
+            return
+
+        strategy_name = parent.strategy_name if parent else ""
+        if (
+            self.is_multi_strategy_mode()
+            and strategy_name
+            and strategy_name in self._strategies_by_name
+        ):
             self._call_strategy_on_fill(strategy_name, fill)
             return
 
@@ -2009,7 +2060,7 @@ class Engine:
         if active is not None:
             self._call_strategy_on_fill(active.name, fill)
 
-    def _apply_attributed_fill(
+    def _apply_attributed_ledger_delta(
         self,
         fill: Fill,
         parent_id: str,
@@ -2029,20 +2080,61 @@ class Engine:
             intended = sym_deltas.get(sym, 0.0)
             if abs(intended) < 1e-12:
                 continue
-            self._strategy_ledger.apply_delta(strat, sym, intended * delta_fraction)
-            self._call_strategy_on_fill(strat, fill)
+            self._strategy_ledger.apply_delta(
+                strat,
+                sym,
+                intended * delta_fraction,
+                price=fill.price,
+            )
 
-        if fill_fraction >= 1.0:
+    def _finalize_attributed_parent_if_complete(
+        self,
+        fill: Fill,
+        parent: ParentOrder | None,
+    ) -> None:
+        parent_id = fill.parent_id or ""
+        if not parent_id or parent_id not in self._parent_attribution:
+            return
+        parent_qty = parent.qty if parent is not None and parent.qty > 0 else fill.qty
+        cumulative = self._parent_filled_qty.get(parent_id, 0.0)
+        if parent_qty <= 0:
+            return
+        if cumulative / parent_qty >= 1.0 - 1e-9:
             self._parent_attribution.pop(parent_id, None)
             self._parent_filled_qty.pop(parent_id, None)
             self._parent_ledger_applied_fraction.pop(parent_id, None)
+
+    def _notify_attributed_strategy_fills(
+        self,
+        fill: Fill,
+        parent_id: str,
+        attr: dict[str, dict[str, float]],
+        parent: ParentOrder | None,
+    ) -> None:
+        sym = fill.symbol.upper()
+        for strat, sym_deltas in attr.items():
+            intended = sym_deltas.get(sym, 0.0)
+            if abs(intended) < 1e-12:
+                continue
+            self._call_strategy_on_fill(strat, fill)
+
+    def _apply_attributed_fill(
+        self,
+        fill: Fill,
+        parent_id: str,
+        attr: dict[str, dict[str, float]],
+        parent: ParentOrder | None,
+    ) -> None:
+        """Backward-compatible wrapper for tests."""
+        self._apply_attributed_ledger_delta(fill, parent_id, attr, parent)
+        self._notify_attributed_strategy_fills(fill, parent_id, attr, parent)
 
     def _call_strategy_on_fill(self, strategy_name: str, fill: Fill) -> None:
         strat = self._strategies_by_name.get(strategy_name)
         if strat is None:
             return
         try:
-            strat.on_fill(fill.symbol, fill.qty, fill.side.value)
+            strat.on_fill(fill.symbol, fill.qty, fill.side.value, price=fill.price)
         except Exception:  # noqa: BLE001
             logger.exception("strategy %s on_fill raised", strategy_name)
 
@@ -2277,8 +2369,20 @@ class Engine:
         for sym in strat.symbols():
             own = self._sync_own_book(sym)
             pos = self._positions.get(sym)
-            pos_qty = pos.qty if pos is not None else 0.0
-            feat = self._features.snapshot(sym, own=own, position_qty=pos_qty, equity=equity)
+            if self.is_multi_strategy_mode():
+                pos_qty = self._strategy_ledger.qty(strat.name, sym)
+                fill_vwap = self._strategy_ledger.fill_vwap(strat.name, sym)
+            else:
+                pos_qty = pos.qty if pos is not None else 0.0
+                fill_vwap = self._strategy_ledger.fill_vwap(strat.name, sym)
+            feat = self._features.snapshot(
+                sym,
+                own=own,
+                position_qty=pos_qty,
+                equity=equity,
+                venue=venue_position_from(pos),
+                fill_vwap=fill_vwap,
+            )
             breach = self._mm_flow.evaluate_entry(feat, reduce_only=False)
             if breach is not None:
                 self._breaker.trip(breach)

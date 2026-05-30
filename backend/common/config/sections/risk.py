@@ -122,7 +122,7 @@ class RiskMixin(BaseModel):
     # --- Execution (AlgoWheel + calibration) ---
     imbalance_threshold: float = 0.20
     hit_ratio_threshold: float = 0.60
-    symbol_calibration_path: str = ""
+    symbol_calibration_path: str = "symbol_calibration.json"
 
     # --- Execution urgency ---
     urgent_score_threshold: float = 0.85    # Signal.score at/above → AGGRESSIVE

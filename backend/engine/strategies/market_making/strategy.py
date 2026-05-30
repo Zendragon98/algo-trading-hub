@@ -17,10 +17,12 @@ from . import core as mm_core
 from .calibrated import mm2_fee_edge_floor_bps, mm2_fee_round_trip_bps, mm_float
 from .symbol_params import required_min_spread_bps
 from .universe import resolve_mm2_symbols
+from ..position_sync import VenuePosition, VenuePositionProvider
 from ..strategy_base import StrategyBase
 
 logger = logging.getLogger(__name__)
 
+FillVwapProvider = Callable[[str], float]
 EquityProvider = Callable[[], float]
 OwnBookProvider = Callable[[str], OwnBookState]
 
@@ -46,6 +48,8 @@ class MarketMakingV2Strategy(StrategyBase):
         self._state: dict[str, _SymbolState] = {}
         self._equity_provider: EquityProvider | None = None
         self._own_provider: OwnBookProvider | None = None
+        self._fill_vwap_provider: FillVwapProvider | None = None
+        self._venue_position_provider = None
         self._gate_counts: dict[str, Counter[str]] = defaultdict(Counter)
         self._last_gate_log_ts: float = 0.0
 
@@ -62,6 +66,21 @@ class MarketMakingV2Strategy(StrategyBase):
 
     def attach_own_book_provider(self, provider: OwnBookProvider) -> None:
         self._own_provider = provider
+
+    def attach_fill_vwap_provider(self, provider: FillVwapProvider) -> None:
+        self._fill_vwap_provider = provider
+
+    def attach_venue_position_provider(self, provider: VenuePositionProvider) -> None:
+        self._venue_position_provider = provider
+
+    def _venue_position(self, symbol: str) -> VenuePosition | None:
+        provider = self._venue_position_provider
+        if provider is None:
+            return None
+        try:
+            return provider(symbol)
+        except Exception:  # noqa: BLE001
+            return None
 
     def symbols(self) -> list[str]:
         return list(self._symbols)
@@ -137,6 +156,7 @@ class MarketMakingV2Strategy(StrategyBase):
                     continue
             own = self._own(symbol)
             pos_qty = self._position_qty(symbol)
+            fill_entry = self._fill_entry(symbol, own)
             s = _Mm2SettingsAdapter(self._settings)
             mm_core.update_vol_regime_halt(own, feat, s, now=now)
             mm_core.update_consecutive_fill_halts(own, s, now=now)
@@ -168,6 +188,8 @@ class MarketMakingV2Strategy(StrategyBase):
                 own=own,
                 position_qty=pos_qty,
                 mid=float(feat.mid),
+                venue=self._venue_position(symbol),
+                fill_entry=fill_entry,
             )
             if exit_reason:
                 intent = mm_core.build_exit_quote_intent(
@@ -177,6 +199,8 @@ class MarketMakingV2Strategy(StrategyBase):
                     position_qty=pos_qty,
                     reason=exit_reason,
                     strategy_name=self.name,
+                    venue=self._venue_position(symbol),
+                    fill_entry=fill_entry,
                 )
                 if intent is not None:
                     hold_sec = (
@@ -196,6 +220,8 @@ class MarketMakingV2Strategy(StrategyBase):
                 skew_avg=skew_avg,
                 strategy_name=self.name,
                 fee_round_trip_bps=mm2_fee_round_trip_bps(symbol, self._settings),
+                venue=self._venue_position(symbol),
+                fill_entry=fill_entry,
             )
             tape_p: float | None = None
             if not self._settings.mm2_two_sided_always:
@@ -268,6 +294,17 @@ class MarketMakingV2Strategy(StrategyBase):
         if self._own_provider is not None:
             return self._own_provider(symbol)
         return OwnBookState(symbol=symbol.upper())
+
+    def _fill_entry(self, symbol: str, own: OwnBookState) -> float:
+        provider = self._fill_vwap_provider
+        if provider is not None:
+            try:
+                vwap = float(provider(symbol))
+            except Exception:  # noqa: BLE001
+                vwap = 0.0
+            if vwap > 0:
+                return vwap
+        return own.ledger.entry_mid
 
     def _equity(self) -> float:
         if self._equity_provider is None:

@@ -127,4 +127,4 @@ class FillSimulator:
                 action=action,
             )
         )
-        strategy.on_fill(sig.symbol, qty if side is Side.BUY else -qty, side.value)
+        strategy.on_fill(sig.symbol, qty if side is Side.BUY else -qty, side.value, price=price)

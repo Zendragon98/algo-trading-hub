@@ -19,8 +19,14 @@ class FlowMixin(BaseModel):
     flow_min_tape_velocity: float = 0.0
     flow_skip_toxic: bool = True
     flow_take_profit_bps: float = 15.0
+    # Trailing profit capture: arm once peak >= max(take_profit, trail_arm); exit
+    # when pnl pulls back trail_stop bps from peak. Set trail_stop=0 for fixed TP only.
+    flow_trail_stop_bps: float = 8.0
+    flow_trail_arm_bps: float = 0.0  # 0 = use flow_take_profit_bps
     flow_stop_loss_bps: float = 10.0
     flow_max_hold_sec: float = 90.0
+    flow_pnl_verify_max_drift_bps: float = 3.0
+    flow_pnl_verify_log_interval_sec: float = 30.0
     flow_cooldown_sec: float = 30.0
     flow_risk_per_trade_pct: float = 0.08
     flow_qty: float = 0.001

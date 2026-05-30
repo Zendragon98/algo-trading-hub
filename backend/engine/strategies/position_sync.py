@@ -7,11 +7,25 @@ size; this module emits reduce-only closes first, then openings once flat.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from common.enums import Side
 from common.types import Signal
 
 PositionProvider = Callable[[str], float]
+
+
+@dataclass(frozen=True, slots=True)
+class VenuePosition:
+    """Live venue position snapshot (Binance ACCOUNT_UPDATE / positionRisk)."""
+
+    qty: float = 0.0
+    avg_entry_price: float = 0.0
+    mark_price: float = 0.0
+    exchange_unrealized_pnl: float | None = None
+
+
+VenuePositionProvider = Callable[[str], VenuePosition | None]
 
 _QTY_EPS = 1e-12
 

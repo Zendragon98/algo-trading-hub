@@ -52,9 +52,10 @@ class StrategyBase(ABC):
             Zero or more `Signal`s for the engine to risk-check and execute.
         """
 
-    def on_fill(self, symbol: str, qty: float, side: str) -> None:
+    def on_fill(self, symbol: str, qty: float, side: str, *, price: float | None = None) -> None:
         """Optional hook for strategies that need to react to fills.
 
+        ``price`` is the venue fill price when the engine has it (live fills).
         Default no-op so simple strategies don't need to implement it.
         """
 

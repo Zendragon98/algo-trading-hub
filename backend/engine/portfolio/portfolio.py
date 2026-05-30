@@ -164,11 +164,18 @@ class Portfolio:
 
     @staticmethod
     def _unrealized_pnl(positions: list[Position], *, use_mark: bool) -> float:
-        """Sum open PnL; prefer live marks when venue user-data is stale."""
+        """Sum open PnL.
+
+        ``use_mark=False`` (default snapshots): prefer Binance ``up`` when present.
+        ``use_mark=True`` (live equity curve): derive from tick marks so stale
+        ACCOUNT_UPDATE does not freeze the curve.
+        """
         total = 0.0
         for p in positions:
             if use_mark and p.mark_price > 0 and p.qty != 0:
                 total += (p.mark_price - p.avg_entry_price) * p.qty
+            elif p.exchange_unrealized_pnl is not None and p.qty != 0:
+                total += p.exchange_unrealized_pnl
             else:
                 total += p.unrealized_pnl
         return total

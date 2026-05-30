@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from common.enums import Side
+
 from gateways.gateway_interface import SymbolFilters
 
 
@@ -64,6 +66,30 @@ def venue_cap_qty(
     if filters.step_size is not None and filters.step_size > 0:
         capped = _floor_to_step(capped, filters.step_size)
     return capped
+
+
+def _round_to_tick(price: float, tick: float | None) -> float:
+    if tick is None or tick <= 0:
+        return price
+    n = int((price + 1e-15) / tick)
+    return n * tick
+
+
+def clamp_limit_price(
+    price: float,
+    side: Side,
+    mark: float,
+    filters: SymbolFilters | None,
+) -> float:
+    """Clamp a LIMIT peg to Binance PERCENT_PRICE band vs ``mark``."""
+    if filters is None or mark <= 0 or price <= 0:
+        return price
+    out = price
+    if side is Side.BUY and filters.price_pct_up is not None:
+        out = min(out, mark * filters.price_pct_up)
+    if side is Side.SELL and filters.price_pct_down is not None:
+        out = max(out, mark * filters.price_pct_down)
+    return _round_to_tick(out, filters.tick_size)
 
 
 def venue_qty_in_bounds(

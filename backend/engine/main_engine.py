@@ -27,6 +27,8 @@ from .strategies.blended_signals import BlendedSignalsStrategy
 from .strategies.flow_momentum import FlowMomentumStrategy
 from .strategies.market_making.strategy import MarketMakingV2Strategy
 from .strategies.pairs_trading import PairsTradingStrategy
+from .position.venue_pnl import venue_position_from
+from .strategies.position_sync import VenuePosition
 from .strategies.sma_crossover import SmaCrossoverStrategy
 
 logger = logging.getLogger(__name__)
@@ -102,6 +104,9 @@ async def run() -> None:
         pos = engine._positions.get(symbol)  # noqa: SLF001
         return pos.qty if pos is not None else 0.0
 
+    def _venue_position(symbol: str) -> VenuePosition | None:
+        return venue_position_from(engine._positions.get(symbol))  # noqa: SLF001
+
     def _position_qty_for(strat_name: str):
         def provider(symbol: str) -> float:
             if engine.is_multi_strategy_mode():  # noqa: SLF001
@@ -128,11 +133,18 @@ async def run() -> None:
         ):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_position_provider(_position_qty_for(strat.name))
+        if isinstance(strat, FlowMomentumStrategy):
+            strat.attach_venue_position_provider(_venue_position)
+        if isinstance(strat, MarketMakingV2Strategy):
+            strat.attach_venue_position_provider(_venue_position)
         if isinstance(strat, BlendedSignalsStrategy):
             strat.attach_mm2_active_symbols_provider(_mm2_symbols_for_blend)
         if isinstance(strat, MarketMakingV2Strategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
-            strat.attach_position_provider(_venue_position_qty)
+            strat.attach_position_provider(_position_qty_for(strat.name))
+            strat.attach_fill_vwap_provider(
+                lambda sym, name=strat.name: engine.strategy_ledger.fill_vwap(name, sym)  # noqa: SLF001
+            )
 
     await engine.start()
 

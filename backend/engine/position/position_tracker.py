@@ -32,13 +32,17 @@ class PositionTracker:
         self._positions: dict[str, Position] = {}
         # Avg entry retained when ACCOUNT_UPDATE pops a flat row before the fill WS.
         self._entry_before_flat: dict[str, float] = {}
+        # Last venue-authoritative signed qty per symbol (0.0 = flat on venue).
+        self._venue_qty_by_symbol: dict[str, float] = {}
         self._lock = asyncio.Lock()
 
     # --- Seeding ---
 
     def seed(self, positions: Iterable[Position]) -> None:
-        for p in positions:
+        rows = list(positions)
+        for p in rows:
             self._positions[p.symbol] = p
+        self.record_venue_snapshot(rows)
 
     # --- Mutators ---
 
@@ -86,6 +90,7 @@ class PositionTracker:
                     continue
                 self._positions[p.symbol] = p
                 self._entry_before_flat.pop(p.symbol, None)
+        self.record_venue_snapshot(snapshot)
         for p in snapshot:
             # Always publish, including the qty==0 close, so the WS hook
             # in the frontend can drop the symbol from the position panel.
@@ -107,6 +112,7 @@ class PositionTracker:
             self._positions = {p.symbol: p for p in open_positions}
             for p in open_positions:
                 self._entry_before_flat.pop(p.symbol, None)
+        self.record_venue_snapshot(open_positions, flat_symbols=removed)
         for sym in removed:
             await self._publish(Position(symbol=sym, qty=0.0))
         for p in open_positions:
@@ -119,6 +125,33 @@ class PositionTracker:
 
     def get(self, symbol: str) -> Position | None:
         return self._positions.get(symbol)
+
+    def venue_qty(self, symbol: str) -> float | None:
+        """Signed venue qty from the last sync/ACCOUNT_UPDATE snapshot.
+
+        Returns ``None`` when this symbol has never been observed on the venue
+        stream (pretrade falls back to the local book only).
+        """
+        sym = symbol.upper()
+        if sym not in self._venue_qty_by_symbol:
+            return None
+        return float(self._venue_qty_by_symbol[sym])
+
+    def record_venue_snapshot(
+        self,
+        positions: Iterable[Position],
+        *,
+        flat_symbols: Iterable[str] = (),
+    ) -> None:
+        """Refresh venue qty cache after REST reconcile or user-data positions."""
+        for sym in flat_symbols:
+            self._venue_qty_by_symbol[str(sym).upper()] = 0.0
+        for p in positions:
+            sym = str(p.symbol).upper()
+            if abs(p.qty) <= 1e-12:
+                self._venue_qty_by_symbol[sym] = 0.0
+            else:
+                self._venue_qty_by_symbol[sym] = float(p.qty)
 
     def entry_before_flat(self, symbol: str) -> float | None:
         """Avg entry cached when the venue row went flat before the fill event."""

@@ -54,6 +54,7 @@ from common.logging import signal_log_emit
 from common.types import Signal
 
 from ..market_data.feature_store import Features
+from ..position.venue_pnl import apply_attributed_fill_vwap
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger(__name__)
@@ -119,6 +120,8 @@ class _DeviationStats:
         "pending_filled_symbol",
         "pending_entry_usdt_mid",
         "pending_entry_usdc_mid",
+        "pending_entry_usdt_qty",
+        "pending_entry_usdc_qty",
         "min_samples",
     )
 
@@ -152,6 +155,8 @@ class _DeviationStats:
         self.pending_filled_symbol: str = ""
         self.pending_entry_usdt_mid: float = 0.0
         self.pending_entry_usdc_mid: float = 0.0
+        self.pending_entry_usdt_qty: float = 0.0
+        self.pending_entry_usdc_qty: float = 0.0
         self.min_samples = max(1, int(min_samples))
 
     def push(self, ts: float, value: float) -> None:
@@ -586,8 +591,14 @@ class PairsTradingStrategy(StrategyBase):
             ", ".join(weight_bits) if weight_bits else "equal",
         )
 
-    def on_fill(self, symbol: str, qty: float, side: str) -> None:
-        # Strategy fill hook is best-effort and must remain cheap.
+    def on_fill(
+        self,
+        symbol: str,
+        qty: float,
+        side: str,
+        *,
+        price: float | None = None,
+    ) -> None:
         now = time.time()
         for pair in self._pairs:
             key = self._key(pair)
@@ -606,6 +617,25 @@ class PairsTradingStrategy(StrategyBase):
             stats.pending_fills_remaining -= 1
             if stats.pending_fills_remaining == 1:
                 stats.pending_filled_symbol = symbol
+            if price is not None and price > 0:
+                if symbol == stats.pending_usdt:
+                    stats.pending_entry_usdt_mid, stats.pending_entry_usdt_qty = (
+                        apply_attributed_fill_vwap(
+                            fill_vwap=stats.pending_entry_usdt_mid,
+                            fill_qty_abs=stats.pending_entry_usdt_qty,
+                            fill_price=price,
+                            fill_qty=qty,
+                        )
+                    )
+                elif symbol == stats.pending_usdc:
+                    stats.pending_entry_usdc_mid, stats.pending_entry_usdc_qty = (
+                        apply_attributed_fill_vwap(
+                            fill_vwap=stats.pending_entry_usdc_mid,
+                            fill_qty_abs=stats.pending_entry_usdc_qty,
+                            fill_price=price,
+                            fill_qty=qty,
+                        )
+                    )
             if stats.pending_fills_remaining > 0:
                 continue
 
@@ -634,6 +664,8 @@ class PairsTradingStrategy(StrategyBase):
             stats.pending_filled_symbol = ""
             stats.pending_entry_usdt_mid = 0.0
             stats.pending_entry_usdc_mid = 0.0
+            stats.pending_entry_usdt_qty = 0.0
+            stats.pending_entry_usdc_qty = 0.0
 
     # --- Read-only ---
 
@@ -653,6 +685,8 @@ class PairsTradingStrategy(StrategyBase):
         stats.pending_filled_symbol = ""
         stats.pending_entry_usdt_mid = 0.0
         stats.pending_entry_usdc_mid = 0.0
+        stats.pending_entry_usdt_qty = 0.0
+        stats.pending_entry_usdc_qty = 0.0
 
     def _check_partial_pending(
         self,
@@ -763,8 +797,6 @@ class PairsTradingStrategy(StrategyBase):
             ) if pair.entry_z > 0 else 1.0
             notional = qty * max(usdt_mid, usdc_mid)
             dev = basis if not use_reference else basis - reference
-            stats.open_usdt_mid = usdt_mid
-            stats.open_usdc_mid = usdc_mid
             if z >= pair.entry_z:
                 stats.pending_side = +1
                 stats.pending_qty = qty

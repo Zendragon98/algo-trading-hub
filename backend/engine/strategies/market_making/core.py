@@ -12,6 +12,8 @@ from engine.execution.quote_clamp import clamp_targets_no_cross
 
 from ...market_data.feature_store import Features, unrealized_pnl_bps
 from ...market_data.own_quote_book import EntryLedger, OwnBookState
+from ...position.venue_pnl import inventory_pnl_bps
+from ..position_sync import VenuePosition
 from .calibrated import mm_float, mm_risk_float
 from .symbol_params import MmSymbolQuoteParams, resolve_mm_params
 
@@ -677,12 +679,20 @@ def plan_exit_reason(
     own: OwnBookState,
     position_qty: float,
     mid: float,
+    venue: VenuePosition | None = None,
+    fill_entry: float | None = None,
 ) -> str | None:
     if abs(position_qty) < 1e-12:
         return None
 
     now = time.time()
-    pnl_bps = _pnl_bps(own.ledger, mid, position_qty)
+    entry = fill_entry if fill_entry is not None and fill_entry > 0 else own.ledger.entry_mid
+    pnl_bps, _ = inventory_pnl_bps(
+        fill_entry=entry,
+        book_mid=mid,
+        position_qty=position_qty,
+        venue=venue,
+    )
     sym = feat.symbol
 
     if feat.jump_active and settings.mm_jump_flatten:
@@ -740,12 +750,20 @@ def build_exit_quote_intent(
     position_qty: float,
     reason: str,
     strategy_name: str,
+    venue: VenuePosition | None = None,
+    fill_entry: float | None = None,
 ) -> QuoteIntent | None:
     mid = float(feat.mid or 0.0)
     qty = abs(position_qty)
     if mid <= 0 or qty <= 0:
         return None
-    pnl_bps = _pnl_bps(own.ledger, mid, position_qty)
+    entry = fill_entry if fill_entry is not None and fill_entry > 0 else own.ledger.entry_mid
+    pnl_bps, _ = inventory_pnl_bps(
+        fill_entry=entry,
+        book_mid=mid,
+        position_qty=position_qty,
+        venue=venue,
+    )
     use_market = reason.startswith("mm_market_exit") or (
         bool(settings.mm_urgent_exit_market) and "mm_market_exit" in reason
     )
@@ -853,6 +871,8 @@ def compute_quote_intent(
     skew_avg: float | None,
     strategy_name: str,
     fee_round_trip_bps: float = 0.0,
+    venue: VenuePosition | None = None,
+    fill_entry: float | None = None,
 ) -> QuoteIntent:
     venue_mid = float(feat.mid or 0.0)
     sym = feat.symbol
@@ -988,7 +1008,13 @@ def compute_quote_intent(
         bid_qty = min(bid_qty, abs_pos)
     if reduce_ask:
         ask_qty = min(ask_qty, abs_pos)
-    pnl_bps = unrealized_pnl_bps(own.ledger.entry_mid, venue_mid, position_qty)
+    entry = fill_entry if fill_entry is not None and fill_entry > 0 else own.ledger.entry_mid
+    pnl_bps, _ = inventory_pnl_bps(
+        fill_entry=entry,
+        book_mid=venue_mid,
+        position_qty=position_qty,
+        venue=venue,
+    )
 
     take_bid = False
     take_ask = False

@@ -7,6 +7,8 @@ from time import time
 
 from common.config import Settings
 
+from ..position.venue_pnl import inventory_pnl_bps
+from ..strategies.position_sync import VenuePosition
 from .funding_store import FundingRateStore
 from .microstructure_hub import MicrostructureHub
 from .orderbook import OrderBookStore
@@ -94,6 +96,8 @@ class FeatureStore:
         own: OwnBookState | None = None,
         position_qty: float = 0.0,
         equity: float = 0.0,
+        venue: VenuePosition | None = None,
+        fill_vwap: float = 0.0,
     ) -> Features:
         own_bid_q = own.own_bid_qty if own else 0.0
         own_ask_q = own.own_ask_qty if own else 0.0
@@ -149,8 +153,15 @@ class FeatureStore:
             feat.own_ask_price = own.own_ask.price if own.own_ask else None
             feat.own_bid_qty = own_bid_q
             feat.own_ask_qty = own_ask_q
-            feat.entry_mid = own.ledger.entry_mid
-            feat.unrealized_pnl_bps = unrealized_pnl_bps(own.ledger.entry_mid, mid, position_qty)
+            entry = fill_vwap if fill_vwap > 0 else own.ledger.entry_mid
+            feat.entry_mid = entry
+            pnl_bps, _ = inventory_pnl_bps(
+                fill_entry=entry,
+                book_mid=float(mid),
+                position_qty=position_qty,
+                venue=venue,
+            )
+            feat.unrealized_pnl_bps = pnl_bps
             feat.inventory_ratio = _inventory_ratio(
                 position_qty,
                 mid,
@@ -164,6 +175,7 @@ class FeatureStore:
 
 
 def unrealized_pnl_bps(entry_mid: float, mid: float, position_qty: float) -> float:
+    """Legacy price-based bps — prefer ``inventory_pnl_bps`` for live paths."""
     if entry_mid <= 0 or mid <= 0 or abs(position_qty) < 1e-12:
         return 0.0
     if position_qty > 0:

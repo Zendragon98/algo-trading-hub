@@ -52,6 +52,8 @@ class SymbolFilters:
     max_qty_limit: float | None = None   # LOT_SIZE maxQty
     max_qty_market: float | None = None  # MARKET_LOT_SIZE maxQty
     min_notional: float | None = None    # smallest qty * price the venue accepts
+    price_pct_up: float | None = None    # PERCENT_PRICE multiplierUp (buy cap vs mark)
+    price_pct_down: float | None = None  # PERCENT_PRICE multiplierDown (sell floor vs mark)
 
 
 # Callbacks the engine registers with the gateway. Awaiting on the engine

@@ -26,7 +26,7 @@ from gateways.gateway_interface import GatewayInterface, SymbolFilters
 
 from ..market_data.feature_store import FeatureStore
 from ..orders.order_manager import OrderManager, new_client_order_id
-from ..risk.venue_sizing import venue_cap_qty, venue_qty_in_bounds
+from ..risk.venue_sizing import clamp_limit_price, venue_cap_qty, venue_qty_in_bounds
 from .slicer import Slice, build_schedule
 
 logger = logging.getLogger(__name__)
@@ -331,11 +331,14 @@ class VwapExecutor:
             rows = await self._gateway.fetch_positions()
         except Exception:  # noqa: BLE001
             logger.warning(
-                "reduceOnly recovery skipped: fetch_positions failed parent=%s",
+                "reduceOnly recovery: fetch_positions failed parent=%s — healing local book",
                 parent.id,
                 exc_info=True,
             )
-            return False
+            await self._notify_venue_flat(
+                parent.symbol, parent.id, context="recover_fetch_failed",
+            )
+            return True
 
         tol = float(getattr(self._settings, "reconcile_qty_tolerance", 1e-6))
         sym_u = parent.symbol.upper()
@@ -404,9 +407,22 @@ class VwapExecutor:
     async def _submit_slice(self, parent: ParentOrder, slc: Slice) -> None:
         price = self._passive_price(parent)
         order_type = OrderType.LIMIT if price is not None else OrderType.MARKET
+        feat = self._features.snapshot(parent.symbol)
+        ref_mid = feat.mid if feat.mid and feat.mid > 0 else self._price(parent.symbol)
+        if price is not None and ref_mid and ref_mid > 0:
+            filters = self._gateway.get_symbol_filters(parent.symbol)
+            clamped = clamp_limit_price(price, parent.side, ref_mid, filters)
+            if abs(clamped - price) > 1e-12:
+                logger.info(
+                    "limit price clamped parent=%s slice=%d %.8f -> %.8f (mark=%.8f)",
+                    parent.id,
+                    slc.index,
+                    price,
+                    clamped,
+                    ref_mid,
+                )
+                price = clamped
         if price is not None and self._limit_collar_check is not None:
-            mid = self._features.snapshot(parent.symbol).mid
-            ref_mid = mid if mid and mid > 0 else self._price(parent.symbol)
             if ref_mid and ref_mid > 0:
                 ok, reason = self._limit_collar_check(parent.symbol, price, ref_mid)
                 if not ok:
@@ -568,9 +584,12 @@ class VwapExecutor:
             price = self._price(parent.symbol) or feat.mid
         if price is None or feat.mid is None:
             return None
+        mark = feat.mid
+        filters = self._gateway.get_symbol_filters(parent.symbol)
+        price = clamp_limit_price(price, parent.side, mark, filters)
         cap_bps = float(self._settings.max_limit_deviation_bps)
         if cap_bps > 0:
-            dev_bps = abs(price - feat.mid) / feat.mid * 10_000.0
+            dev_bps = abs(price - mark) / mark * 10_000.0
             if dev_bps > cap_bps:
                 logger.warning(
                     "limit collar veto %s: dev=%.1fbps > cap=%.1fbps",

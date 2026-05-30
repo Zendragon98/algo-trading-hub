@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time as _time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from common.config import Settings
@@ -43,12 +44,15 @@ class PreTradeValidator:
         gateway: GatewayInterface,
         portfolio: Portfolio,
         positions: PositionTracker,
+        *,
+        venue_qty_for: Callable[[str], float | None] | None = None,
     ) -> None:
         self._settings = settings
         self._risk = risk
         self._gateway = gateway
         self._portfolio = portfolio
         self._positions = positions
+        self._venue_qty_for = venue_qty_for
         self._dedup: dict[tuple[str, ...], _DedupEntry] = {}
 
     def apply_settings(self, settings: Settings) -> None:
@@ -239,6 +243,25 @@ class PreTradeValidator:
         skip_dedup: bool,
     ) -> ValidationResult:
         """Light path for strategy-driven position reductions."""
+        tol = 1e-9
+        venue_q = self._venue_qty_for(signal.symbol) if self._venue_qty_for else None
+        if venue_q is not None:
+            if abs(venue_q) <= tol:
+                signal_log_emit(
+                    logger,
+                    f"pretrade veto {signal.symbol}: reduce_only_venue_flat",
+                    reason=signal.reason,
+                )
+                return ValidationResult(False, reason="reduce_only_venue_flat")
+            venue_close = Side.SELL if venue_q > 0 else Side.BUY
+            if signal.side is not venue_close:
+                signal_log_emit(
+                    logger,
+                    f"pretrade veto {signal.symbol}: reduce_only_venue_wrong_side",
+                    reason=signal.reason,
+                )
+                return ValidationResult(False, reason="reduce_only_venue_wrong_side")
+
         pos = self._positions.get(signal.symbol)
         if pos is None or abs(pos.qty) <= 0:
             signal_log_emit(
@@ -258,6 +281,8 @@ class PreTradeValidator:
             return ValidationResult(False, reason="reduce_only_wrong_side")
 
         close_qty = min(signal.qty, abs(pos.qty))
+        if venue_q is not None:
+            close_qty = min(close_qty, abs(venue_q))
         if close_qty <= 0:
             signal_log_emit(
                 logger,

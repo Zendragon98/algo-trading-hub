@@ -44,6 +44,8 @@ from engine.strategies.blended_signals import BlendedSignalsStrategy
 from engine.strategies.flow_momentum import FlowMomentumStrategy
 from engine.strategies.market_making.strategy import MarketMakingV2Strategy
 from engine.strategies.pairs_trading import PairsTradingStrategy
+from engine.strategies.position_sync import VenuePosition
+from engine.position.venue_pnl import venue_position_from
 from engine.strategies.sma_crossover import SmaCrossoverStrategy
 from gateways.factory import create_gateway
 
@@ -98,6 +100,9 @@ async def _run() -> None:
         log_file_max_bytes=settings.log_file_max_bytes,
         log_file_backup_count=settings.log_file_backup_count,
     )
+    from engine.market_data.symbol_calibration import ensure_calibration_files
+
+    ensure_calibration_files()
     logger.info("config loaded from %s", settings.env_path)
     logger.info("log level=%s (LOG_LEVEL)", settings.log_level.lower())
     _log_mode_banner(settings)
@@ -158,6 +163,9 @@ async def _run() -> None:
         pos = engine._positions.get(symbol)  # noqa: SLF001
         return pos.qty if pos is not None else 0.0
 
+    def _venue_position(symbol: str) -> VenuePosition | None:
+        return venue_position_from(engine._positions.get(symbol))  # noqa: SLF001
+
     def _position_qty_for(strat_name: str):
         def provider(symbol: str) -> float:
             if engine.is_multi_strategy_mode():  # noqa: SLF001
@@ -184,12 +192,18 @@ async def _run() -> None:
         ):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
             strat.attach_position_provider(_position_qty_for(strat.name))
+        if isinstance(strat, FlowMomentumStrategy):
+            strat.attach_venue_position_provider(_venue_position)
+        if isinstance(strat, MarketMakingV2Strategy):
+            strat.attach_venue_position_provider(_venue_position)
         if isinstance(strat, BlendedSignalsStrategy):
             strat.attach_mm2_active_symbols_provider(_mm2_symbols_for_blend)
         if isinstance(strat, MarketMakingV2Strategy):
             strat.attach_equity_provider(lambda: engine.portfolio.snapshot().equity)
-            # MM inventory skew must reflect venue exposure (flow/SMA may share symbols).
-            strat.attach_position_provider(_venue_position_qty)
+            strat.attach_position_provider(_position_qty_for(strat.name))
+            strat.attach_fill_vwap_provider(
+                lambda sym, name=strat.name: engine.strategy_ledger.fill_vwap(name, sym)  # noqa: SLF001
+            )
 
     autostart = bool(settings.engine_autostart)
     if args.engine:
