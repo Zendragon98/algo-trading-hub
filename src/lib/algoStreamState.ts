@@ -616,7 +616,11 @@ export function applyWsEvent(
 
       if (isRealizedClose && parentId) {
         accumulateParentClose(parentClosePending, parentId, trade, trade.pnl ?? 0);
-        return { ...prev, trades: nextTrades };
+        return {
+          ...prev,
+          trades: nextTrades,
+          kpi: bumpKpiOnRealizedClose(prev.kpi, trade.pnl ?? 0),
+        };
       }
 
       let nextRealized = prev.realizedTrades;
@@ -671,8 +675,7 @@ export function applyWsEvent(
         aggregated,
         PERFORMANCE_TRADE_HISTORY_CAP,
       );
-      let nextKpi = bumpKpiOnRealizedClose(prev.kpi, aggregated.pnl);
-      nextKpi = rollingKpiFromRealized(nextRealized, nextKpi);
+      const nextKpi = rollingKpiFromRealized(nextRealized, prev.kpi);
       return {
         ...prev,
         workingParents: working,

@@ -124,7 +124,7 @@ export function WinRateKpiCard({
                 ).{" "}
               </>
             ) : null}
-            Win rate counts one realized close per parent order (slice fills roll up on parent done)
+            Last 200 rolls slice fills into one close per parent; Session counts every reducing fill
             open P&L
             {openPositionCount > 0
               ? ` (${openPositionCount} leg${openPositionCount === 1 ? "" : "s"} still open).`

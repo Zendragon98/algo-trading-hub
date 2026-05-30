@@ -52,8 +52,9 @@ class PerformanceTracker:
     ``_realized`` only — closes with a PnL figure (venue ``rp`` or computed),
     capped separately so opens cannot evict realized history.
 
-    Multiple reducing fills from the same VWAP parent are buffered and counted
-    as **one** realized close when the parent completes (see ``finalize_parent_close``).
+    Session KPIs count **every** reducing fill with realized PnL since process
+    start. The rolling ``_realized`` window still rolls VWAP parent slices into
+    **one** close when the parent completes (see ``finalize_parent_close``).
     """
 
     def __init__(self, portfolio: Portfolio, history_size: int = 200) -> None:
@@ -96,6 +97,7 @@ class PerformanceTracker:
             self._fills = self._fills[-self._history_size :]
 
         if classification.action == "close" and classification.pnl is not None:
+            self._bump_session(classification.pnl)
             parent_id = fill.parent_id
             if parent_id:
                 self._accumulate_parent_close(
@@ -105,7 +107,7 @@ class PerformanceTracker:
                     exclude_from_streak=exclude_from_streak,
                 )
             else:
-                self._commit_realized(record)
+                self._append_realized(record)
 
         return record
 
@@ -129,7 +131,7 @@ class PerformanceTracker:
             pnl=acc.total_pnl,
             exclude_from_streak=acc.exclude_from_streak,
         )
-        self._commit_realized(record)
+        self._append_realized(record)
         return record
 
     def _accumulate_parent_close(
@@ -158,13 +160,12 @@ class PerformanceTracker:
         if exclude_from_streak:
             acc.exclude_from_streak = True
 
-    def _commit_realized(self, record: TradeRecord) -> None:
+    def _append_realized(self, record: TradeRecord) -> None:
         self._realized.append(record)
         if len(self._realized) > self._history_size:
             self._realized = self._realized[-self._history_size :]
-        pnl = record.pnl
-        if pnl is None:
-            return
+
+    def _bump_session(self, pnl: float) -> None:
         if pnl > 0.0:
             self._session_wins += 1
             self._session_gross_win += pnl

@@ -307,7 +307,7 @@ backend/
 
 PnL and TCA use **exchange-reported** fill prices (including partial fills). Post-trade quality uses arrival mid vs VWAP of venue fills (`slippage_bps`).
 
-**Dashboard win rate / profit factor** roll up *realized closes*: slice P&amp;L from each reducing fill (Binance `ORDER_TRADE_UPDATE.rp` when authoritative — see `fill_classification.classify_fill`; otherwise **(exit − entry) × closed qty**). Fills tied to the same **parent order** are buffered and counted as **one** close when that parent completes, so VWAP partial exits do not inflate loss counts. **RECENT TRADES** still lists every venue fill. Win-rate KPIs are **not** wallet/equity change (commissions, funding, transfers excluded). **Profit factor** = sum of dollar wins on closes ÷ sum of dollar losses on closes.
+**Dashboard win rate / profit factor** roll up *realized closes*: slice P&amp;L from each reducing fill (Binance `ORDER_TRADE_UPDATE.rp` when authoritative — see `fill_classification.classify_fill`; otherwise **(exit − entry) × closed qty**). **Last 200** rolls fills tied to the same **parent order** into **one** close when that parent completes, so VWAP partial exits do not inflate the rolling loss count. **Session** counts every reducing fill with realized P&amp;L since backend start. **RECENT TRADES** still lists every venue fill. Win-rate KPIs are **not** wallet/equity change (commissions, funding, transfers excluded). **Profit factor** = sum of dollar wins on closes ÷ sum of dollar losses on closes.
 
 When you flip to LIVE you also need to point the gateway at its live endpoints:
 

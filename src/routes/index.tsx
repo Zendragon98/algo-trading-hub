@@ -152,7 +152,7 @@ function Index() {
 
   
 
-  /** Rolling = last ≤200 realized closes; session = all realized closes since backend start. */
+  /** Rolling = last ≤200 parent-level closes; session = every reducing fill since backend start. */
   const closedTradePerf = useMemo(() => {
     if (kpiScope === "session") {
       const wins = kpi.session_close_wins;

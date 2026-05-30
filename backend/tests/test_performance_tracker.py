@@ -116,8 +116,8 @@ def test_flatten_excluded_from_streak_still_counts_for_kpi() -> None:
     assert row.pnl == pytest.approx(-2.0)
 
 
-def test_parent_close_slices_count_as_one_realized() -> None:
-    """VWAP exit partial fills must not inflate win-rate loss count."""
+def test_parent_close_slices_roll_up_for_rolling_not_session() -> None:
+    """Rolling win rate rolls VWAP slices; session counts every reducing fill."""
 
     portfolio = MagicMock()
     perf = PerformanceTracker(portfolio)
@@ -130,21 +130,22 @@ def test_parent_close_slices_count_as_one_realized() -> None:
         )
 
     assert len(perf.realized_transactions()) == 0
-    assert perf.session_losses == 0
+    assert perf.session_losses == 3
     assert len(perf.trades()) == 3
 
     perf.finalize_parent_close(parent_id)
     assert len(perf.realized_transactions()) == 1
-    assert perf.session_losses == 1
+    assert perf.session_losses == 3
     row = perf.realized_transactions()[0]
     assert row.id == parent_id
     assert row.pnl == pytest.approx(sum(slices))
     assert perf.win_rate() == pytest.approx(0.0)
+    assert perf.win_rate_session() == pytest.approx(0.0)
 
     # Idempotent finalize (parent done + tracker complete both call this).
     perf.finalize_parent_close(parent_id)
     assert len(perf.realized_transactions()) == 1
-    assert perf.session_losses == 1
+    assert perf.session_losses == 3
 
 
 def test_session_rollups_survive_rolling_trim() -> None:
