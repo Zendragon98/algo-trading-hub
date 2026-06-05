@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import type { BreakerList, StrategyInfo } from "@/components/algo/types";
 
 const ALL_STRATEGIES_LABEL = "All strategies (netted)";
+const PANEL_WIDTH = "min(320px,calc(100vw-4rem))";
 
 type ConfigPage = "strategy" | "breakers";
 
@@ -78,7 +79,7 @@ export function ConfigSidebar({
       ) : null}
 
       <div
-        className="fixed left-0 top-[calc(49px+4.5rem)] z-30 flex max-h-[min(80vh,640px)]"
+        className="fixed left-0 top-1/2 z-30 flex max-h-[min(80vh,640px)] -translate-y-1/2"
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
@@ -94,7 +95,7 @@ export function ConfigSidebar({
             onClick={() => setPinned((value) => !value)}
             className="flex flex-col items-center gap-1 border-b border-border px-1 py-2 text-muted-foreground hover:bg-bull/5 hover:text-foreground"
             aria-expanded={open}
-            aria-label="Expand configuration sidebar"
+            aria-label="Open configuration sidebar"
           >
             {!open ? (
               <span
@@ -108,7 +109,6 @@ export function ConfigSidebar({
                 open && "rotate-180 text-bull",
               )}
             />
-            <span className="text-[8px] uppercase tracking-wider">Open</span>
           </button>
 
           <button
@@ -163,64 +163,68 @@ export function ConfigSidebar({
 
         <div
           className={cn(
-            "flex w-[min(320px,calc(100vw-4rem))] flex-col overflow-hidden rounded-r-md border border-l-0 border-border bg-background/95 shadow-2xl backdrop-blur transition-[transform,opacity] duration-200 ease-out",
-            open
-              ? "translate-x-0 opacity-100"
-              : "pointer-events-none -translate-x-full opacity-0",
+            "overflow-hidden transition-[width,opacity] duration-200 ease-out",
+            open ? "opacity-100" : "pointer-events-none w-0 opacity-0",
           )}
+          style={open ? { width: PANEL_WIDTH } : undefined}
           aria-hidden={!open}
         >
-          <div className="border-b border-border px-3 py-2.5">
-            <ToggleGroup
-              type="single"
-              value={page}
-              onValueChange={(value) => {
-                if (value === "strategy" || value === "breakers") setPage(value);
-              }}
-              className="mb-2 grid w-full grid-cols-2 gap-1"
-            >
-              <ToggleGroupItem value="strategy" className="h-8 text-[10px] uppercase tracking-wider">
-                Strategy
-              </ToggleGroupItem>
-              <ToggleGroupItem value="breakers" className="h-8 text-[10px] uppercase tracking-wider">
-                Circuit breakers
-              </ToggleGroupItem>
-            </ToggleGroup>
-            {page === "strategy" ? (
-              <>
-                <div className="truncate text-sm font-semibold">{activeLabel}</div>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  Pick which strategy profile the engine runs.
+          <div
+            className="flex max-h-[min(80vh,640px)] flex-col overflow-hidden rounded-r-md border border-l-0 border-border bg-background/95 shadow-2xl backdrop-blur"
+            style={{ width: PANEL_WIDTH }}
+          >
+            <div className="border-b border-border px-3 py-2.5">
+              <ToggleGroup
+                type="single"
+                value={page}
+                onValueChange={(value) => {
+                  if (value === "strategy" || value === "breakers") setPage(value);
+                }}
+                className="mb-2 grid w-full grid-cols-2 gap-1"
+              >
+                <ToggleGroupItem value="strategy" className="h-8 text-[10px] uppercase tracking-wider">
+                  Strategy
+                </ToggleGroupItem>
+                <ToggleGroupItem value="breakers" className="h-8 text-[10px] uppercase tracking-wider">
+                  Circuit breakers
+                </ToggleGroupItem>
+              </ToggleGroup>
+              {page === "strategy" ? (
+                <>
+                  <div className="truncate text-sm font-semibold">{activeLabel}</div>
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Pick which strategy profile the engine runs.
+                  </p>
+                </>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  Enable or disable protection guards. Active trips stay in the top dashboard row.
                 </p>
-              </>
-            ) : (
-              <p className="text-[11px] text-muted-foreground">
-                Enable or disable protection guards. Active trips stay in the top dashboard row.
-              </p>
-            )}
-          </div>
+              )}
+            </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            {page === "strategy" ? (
-              <div className="p-3">
-                <StrategyPicker
-                  strategies={strategies}
-                  activeName={activeName}
-                  multiMode={multiMode}
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {page === "strategy" ? (
+                <div className="p-3">
+                  <StrategyPicker
+                    strategies={strategies}
+                    activeName={activeName}
+                    multiMode={multiMode}
+                    backendReachable={backendReachable}
+                    onSelect={onPickStrategy}
+                    hideHeader
+                  />
+                </div>
+              ) : (
+                <BreakersPanel
+                  breakers={breakers}
+                  paperMode={paperMode}
                   backendReachable={backendReachable}
-                  onSelect={onPickStrategy}
-                  hideHeader
+                  onPatchEnabled={onPatchBreakerEnabled}
+                  embedded
                 />
-              </div>
-            ) : (
-              <BreakersPanel
-                breakers={breakers}
-                paperMode={paperMode}
-                backendReachable={backendReachable}
-                onPatchEnabled={onPatchBreakerEnabled}
-                embedded
-              />
-            )}
+              )}
+            </div>
           </div>
         </div>
       </div>

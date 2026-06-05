@@ -19,6 +19,8 @@ import { Panel } from "@/components/algo/dashboard/primitives";
 import { cn } from "@/lib/utils";
 import type { AlgoStatus } from "@/components/algo/types";
 
+const PANEL_WIDTH = "min(300px,calc(100vw-3rem))";
+
 const STATUS_META: Record<
   AlgoStatus,
   { label: string; dot: string }
@@ -79,119 +81,119 @@ export function ControlHoverRail({
       ) : null}
 
       <div
-        className="fixed right-0 top-[calc(49px+4.5rem)] z-30 flex"
+        className="fixed right-0 top-1/2 z-30 flex -translate-y-1/2"
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
         <div
           className={cn(
-            "flex w-[min(300px,calc(100vw-3rem))] flex-col rounded-l-md border border-r-0 border-border bg-background/95 shadow-2xl backdrop-blur transition-[transform,opacity] duration-200 ease-out",
-            open
-              ? "translate-x-0 opacity-100"
-              : "pointer-events-none translate-x-full opacity-0",
+            "overflow-hidden transition-[width,opacity] duration-200 ease-out",
+            open ? "opacity-100" : "pointer-events-none w-0 opacity-0",
           )}
+          style={open ? { width: PANEL_WIDTH } : undefined}
           aria-hidden={!open}
         >
-          <Panel
-            title="CONTROL"
-            right={
-              <Badge variant="outline" className="border-border text-[10px] uppercase tracking-wider">
-                <Settings2 className="mr-1 size-3" /> live
-              </Badge>
-            }
+          <div
+            className="flex flex-col rounded-l-md border border-r-0 border-border bg-background/95 shadow-2xl backdrop-blur"
+            style={{ width: PANEL_WIDTH }}
           >
-            <div className="space-y-3 p-3">
-              <p className="text-[11px] text-muted-foreground">
-                Hover the right edge tab on desktop; tap it on mobile.
-              </p>
-
-              <div className="grid grid-cols-3 gap-1.5">
-                {status === "paused" ? (
+            <Panel
+              title="CONTROL"
+              right={
+                <Badge variant="outline" className="border-border text-[10px] uppercase tracking-wider">
+                  <Settings2 className="mr-1 size-3" /> live
+                </Badge>
+              }
+            >
+              <div className="space-y-3 p-3">
+                <div className="grid grid-cols-3 gap-1.5">
+                  {status === "paused" ? (
+                    <Button
+                      onClick={onResume}
+                      disabled={!backendReachable || systemBusy}
+                      size="sm"
+                      className="col-span-2 bg-bull text-bull-foreground hover:bg-bull/90"
+                    >
+                      <Play className="size-4" /> RESUME
+                    </Button>
+                  ) : (
+                    <>
+                      <Button
+                        onClick={onStart}
+                        disabled={startDisabled}
+                        size="sm"
+                        className="bg-bull text-bull-foreground hover:bg-bull/90 disabled:opacity-40"
+                      >
+                        {systemBusy ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <Play className="size-4" />
+                        )}{" "}
+                        {systemBusy ? "STARTING…" : "START"}
+                      </Button>
+                      <Button
+                        onClick={onPause}
+                        disabled={status !== "running" || systemBusy}
+                        size="sm"
+                        variant="secondary"
+                        className="border border-border"
+                      >
+                        <Pause className="size-4" /> PAUSE
+                      </Button>
+                    </>
+                  )}
                   <Button
-                    onClick={onResume}
-                    disabled={!backendReachable || systemBusy}
+                    onClick={onStop}
+                    disabled={status === "stopped" || systemBusy}
                     size="sm"
-                    className="col-span-2 bg-bull text-bull-foreground hover:bg-bull/90"
+                    variant="destructive"
                   >
-                    <Play className="size-4" /> RESUME
+                    <Square className="size-4" /> STOP
                   </Button>
-                ) : (
-                  <>
-                    <Button
-                      onClick={onStart}
-                      disabled={startDisabled}
-                      size="sm"
-                      className="bg-bull text-bull-foreground hover:bg-bull/90 disabled:opacity-40"
-                    >
-                      {systemBusy ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <Play className="size-4" />
-                      )}{" "}
-                      {systemBusy ? "STARTING…" : "START"}
-                    </Button>
-                    <Button
-                      onClick={onPause}
-                      disabled={status !== "running" || systemBusy}
-                      size="sm"
-                      variant="secondary"
-                      className="border border-border"
-                    >
-                      <Pause className="size-4" /> PAUSE
-                    </Button>
-                  </>
-                )}
+                </div>
+
                 <Button
-                  onClick={onStop}
-                  disabled={status === "stopped" || systemBusy}
+                  onClick={onFlatten}
+                  disabled={!backendReachable || controlPending === "flatten"}
                   size="sm"
-                  variant="destructive"
+                  variant="outline"
+                  className="w-full border-bear/40 text-bear hover:bg-bear/10 hover:text-bear"
                 >
-                  <Square className="size-4" /> STOP
+                  <AlertTriangle className="size-4" />
+                  {controlPending === "flatten" ? "Flattening…" : "Flatten all positions"}
+                </Button>
+
+                <Separator />
+
+                <div>
+                  <div className="mb-2 flex items-center justify-between text-xs">
+                    <span className="uppercase tracking-wider text-muted-foreground">Risk per trade</span>
+                    <span className="tabular-nums text-bull">{risk[0]}%</span>
+                  </div>
+                  <Slider
+                    value={risk}
+                    onValueChange={onRiskChange}
+                    onValueCommit={onRiskCommit}
+                    min={5}
+                    max={100}
+                    step={5}
+                  />
+                </div>
+
+                <ControlLimitsPanel
+                  settings={settingsSnapshot}
+                  backendReachable={backendReachable}
+                  onPatchSettings={onPatchSettings}
+                />
+
+                <Button variant="outline" className="w-full lg:hidden" asChild>
+                  <Link to="/settings">
+                    <Settings2 className="size-4" /> Engine settings
+                  </Link>
                 </Button>
               </div>
-
-              <Button
-                onClick={onFlatten}
-                disabled={!backendReachable || controlPending === "flatten"}
-                size="sm"
-                variant="outline"
-                className="w-full border-bear/40 text-bear hover:bg-bear/10 hover:text-bear"
-              >
-                <AlertTriangle className="size-4" />
-                {controlPending === "flatten" ? "Flattening…" : "Flatten all positions"}
-              </Button>
-
-              <Separator />
-
-              <div>
-                <div className="mb-2 flex items-center justify-between text-xs">
-                  <span className="uppercase tracking-wider text-muted-foreground">Risk per trade</span>
-                  <span className="tabular-nums text-bull">{risk[0]}%</span>
-                </div>
-                <Slider
-                  value={risk}
-                  onValueChange={onRiskChange}
-                  onValueCommit={onRiskCommit}
-                  min={5}
-                  max={100}
-                  step={5}
-                />
-              </div>
-
-              <ControlLimitsPanel
-                settings={settingsSnapshot}
-                backendReachable={backendReachable}
-                onPatchSettings={onPatchSettings}
-              />
-
-              <Button variant="outline" className="w-full lg:hidden" asChild>
-                <Link to="/settings">
-                  <Settings2 className="size-4" /> Engine settings
-                </Link>
-              </Button>
-            </div>
-          </Panel>
+            </Panel>
+          </div>
         </div>
 
         <button
@@ -230,9 +232,6 @@ export function ControlHoverRail({
             )}
           >
             {statusMeta.label}
-          </span>
-          <span className="text-[8px] uppercase tracking-wider text-muted-foreground/80 [writing-mode:vertical-rl]">
-            Hover
           </span>
         </button>
       </div>
