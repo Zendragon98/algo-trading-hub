@@ -34,6 +34,11 @@ class _DedupEntry:
     expires_at: float
 
 
+@dataclass(slots=True)
+class _DedupWindow:
+    timestamps: list[float]
+
+
 class PreTradeValidator:
     """Single entry for pre-router checks on singles and pair groups."""
 
@@ -56,6 +61,7 @@ class PreTradeValidator:
         self._venue_qty_for = venue_qty_for
         self._on_ledger_venue_flat_heal = on_ledger_venue_flat_heal
         self._dedup: dict[tuple[str, ...], _DedupEntry] = {}
+        self._dedup_window: dict[tuple[str, ...], _DedupWindow] = {}
 
     def apply_settings(self, settings: Settings) -> None:
         self._settings = settings
@@ -229,12 +235,17 @@ class PreTradeValidator:
         mid: float,
     ) -> tuple[bool, str]:
         """Return (ok, reason) for a LIMIT peg vs mid."""
+        if mid <= 0:
+            return True, ""
+        fair_pct = float(self._settings.max_fair_value_deviation_pct)
         cap_bps = float(self._settings.max_limit_deviation_bps)
-        if cap_bps <= 0 or mid <= 0:
+        if fair_pct > 0:
+            cap_bps = fair_pct * 10_000.0
+        elif cap_bps <= 0:
             return True, ""
         dev_bps = abs(limit_price - mid) / mid * 10_000.0
         if dev_bps > cap_bps:
-            return False, f"limit_collar:{dev_bps:.1f}bps>{cap_bps:.1f}bps"
+            return False, f"fat_finger_price:{dev_bps:.1f}bps>{cap_bps:.1f}bps"
         return True, ""
 
     def _validate_reduce_only(
@@ -352,6 +363,10 @@ class PreTradeValidator:
         return (signal.symbol, signal.side.value, signal.reason, rounded)
 
     def _is_duplicate(self, signal: Signal) -> bool:
+        max_per_window = int(self._settings.max_identical_orders_per_window)
+        if max_per_window > 0:
+            return self._is_duplicate_window(signal, max_per_window)
+
         ttl = float(self._settings.signal_dedup_ttl_sec)
         if ttl <= 0:
             return False
@@ -368,12 +383,51 @@ class PreTradeValidator:
             return True
         return False
 
+    def _is_duplicate_window(self, signal: Signal, max_per_window: int) -> bool:
+        window_sec = float(self._settings.identical_order_window_sec)
+        if window_sec <= 0:
+            return False
+        now = _time.time()
+        key = self._dedup_key(signal, signal.qty)
+        entry = self._dedup_window.get(key)
+        if entry is None:
+            return False
+        cutoff = now - window_sec
+        entry.timestamps = [t for t in entry.timestamps if t > cutoff]
+        if len(entry.timestamps) >= max_per_window:
+            signal_log_emit(
+                logger,
+                f"duplicate order veto {signal.symbol} count={len(entry.timestamps)}",
+                reason=signal.reason,
+            )
+            return True
+        return False
+
     def _record_dedup(self, signal: Signal, qty: float) -> None:
+        max_per_window = int(self._settings.max_identical_orders_per_window)
+        if max_per_window > 0:
+            self._record_dedup_window(signal, qty)
+            return
+
         ttl = float(self._settings.signal_dedup_ttl_sec)
         if ttl <= 0:
             return
         key = self._dedup_key(signal, qty)
         self._dedup[key] = _DedupEntry(expires_at=_time.time() + ttl)
+
+    def _record_dedup_window(self, signal: Signal, qty: float) -> None:
+        window_sec = float(self._settings.identical_order_window_sec)
+        if window_sec <= 0:
+            return
+        now = _time.time()
+        key = self._dedup_key(signal, qty)
+        entry = self._dedup_window.get(key)
+        if entry is None:
+            entry = _DedupWindow(timestamps=[])
+            self._dedup_window[key] = entry
+        cutoff = now - window_sec
+        entry.timestamps = [t for t in entry.timestamps if t > cutoff]
+        entry.timestamps.append(now)
 
     def _prune_dedup(self, now: float) -> None:
         stale = [k for k, v in self._dedup.items() if v.expires_at <= now]

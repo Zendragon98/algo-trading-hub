@@ -25,6 +25,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from common.config import Settings
+from common.enums import Side
 from common.types import Fill, Position, Signal, Tick
 
 from ..portfolio.portfolio import Portfolio
@@ -206,6 +207,19 @@ class RiskManager:
                 equity,
             )
             return RiskDecision(False, reason="free_margin_floor")
+
+        max_delta = float(self._settings.max_net_delta_usd)
+        if max_delta > 0:
+            signed = notional if signal.side is Side.BUY else -notional
+            projected_delta = snap.net_notional + signed
+            if abs(projected_delta) > max_delta + 1e-9:
+                logger.warning(
+                    "risk veto position_delta_limit %s projected=%.2f cap=%.2f",
+                    signal.symbol,
+                    projected_delta,
+                    max_delta,
+                )
+                return RiskDecision(False, reason="position_delta_limit")
 
         # Reject if the post-trade gross would exceed the hard ceiling.
         projected_gross = snap.gross_notional + notional

@@ -103,7 +103,7 @@ def test_limit_collar_rejects_wide_peg() -> None:
     )
     ok, reason = v.check_limit_collar("BTCUSDT", limit_price=101.0, mid=100.0)
     assert not ok
-    assert reason.startswith("limit_collar:")
+    assert reason.startswith("fat_finger_price:")
 
 
 def test_limit_collar_allows_tight_peg() -> None:
@@ -152,3 +152,71 @@ def test_signal_dedup_blocks_repeat() -> None:
     second = v.validate_single(sig, mid=100.0, tick_ts=None, spread_bps=5.0)
     assert not second.approved
     assert second.reason == "signal_dedup"
+
+
+def test_fair_value_deviation_pct_rejects_wide_limit() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        max_fair_value_deviation_pct=0.03,
+    )
+    bus = EventBus()
+    positions = PositionTracker(bus=bus)
+    portfolio = Portfolio(bus=bus, position_tracker=positions, base_currency="USDT")
+    portfolio.seed_cash(10_000.0)
+    pnl = PnLTracker(portfolio)
+    risk = RiskManager(
+        settings=settings,
+        portfolio=portfolio,
+        pnl=pnl,
+        stop_monitor=StopLossMonitor(limits=Limits.from_settings(settings)),
+        breaker=CircuitBreaker(bus=bus),
+    )
+    v = PreTradeValidator(
+        settings=settings,
+        risk=risk,
+        gateway=_Gw(),
+        portfolio=portfolio,
+        positions=positions,
+    )
+    ok, reason = v.check_limit_collar("BTCUSDT", limit_price=104.0, mid=100.0)
+    assert not ok
+    assert reason.startswith("fat_finger_price:")
+
+
+def test_identical_orders_allow_up_to_three_per_window() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        max_risk_pct=1.0,
+        max_gross_notional=1_000_000.0,
+        max_identical_orders_per_window=3,
+        identical_order_window_sec=1.0,
+        signal_dedup_ttl_sec=0.0,
+    )
+    bus = EventBus()
+    positions = PositionTracker(bus=bus)
+    portfolio = Portfolio(bus=bus, position_tracker=positions, base_currency="USDT")
+    portfolio.seed_cash(10_000.0)
+    pnl = PnLTracker(portfolio)
+    risk = RiskManager(
+        settings=settings,
+        portfolio=portfolio,
+        pnl=pnl,
+        stop_monitor=StopLossMonitor(limits=Limits.from_settings(settings)),
+        breaker=CircuitBreaker(bus=bus),
+    )
+    v = PreTradeValidator(
+        settings=settings,
+        risk=risk,
+        gateway=_Gw(),
+        portfolio=portfolio,
+        positions=positions,
+    )
+    sig = Signal(symbol="ETHUSDT", side=Side.BUY, qty=0.01, reason="entry")
+    for _ in range(3):
+        result = v.validate_single(sig, mid=100.0, tick_ts=None, spread_bps=5.0)
+        assert result.approved
+    fourth = v.validate_single(sig, mid=100.0, tick_ts=None, spread_bps=5.0)
+    assert not fourth.approved
+    assert fourth.reason == "signal_dedup"

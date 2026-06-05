@@ -554,8 +554,8 @@ Institutional **two-sided market making** posts standing post-only bid/ask quote
 **Pricing loop (each 1 Hz tick):**
 
 1. **Venue mid** — L2 mid from `OrderBookStore`.
-2. **MM reservation mid** — `reservation = venue_mid × (1 + (micro_bps + inventory_bps) / 10_000)` where `micro_bps` blends skew / imbalance / tape / depletion and `inventory_bps = -inventory_ratio × MM_RESERVATION_INVENTORY_BPS` (long inventory pushes fair mid **down** so you sell more aggressively).
-3. **Half-spreads** — base `MM_QUOTE_HALF_SPREAD_BPS` + toxicity/depletion widen; **asymmetric** via `MM_INVENTORY_SPREAD_SKEW_BPS` (widen bid / tighten ask when long).
+2. **MM reservation mid** — when `MM_AS_PRICING_ENABLED=true` (default): Avellaneda–Stoikov `r_t = S_t − q_t·γ·σ²·(T−t)` with `q_t = inventory_ratio`, `σ` from `vol_5m_bps`, horizon `MM_AS_HORIZON_SEC`; micro/funding/stable offsets still apply on top. Legacy mode (`MM_AS_PRICING_ENABLED=false`): `reservation = venue_mid × (1 + (micro_bps + inventory_bps) / 10_000)` with `inventory_bps = -inventory_ratio × MM_RESERVATION_INVENTORY_BPS`.
+3. **Half-spreads** — AS mode: `δ_t = (γ/2)·σ²·(T−t) + (1/γ)·ln(1+γ/k)` in bps (`MM_AS_GAMMA`, `MM_AS_K`, depth-scaled `k`) + toxicity/depletion widen; symmetric around `r_t`. Legacy: base `MM_QUOTE_HALF_SPREAD_BPS` + toxicity/depletion + asymmetric `MM_INVENTORY_SPREAD_SKEW_BPS`.
 4. **Limit prices** — `bid = reservation × (1 - bid_half/10k)`, `ask = reservation × (1 + ask_half/10k)`.
 5. **Inventory** — `inventory_ratio = signed_notional / cap` (position ± working quotes if enabled); size damps on crowded side; hard ratio pulls that side entirely.
 

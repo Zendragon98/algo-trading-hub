@@ -110,10 +110,27 @@ class RiskMixin(BaseModel):
     auto_rearm_consecutive_losses_after_flatten: bool = True
 
     # --- Pre-trade validation (PreTradeValidator) ---
-    max_order_notional_usd: float = 0.0   # 0 = disabled; absolute USD cap per order
+    # Single-order max notional (fat-finger). 0 = disabled.
+    max_order_notional_usd: float = 0.0
     max_qty_vs_position_multiple: float = 0.0  # 0 = disabled; max entry qty vs |position|
-    signal_dedup_ttl_sec: float = 2.0       # suppress duplicate signals within window
+    signal_dedup_ttl_sec: float = 2.0       # legacy binary dedup when max_identical_orders_per_window=0
     max_limit_deviation_bps: float = 50.0   # LIMIT peg collar vs mid (execution layer)
+    # Fat-finger price check vs fair value (mid). 0.03 = ±3%; 0 uses max_limit_deviation_bps only.
+    max_fair_value_deviation_pct: float = 0.0
+    # Duplicate order detection: allow up to N identical orders per window (0 = legacy dedup).
+    max_identical_orders_per_window: int = 0
+    identical_order_window_sec: float = 1.0
+    # Working-order exposure caps (SubmitGuard / OrderExposureGuard). 0 = disabled.
+    max_open_order_notional_usd: float = 0.0
+    max_active_orders: int = 0
+    # Net directional exposure cap (|delta| in USD). 0 = disabled.
+    max_net_delta_usd: float = 0.0
+    # Daily loss kill in absolute USD (complements daily_loss_kill_pct). 0 = disabled.
+    daily_loss_kill_usd: float = 0.0
+    # Margin ratio = gross_notional / equity. Auto-trim largest leg when exceeded.
+    margin_ratio_reduce_pct: float = 0.0
+    margin_ratio_reduce_frac: float = 0.25
+    margin_ratio_reduce_cooldown_sec: float = 30.0
 
     # --- Order reconciliation ---
     reconcile_cancel_orphans: bool = True   # auto-cancel venue orders unknown to OMS

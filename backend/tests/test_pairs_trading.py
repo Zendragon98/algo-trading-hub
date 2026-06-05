@@ -311,36 +311,35 @@ def test_volume_weight_pulls_reference_toward_liquid_pair() -> None:
 
 
 def test_size_pair_hybrid_scale_grows_with_z() -> None:
-    """|z| above entry_z scales the leg notional linearly up to the cap."""
+    """|z| at entry_z hits risk floor; stronger z grows cubically to the cap."""
     settings = _settings(
         risk_per_trade_pct=0.005, default_stop_loss_pct=0.005,
         pair_size_scale_cap=2.0,
     )
     strat = PairsTradingStrategy(settings, equity_provider=lambda: 10_000.0)
+    p_floor = 100.0
 
-    # |z| == entry_z -> 1.0x floor (target_notional == equity here).
+    # |z| == entry_z -> minimum risk-sized floor.
     floor_qty = strat._size_pair(usdt_mid=100.0, usdc_mid=100.0,
                                   abs_z=2.0, entry_z=2.0)  # type: ignore[attr-defined]
-    # |z| == 1.5 * entry_z -> 1.5x.
+    # |z| == 1.5 * entry_z -> s=0.5 between floor and 2× ceiling.
     mid_qty = strat._size_pair(usdt_mid=100.0, usdc_mid=100.0,
                                 abs_z=3.0, entry_z=2.0)  # type: ignore[attr-defined]
-    # |z| == 5 * entry_z -> clamped at the 2.0x cap.
+    # |z| == 5 * entry_z -> full 2× ceiling.
     cap_qty = strat._size_pair(usdt_mid=100.0, usdc_mid=100.0,
                                 abs_z=10.0, entry_z=2.0)  # type: ignore[attr-defined]
-    assert floor_qty == 100.0
-    assert pytest.approx(mid_qty) == 150.0
-    assert cap_qty == 200.0  # capped
+    assert floor_qty == pytest.approx(p_floor)
+    assert mid_qty == pytest.approx(p_floor + p_floor * 0.5 ** 3)
+    assert cap_qty == pytest.approx(p_floor * 2.0)
 
 
 def test_size_pair_below_entry_uses_floor() -> None:
-    """The hybrid scale never shrinks the trade below the floor."""
+    """Pre-entry |z| still returns the risk floor (normally not called)."""
     settings = _settings(
         risk_per_trade_pct=0.005, default_stop_loss_pct=0.005,
         pair_size_scale_cap=2.0,
     )
     strat = PairsTradingStrategy(settings, equity_provider=lambda: 10_000.0)
-    # |z| below entry_z => scale clamps to 1.0 (we should never call
-    # _size_pair pre-entry, but if we did it must not return zero).
     qty = strat._size_pair(usdt_mid=100.0, usdc_mid=100.0,
                             abs_z=1.0, entry_z=2.0)  # type: ignore[attr-defined]
     assert qty == 100.0

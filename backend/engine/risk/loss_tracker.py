@@ -60,11 +60,13 @@ class LossTracker:
         daily_loss_kill_pct: float,
         max_consecutive_losses: int,
         streak_loss_min_abs_usd: float = 0.0,
+        daily_loss_kill_usd: float = 0.0,
     ) -> None:
         self._portfolio = portfolio
         self._performance = performance
         self._breaker = breaker
         self._daily_kill = max(0.0, daily_loss_kill_pct)
+        self._daily_kill_usd = max(0.0, float(daily_loss_kill_usd))
         self._max_streak = max(0, int(max_consecutive_losses))
         self._streak_loss_min_abs_usd = max(0.0, float(streak_loss_min_abs_usd))
         self._anchor: _DailyAnchor | None = None
@@ -74,6 +76,7 @@ class LossTracker:
 
     def apply_settings(self, settings: Settings) -> None:
         self._daily_kill = max(0.0, settings.daily_loss_kill_pct)
+        self._daily_kill_usd = max(0.0, float(settings.daily_loss_kill_usd))
         self._max_streak = max(0, int(settings.max_consecutive_losses))
         self._streak_loss_min_abs_usd = max(
             0.0, float(settings.consecutive_loss_min_abs_usd),
@@ -94,6 +97,7 @@ class LossTracker:
             daily_loss_kill_pct=settings.daily_loss_kill_pct,
             max_consecutive_losses=settings.max_consecutive_losses,
             streak_loss_min_abs_usd=settings.consecutive_loss_min_abs_usd,
+            daily_loss_kill_usd=settings.daily_loss_kill_usd,
         )
 
     # --- Heartbeat ---
@@ -121,7 +125,7 @@ class LossTracker:
             )
 
     def _check_daily_loss(self) -> None:
-        if self._daily_kill <= 0 or self._anchor is None:
+        if (self._daily_kill <= 0 and self._daily_kill_usd <= 0) or self._anchor is None:
             return
         equity_at_open = self._anchor.equity_at_open
         if equity_at_open <= 0:
@@ -129,8 +133,19 @@ class LossTracker:
         equity = self._portfolio.snapshot().equity
         if equity >= equity_at_open:
             return
-        loss_pct = (equity_at_open - equity) / equity_at_open
-        if loss_pct >= self._daily_kill:
+        loss_usd = equity_at_open - equity
+        loss_pct = loss_usd / equity_at_open
+        if self._daily_kill_usd > 0 and loss_usd >= self._daily_kill_usd:
+            self._breaker.trip(
+                Breach(
+                    code="daily_loss",
+                    scope=BreakerScope.ENGINE,
+                    severity=BreakerSeverity.MAJOR,
+                    detail=f"loss_usd={loss_usd:.2f}",
+                )
+            )
+            return
+        if self._daily_kill > 0 and loss_pct >= self._daily_kill:
             self._breaker.trip(
                 Breach(
                     code="daily_loss",

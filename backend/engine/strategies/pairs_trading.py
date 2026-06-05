@@ -30,9 +30,9 @@ the cache is empty so cold-start behaviour is identical to the
 unweighted strategy.
 
 Sizing is hybrid: a stop-loss budget at ``risk_per_trade_pct`` sets
-the *floor* qty, then we scale linearly with ``|z|/entry_z`` above the
-threshold (capped at ``pair_size_scale_cap``). Bigger deviations =
-bigger conviction => bigger size. Both legs of a coin pair share
+``P_floor``, then cubic conviction scaling grows toward ``P_ceil`` with
+``s = 0`` at ``entry_z`` and ``s = 1`` at ``entry_z × pair_size_scale_cap``.
+Bigger deviations => stronger signal => bigger size. Both legs of a coin pair share
 ``group_id`` so the engine submits them atomically; no "naked leg" can
 leak through a venue filter rejection.
 """
@@ -55,6 +55,7 @@ from common.types import Signal
 
 from ..market_data.feature_store import Features
 from ..position.venue_pnl import apply_attributed_fill_vwap
+from .signal_scaling import conviction_above_entry, cubic_scaled_qty
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger(__name__)
@@ -791,10 +792,15 @@ class PairsTradingStrategy(StrategyBase):
             if qty <= 0:
                 return []
 
-            scale = min(
-                max(1.0, float(self._settings.pair_size_scale_cap)),
-                max(1.0, abs(z) / pair.entry_z),
-            ) if pair.entry_z > 0 else 1.0
+            scale_cap = max(1.0, float(self._settings.pair_size_scale_cap))
+            signal = (
+                conviction_above_entry(
+                    abs(z), entry=pair.entry_z, full=pair.entry_z * scale_cap,
+                )
+                if pair.entry_z > 0
+                else 1.0
+            )
+            scale = 1.0 + (scale_cap - 1.0) * (signal ** 3)
             notional = qty * max(usdt_mid, usdc_mid)
             dev = basis if not use_reference else basis - reference
             if z >= pair.entry_z:
@@ -1015,12 +1021,9 @@ class PairsTradingStrategy(StrategyBase):
            sized so a stop-out costs exactly ``risk_per_trade_pct`` of
            equity.
 
-        2. **Conviction scale (multiplier):** when ``|z|`` exceeds the
-           entry threshold we scale the floor by
-           ``min(|z|/entry_z, pair_size_scale_cap)``. ``|z| == entry_z``
-           gives a 1.0x trade (the floor); ``|z| == 2 * entry_z`` gives a
-           2.0x trade; anything beyond the cap stays clamped so a
-           transient z-spike can't blow up the leg notional.
+        2. **Cubic conviction scale:** ``qty = P_floor + (P_ceil - P_floor) × s³``
+           with ``s = 0`` at ``|z| = entry_z`` (minimum risk size) and
+           ``s = 1`` at ``|z| = entry_z × pair_size_scale_cap``.
 
         The two legs share ``qty`` (same base asset) so the pair stays
         dollar-neutral after sizing.
@@ -1051,14 +1054,17 @@ class PairsTradingStrategy(StrategyBase):
         if ref_mid <= 0:
             return 0.0
 
-        # Hybrid scale: 1.0 at |z|==entry_z, capped at pair_size_scale_cap.
+        p_floor = target_notional / ref_mid
         scale_cap = max(1.0, float(self._settings.pair_size_scale_cap))
+        p_ceil = p_floor * scale_cap
         if entry_z > 0 and abs_z > 0:
-            scale = min(scale_cap, max(1.0, abs_z / entry_z))
+            signal = conviction_above_entry(
+                abs_z, entry=entry_z, full=entry_z * scale_cap,
+            )
         else:
-            scale = 1.0
+            signal = 0.0
 
-        qty = (target_notional / ref_mid) * scale
+        qty = cubic_scaled_qty(p_floor, signal, p_ceil=p_ceil)
         max_leg_notional = float(
             getattr(self._settings, "pair_max_leg_notional", 0) or 0,
         )

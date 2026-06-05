@@ -37,6 +37,7 @@ from .position_sync import (
     plan_directional_signal,
     side_from_qty,
 )
+from .signal_scaling import conviction_above_entry, cubic_scaled_qty
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger(__name__)
@@ -568,8 +569,11 @@ class FlowMomentumStrategy(StrategyBase):
             return base
         if tape_thr <= 0:
             return base
-        mult = min(2.0, max(0.5, abs(tape) / tape_thr))
-        return base * mult
+        # Floor at tape threshold; cubic growth to 2× floor at 2× threshold.
+        signal = conviction_above_entry(
+            tape, entry=tape_thr, full=2.0 * tape_thr,
+        )
+        return cubic_scaled_qty(base, signal, p_ceil=base * 2.0)
 
     def _cap_entries(self, signals: list[Signal]) -> list[Signal]:
         max_n = int(getattr(self._settings, "flow_max_entries_per_tick", 0) or 0)

@@ -40,6 +40,7 @@ from common.types import Signal
 
 from ..market_data.feature_store import Features
 from .position_sync import plan_directional_signal, side_from_qty
+from .signal_scaling import cubic_scaled_qty
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger(__name__)
@@ -175,13 +176,14 @@ class SmaCrossoverStrategy(StrategyBase):
             crossed_down = state.prev_fast_above and (not fast_above)
             state.prev_fast_above = fast_above
 
-            entry_qty = self._size_for(mid)
-            if entry_qty <= 0:
+            p_max = self._size_for(mid)
+            if p_max <= 0:
                 continue
 
             pos_qty = self._position_qty(symbol)
             sig: Signal | None = None
             if crossed_up and side_from_qty(pos_qty) != 1:
+                entry_qty = cubic_scaled_qty(p_max, 1.0)
                 sig = plan_directional_signal(
                     symbol=symbol,
                     target_side=+1,
@@ -192,6 +194,7 @@ class SmaCrossoverStrategy(StrategyBase):
                     score=1.0,
                 )
             elif crossed_down and side_from_qty(pos_qty) != -1:
+                entry_qty = cubic_scaled_qty(p_max, 1.0)
                 sig = plan_directional_signal(
                     symbol=symbol,
                     target_side=-1,

@@ -158,6 +158,7 @@ def test_long_inventory_lowers_reservation_and_skews_spread() -> None:
     )
     own = OwnBookState(symbol="BTCUSDT")
     s = Settings(
+        mm_as_pricing_enabled=False,
         mm_max_inventory_notional=100.0,
         mm2_max_inventory_notional=100.0,
         mm_reservation_inventory_bps=20.0,

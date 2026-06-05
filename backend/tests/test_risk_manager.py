@@ -316,3 +316,28 @@ def test_stop_loss_cooldown_cleared_on_flip() -> None:
     monitor.arm(short_pos)
     # Short stop sits above entry; an ask above the stop must fire.
     assert monitor.evaluate(short_pos, Tick(symbol="BTCUSDT", bid=80_000.0, ask=80_001.0)) == "stop_loss"
+
+
+def test_position_delta_limit_vetoes_oversized_net_exposure() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        max_risk_pct=1.0,
+        max_gross_notional=1_000_000.0,
+        max_net_delta_usd=800.0,
+        max_symbol_notional_pct=1.0,
+        max_drawdown_pct=0.05,
+        symbols=["BTCUSDT"],
+    )
+    rm, portfolio = _build(settings)
+    tracker = portfolio._tracker  # noqa: SLF001
+    tracker.seed([
+        Position(symbol="BTCUSDT", qty=5.0, avg_entry_price=100.0, mark_price=100.0),
+    ])
+    # Existing net long = 500; scaled add = 500 -> 1000 exceeds 800 delta cap.
+    decision = rm.check(
+        Signal(symbol="BTCUSDT", side=Side.BUY, qty=300_000.0, reason="test"),
+        mid_price=100.0,
+    )
+    assert not decision.approved
+    assert decision.reason == "position_delta_limit"

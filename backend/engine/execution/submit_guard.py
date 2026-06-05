@@ -33,6 +33,7 @@ from ..risk.circuit_breaker import (
     BreakerSeverity,
     CircuitBreaker,
 )
+from ..risk.order_exposure_guard import OrderExposureGuard
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ class SubmitGuard:
         submit_rate_per_sec: float,
         max_consecutive_rejects: int,
         reject_cooldown_sec: float,
+        order_exposure: OrderExposureGuard | None = None,
     ) -> None:
         self._breaker = breaker
         self._open_parent_count = open_parent_count
@@ -86,6 +88,7 @@ class SubmitGuard:
         self._symbol_buckets: dict[str, _TokenBucket] = {}
         self._symbol_rate = submit_rate_per_sec
         self._reject_streak: dict[str, int] = defaultdict(int)
+        self._order_exposure = order_exposure
 
     def apply_settings(self, settings: Settings) -> None:
         self._max_open_parents = max(0, int(settings.max_open_parents))
@@ -95,6 +98,8 @@ class SubmitGuard:
         self._symbol_rate = sym_rate if sym_rate > 0 else settings.submit_rate_per_sec
         self._bucket = _TokenBucket(settings.submit_rate_per_sec)
         self._symbol_buckets = {}
+        if self._order_exposure is not None:
+            self._order_exposure.apply_settings(settings)
 
     @classmethod
     def from_settings(
@@ -102,7 +107,17 @@ class SubmitGuard:
         settings: Settings,
         breaker: CircuitBreaker,
         open_parent_count: Callable[[], int],
+        *,
+        working_children: Callable | None = None,
+        mid_for_symbol: Callable[[str], float | None] | None = None,
     ) -> SubmitGuard:
+        exposure = None
+        if working_children is not None and mid_for_symbol is not None:
+            exposure = OrderExposureGuard.from_settings(
+                settings,
+                working_children=working_children,
+                mid_for_symbol=mid_for_symbol,
+            )
         return cls(
             breaker=breaker,
             open_parent_count=open_parent_count,
@@ -110,6 +125,7 @@ class SubmitGuard:
             submit_rate_per_sec=settings.submit_rate_per_sec,
             max_consecutive_rejects=settings.max_consecutive_rejects,
             reject_cooldown_sec=settings.reject_cooldown_sec,
+            order_exposure=exposure,
         )
 
     # --- Pre-submit ---
@@ -128,9 +144,21 @@ class SubmitGuard:
         ):
             logger.debug("submit blocked %s: max_open_parents", symbol)
             return False, "max_open_parents"
+        if self._order_exposure is not None:
+            ok, reason = self._order_exposure.check(symbol, qty=0.0)
+            if not ok:
+                logger.debug("submit blocked %s: %s", symbol, reason)
+                return False, reason
         return True, ""
 
-    async def gate_child(self, symbol: str, *, reduce_only: bool) -> tuple[bool, str]:
+    async def gate_child(
+        self,
+        symbol: str,
+        *,
+        reduce_only: bool,
+        qty: float = 0.0,
+        price: float | None = None,
+    ) -> tuple[bool, str]:
         """Pre-OMS check + throttle wait used by OrderManager.submit_child.
 
         Reduce-only orders bypass *both* the engine and symbol breakers:
@@ -147,6 +175,11 @@ class SubmitGuard:
             if self._breaker.is_blocked(BreakerScope.SYMBOL, symbol):
                 logger.debug("child gate blocked %s: symbol_breaker", symbol)
                 return False, "symbol_breaker"
+            if self._order_exposure is not None:
+                ok, reason = self._order_exposure.check(symbol, qty=qty, price=price)
+                if not ok:
+                    logger.debug("child gate blocked %s: %s", symbol, reason)
+                    return False, reason
         await self._bucket.acquire()
         if float(self._symbol_rate) > 0:
             sym_bucket = self._symbol_buckets.get(symbol)

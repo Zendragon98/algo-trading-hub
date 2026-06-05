@@ -12,6 +12,16 @@ class MmInstitutionalMixin(BaseModel):
     mm_tape_pressure_mode: str = "volume"  # volume | count
     mm_max_inventory_notional: float = 0.0  # 0 = use max_symbol_notional_pct * equity
     mm_inventory_skew_scale: float = 4.0
+    # Avellaneda–Stoikov pricing (r_t = S - q*gamma*sigma^2*tau; delta from gamma/k/sigma).
+    mm_as_pricing_enabled: bool = True
+    mm_as_gamma: float = 12.0  # risk aversion (higher -> wider spread, stronger inventory skew)
+    mm_as_k: float = 1.5  # base liquidity (higher -> tighter spread)
+    mm_as_horizon_sec: float = 300.0  # T - t; defaults to 5m vol window
+    mm_as_vol_period_sec: float = 300.0  # vol measurement window for tau scaling
+    mm_as_vol_floor_bps: float = 5.0  # minimum sigma for spread/skew calculations
+    mm_as_liquidity_spread_scale_bps: float = 2.5  # scales ln(1 + gamma/k) term into bps
+    mm_as_min_half_spread_bps: float = 0.5
+    mm_as_depth_k_weight: float = 0.6  # blend order-book depth into k (0 = static k)
     # Shift MM reservation mid away from inventory at |ratio|=1 (bps; long -> lower mid).
     mm_reservation_inventory_bps: float = 12.0
     # Extra half-spread on the side that would add exposure at |ratio|=1 (bps).

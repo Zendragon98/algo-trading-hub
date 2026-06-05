@@ -40,7 +40,12 @@ class _SubmitGuardLike(Protocol):
     """
 
     async def gate_child(
-        self, symbol: str, *, reduce_only: bool
+        self,
+        symbol: str,
+        *,
+        reduce_only: bool,
+        qty: float = 0.0,
+        price: float | None = None,
     ) -> tuple[bool, str]: ...
 
     def record_status(self, symbol: str, status: OrderStatus) -> None: ...
@@ -137,7 +142,10 @@ class OrderManager:
         """
         if self._submit_guard is not None:
             allowed, reason = await self._submit_guard.gate_child(
-                child.symbol, reduce_only=child.reduce_only,
+                child.symbol,
+                reduce_only=child.reduce_only,
+                qty=child.qty,
+                price=child.price,
             )
             if not allowed:
                 child.status = OrderStatus.REJECTED

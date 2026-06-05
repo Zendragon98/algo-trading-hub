@@ -14,11 +14,16 @@ from ...market_data.feature_store import Features, unrealized_pnl_bps
 from ...market_data.own_quote_book import EntryLedger, OwnBookState
 from ...position.venue_pnl import inventory_pnl_bps
 from ..position_sync import VenuePosition
+from .avellaneda_stoikov import (
+    as_vol_bps,
+    compute_as_quote_pricing,
+    effective_liquidity_k,
+    resolve_as_params,
+)
 from .calibrated import mm_float, mm_risk_float
+from .ids import MM_STRATEGY_NAMES, is_mm_strategy
 from .inventory_cap import resolve_mm_inventory_notional
 from .symbol_params import MmSymbolQuoteParams, resolve_mm_params
-
-from .ids import MM_STRATEGY_NAMES, is_mm_strategy
 
 
 def exit_pegged_price(mid: float, *, scratch_bps: float, reduce_long: bool) -> float:
@@ -337,18 +342,33 @@ def compute_reservation_mid(
     return reservation, micro_bps, inv_bps + fund_bps + stable_bps + manual_bps
 
 
+def _spread_risk_overlays_bps(
+    feat: Features,
+    params: MmSymbolQuoteParams,
+) -> tuple[float, float, float]:
+    toxic_w = params.toxic_widen_bps * float(feat.toxicity_score)
+    bid_half = toxic_w + params.depletion_widen_bps * feat.bid_depletion_score
+    ask_half = toxic_w + params.depletion_widen_bps * feat.ask_depletion_score
+    return toxic_w, bid_half, ask_half
+
+
 def compute_half_spreads_bps(
     feat: Features,
     settings: Settings,
     inv_ratio: float,
     params: MmSymbolQuoteParams | None = None,
+    *,
+    base_half_bps: float | None = None,
+    use_inventory_skew: bool = True,
 ) -> tuple[float, float]:
     """Half-spreads around reservation mid; widen the side that adds exposure."""
     p = params or resolve_mm_params(feat.symbol, settings, feat)
-    base = p.half_spread_bps
-    toxic_w = p.toxic_widen_bps * float(feat.toxicity_score)
-    bid_half = base + toxic_w + p.depletion_widen_bps * feat.bid_depletion_score
-    ask_half = base + toxic_w + p.depletion_widen_bps * feat.ask_depletion_score
+    base = base_half_bps if base_half_bps is not None else p.half_spread_bps
+    _, bid_overlay, ask_overlay = _spread_risk_overlays_bps(feat, p)
+    bid_half = base + bid_overlay
+    ask_half = base + ask_overlay
+    if not use_inventory_skew:
+        return bid_half, ask_half
     skew = p.inventory_spread_skew_bps
     min_half = max(0.5, base * 0.25)
     if inv_ratio > 0:
@@ -372,6 +392,34 @@ def quote_prices_from_reservation(
     return bid, ask
 
 
+def _reservation_micro_bps(
+    feat: Features,
+    settings: Settings,
+    skew_avg: float | None,
+) -> float:
+    sym = feat.symbol
+    micro = build_microstructure_bias(feat, settings, skew_avg)
+    micro_w = mm_float(sym, settings, "mm_reservation_micro_weight", cal_attr="reservation_micro_weight")
+    return (
+        micro * micro_w
+        + float(settings.mm_depletion_shift_bps) * float(feat.depth_depletion_asym)
+    )
+
+
+def _reservation_extra_bps(
+    feat: Features,
+    settings: Settings,
+    inv_ratio: float,
+) -> tuple[float, float, float]:
+    sym = feat.symbol
+    fund_bps = funding_shift_bps(feat, settings, inv_ratio)
+    stable_in = stablecoin_basis_bps(settings, sym, inbound=True)
+    stable_out = stablecoin_basis_bps(settings, sym, inbound=False)
+    stable_bps = (stable_in + stable_out) * 0.5
+    manual_bps = float(settings.mm_manual_adj_bps)
+    return fund_bps, stable_bps, manual_bps
+
+
 def compute_quote_pricing(
     *,
     feat: Features,
@@ -382,15 +430,46 @@ def compute_quote_pricing(
 ) -> MmQuotePricing:
     p = params or resolve_mm_params(feat.symbol, settings, feat)
     venue_mid = float(feat.mid or 0.0)
-    reservation, micro_bps, inv_bps = compute_reservation_mid(
-        venue_mid,
-        feat=feat,
-        settings=settings,
-        skew_avg=skew_avg,
-        inv_ratio=inv_ratio,
-        params=p,
-    )
-    bid_half, ask_half = compute_half_spreads_bps(feat, settings, inv_ratio, params=p)
+    if bool(getattr(settings, "mm_as_pricing_enabled", False)):
+        as_params = resolve_as_params(settings)
+        vol_bps = as_vol_bps(feat, as_params)
+        k = effective_liquidity_k(
+            feat,
+            base_k=as_params.k,
+            depth_weight=float(settings.mm_as_depth_k_weight),
+        )
+        reservation, inv_bps, as_half, _ = compute_as_quote_pricing(
+            mid=venue_mid,
+            inventory_ratio=inv_ratio,
+            vol_bps=vol_bps,
+            params=as_params,
+            k=k,
+        )
+        micro_bps = _reservation_micro_bps(feat, settings, skew_avg)
+        fund_bps, stable_bps, manual_bps = _reservation_extra_bps(feat, settings, inv_ratio)
+        extra_bps = micro_bps + fund_bps + stable_bps + manual_bps
+        if extra_bps != 0.0 and reservation > 0:
+            reservation *= 1.0 + extra_bps / 10_000.0
+        inv_bps += fund_bps + stable_bps + manual_bps
+        base_half = max(as_half, p.venue_half_floor_bps, p.half_spread_bps * 0.25)
+        bid_half, ask_half = compute_half_spreads_bps(
+            feat,
+            settings,
+            inv_ratio,
+            params=p,
+            base_half_bps=base_half,
+            use_inventory_skew=False,
+        )
+    else:
+        reservation, micro_bps, inv_bps = compute_reservation_mid(
+            venue_mid,
+            feat=feat,
+            settings=settings,
+            skew_avg=skew_avg,
+            inv_ratio=inv_ratio,
+            params=p,
+        )
+        bid_half, ask_half = compute_half_spreads_bps(feat, settings, inv_ratio, params=p)
     bid_price, ask_price = quote_prices_from_reservation(reservation, bid_half, ask_half)
     return MmQuotePricing(
         venue_mid=venue_mid,

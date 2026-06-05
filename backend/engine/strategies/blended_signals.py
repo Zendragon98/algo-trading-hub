@@ -30,6 +30,7 @@ from .indicators import (
     rsi_wilder_step,
 )
 from .position_sync import plan_directional_signal, side_from_qty
+from .signal_scaling import conviction_above_entry, cubic_scaled_qty
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger(__name__)
@@ -213,15 +214,15 @@ class BlendedSignalsStrategy(StrategyBase):
         prev = state.prev_blend
         state.prev_blend = blend
 
-        entry_qty = self._size_for(close)
-        if entry_qty <= 0:
+        p_max = self._size_for(close)
+        if p_max <= 0:
             return []
 
         if self._regime_flip_exit(state, pos_side):
             sig = plan_directional_signal(
                 symbol=symbol,
                 target_side=0,
-                entry_qty=entry_qty,
+                entry_qty=p_max,
                 position_qty=pos_qty,
                 reason_open="blend_regime_entry",
                 reason_close=f"blend_regime_flip adx={state.adx_value:.1f}",
@@ -232,7 +233,7 @@ class BlendedSignalsStrategy(StrategyBase):
             sig = plan_directional_signal(
                 symbol=symbol,
                 target_side=0,
-                entry_qty=entry_qty,
+                entry_qty=p_max,
                 position_qty=pos_qty,
                 reason_open="blend_long",
                 reason_close=f"blend_exit_long blend={blend:.3f}",
@@ -243,7 +244,7 @@ class BlendedSignalsStrategy(StrategyBase):
             sig = plan_directional_signal(
                 symbol=symbol,
                 target_side=0,
-                entry_qty=entry_qty,
+                entry_qty=p_max,
                 position_qty=pos_qty,
                 reason_open="blend_short",
                 reason_close=f"blend_exit_short blend={blend:.3f}",
@@ -257,6 +258,10 @@ class BlendedSignalsStrategy(StrategyBase):
             crossed_short = prev > -entry_thresh >= blend
 
             if crossed_long and bull_votes >= min_votes and not rsi_block_long:
+                signal = conviction_above_entry(
+                    blend, entry=entry_thresh, full=1.0,
+                )
+                entry_qty = cubic_scaled_qty(p_max, signal)
                 sig = plan_directional_signal(
                     symbol=symbol,
                     target_side=+1,
@@ -268,6 +273,10 @@ class BlendedSignalsStrategy(StrategyBase):
                 )
                 state.entry_regime = regime
             elif crossed_short and bear_votes >= min_votes and not rsi_block_short:
+                signal = conviction_above_entry(
+                    blend, entry=entry_thresh, full=1.0,
+                )
+                entry_qty = cubic_scaled_qty(p_max, signal)
                 sig = plan_directional_signal(
                     symbol=symbol,
                     target_side=-1,

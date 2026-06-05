@@ -78,6 +78,7 @@ from ..risk.circuit_breaker import (
 from ..risk.exposure_tracker import ExposureTracker
 from ..risk.limits import Limits
 from ..risk.loss_tracker import LossTracker
+from ..risk.margin_ratio_guard import MarginRatioGuard
 from ..risk.market_data_guard import MarketDataGuard
 from ..risk.mm_flow_guard import MmFlowGuard
 from ..risk.pnl_tracker import PnLTracker
@@ -331,6 +332,8 @@ class Engine:
             settings=settings,
             breaker=self._breaker,
             open_parent_count=lambda: len(self._exec_tracker.open_reports()),
+            working_children=lambda: self._oms.working_children(),
+            mid_for_symbol=self._mid_for,
         )
         self._oms.attach_submit_guard(self._submit_guard)
         self._router.attach_submit_guard(self._submit_guard)
@@ -348,6 +351,10 @@ class Engine:
             portfolio=self._portfolio,
             performance=self._performance,
             breaker=self._breaker,
+        )
+        self._margin_guard = MarginRatioGuard.from_settings(
+            settings=settings,
+            portfolio=self._portfolio,
         )
         # Execution-quality circuit: trip on rolling-avg slippage blowout.
         self._exec_quality_guard = ExecutionQualityGuard.from_settings(
@@ -719,6 +726,7 @@ class Engine:
         self._submit_guard.apply_settings(s)
         self._slippage_guard.set_cooldown_sec(s.breaker_minor_cooldown_sec)
         self._loss_tracker.apply_settings(s)
+        self._margin_guard.apply_settings(s)
         self._exec_quality_guard.apply_settings(s)
         self._connection_monitor.apply_settings(s)
         self._book_snapshot_sem = asyncio.Semaphore(
@@ -2284,11 +2292,14 @@ class Engine:
         # Refresh portfolio guards before the breaker advances so a
         # newly tripped MAJOR is honoured this same tick.
         self._pnl.update()
+        now = time.time()
         if not self._flatten_inflight():
             self._loss_tracker.update()
+            margin_intent = self._margin_guard.evaluate(now=now)
+            if margin_intent is not None:
+                await self._submit_exit(margin_intent)
         self._exec_quality_guard.evaluate()
         has_working_orders = any(True for _ in self._oms.working_children())
-        now = time.time()
         self._connection_monitor.evaluate(
             now=now,
             last_tick_ts=self._state.last_tick_ts,

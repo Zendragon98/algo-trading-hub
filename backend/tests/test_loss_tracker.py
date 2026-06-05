@@ -96,6 +96,24 @@ def test_winning_trade_resets_streak() -> None:
     assert not breaker.is_blocked(BreakerScope.ENGINE)
 
 
+def test_daily_loss_usd_trips_on_absolute_threshold() -> None:
+    portfolio = _portfolio(1_000_000.0)
+    perf = PerformanceTracker(portfolio)
+    breaker = CircuitBreaker()
+    lt = LossTracker(
+        portfolio=portfolio,
+        performance=perf,
+        breaker=breaker,
+        daily_loss_kill_pct=0.0,
+        max_consecutive_losses=0,
+        daily_loss_kill_usd=1_000_000.0,
+    )
+    lt.update(now=time.time())
+    portfolio.update_cash(0.0)
+    lt.update(now=time.time())
+    assert breaker.is_blocked(BreakerScope.ENGINE)
+
+
 def test_daily_loss_trips_when_equity_drops_past_threshold() -> None:
     portfolio = _portfolio(1000.0)
     perf = PerformanceTracker(portfolio)
