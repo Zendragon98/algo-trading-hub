@@ -8,6 +8,7 @@ import {
   toExecutionAggregate,
   toExecutionParent,
   toPosition,
+  markDerivedPositionPnl,
   toStrategyHubPayload,
   toStrategyInfo,
   toSystemHealth,
@@ -25,6 +26,12 @@ import {
   equityDtoToPoints,
   type EquityCurvePoint,
 } from "@/lib/equityCurve";
+import {
+  appendStrategyHubLogLine,
+  hydrateStrategyHubLogLines,
+  strategyHubPayloadToLogLine,
+  type StrategyHubLogLine,
+} from "@/lib/strategyHubLog";
 import {
   accumulateParentClose,
   appendRealizedClose,
@@ -88,6 +95,8 @@ export type AlgoStream = {
   backendReachable: boolean;
   error: string | null;
   systemHealth: SystemHealth | null;
+  /** Epoch ms when ``systemHealth`` was last sampled (for client-side age ticking). */
+  systemHealthAsOf: number | null;
   maxRiskPct: number;
   maxGrossNotional: number;
   settingsSnapshot: Record<string, unknown>;
@@ -98,7 +107,10 @@ export type AlgoStream = {
   kpi: KpiDTO;
   strategyAnalytics: StrategyAnalytics;
   strategyHub: StrategyHubSnapshot | null;
+  /** Newest-first material hub snapshots (WS + REST hydrate) for Strategy Analytics log. */
+  strategyHubLogLines: StrategyHubLogLine[];
   eventArchiveRunDir: string | null;
+  loadStrategyHubLogs: () => Promise<void>;
 };
 
 export const EMPTY_AGG: ExecutionAggregate = {
@@ -111,6 +123,7 @@ export const EMPTY_AGG: ExecutionAggregate = {
 };
 
 const NOOP_REFRESH = async () => {};
+const NOOP_LOAD_STRATEGY_HUB_LOGS = async () => {};
 
 export const EMPTY_KPI: KpiDTO = {
   equity: 0,
@@ -146,8 +159,8 @@ export const TERMINAL_ORDER_STATUSES: ReadonlyArray<WorkingOrder["status"]> = [
 export const TRADING_STATE_SYNC_MS = 5_000;
 /** Debounce rapid WS reconnects before pulling a full snapshot. */
 export const WS_RESYNC_DEBOUNCE_MS = 250;
-/** Coalesce non-urgent WS events before triggering a React update. */
-export const WS_EVENT_BATCH_MS = 250;
+/** Coalesce non-urgent WS events (logs) before triggering a React update. */
+export const WS_EVENT_BATCH_MS = 100;
 
 const LATENCY_KEYS = new Set([
   "tick_to_signal_ms",
@@ -185,6 +198,7 @@ export function createEmptyAlgoStream(): AlgoStream {
     backendReachable: false,
     error: null,
     systemHealth: null,
+    systemHealthAsOf: null,
     maxRiskPct: 0.35,
     maxGrossNotional: 100_000,
     settingsSnapshot: {},
@@ -195,7 +209,9 @@ export function createEmptyAlgoStream(): AlgoStream {
     kpi: EMPTY_KPI,
     strategyAnalytics: {},
     strategyHub: null,
+    strategyHubLogLines: [],
     eventArchiveRunDir: null,
+    loadStrategyHubLogs: NOOP_LOAD_STRATEGY_HUB_LOGS,
   };
 }
 
@@ -257,6 +273,31 @@ function mapPositionsFromState(raw: unknown): Position[] {
     }
   }
   return out;
+}
+
+function normalizePositionsForDisplay(positions: Position[]): Position[] {
+  return positions.map((p) => ({
+    ...p,
+    unrealizedPnl: markDerivedPositionPnl(p),
+  }));
+}
+
+function kpiFromEquityPayload(prev: KpiDTO, data: Record<string, unknown>): KpiDTO {
+  const next = { ...prev };
+  const equity = Number(data.equity);
+  const unrealized = Number(data.unrealized_pnl);
+  const realized = Number(data.realized_pnl);
+  const gross = Number(data.gross_notional);
+  const net = Number(data.net_notional);
+  if (Number.isFinite(equity)) next.equity = equity;
+  if (Number.isFinite(unrealized)) {
+    next.unrealized_pnl = unrealized;
+    next.open_pnl = unrealized;
+  }
+  if (Number.isFinite(realized)) next.realized_pnl = realized;
+  if (Number.isFinite(gross)) next.gross_notional = gross;
+  if (Number.isFinite(net)) next.net_notional = net;
+  return next;
 }
 
 export function applyBackendOffline(prev: AlgoStream, message?: string): AlgoStream {
@@ -330,7 +371,7 @@ export function applyTradingState(
   const nextStrategy = state.strategy ? toStrategyInfo(state.strategy) : null;
   const nextStrategies = state.strategies.map(toStrategyInfo);
   const nextEquityCurve = equityDtoToPoints(state.equity);
-  const nextPositions = mapPositionsFromState(state.positions);
+  const nextPositions = normalizePositionsForDisplay(mapPositionsFromState(state.positions));
   const nextTrades = state.trades.map(toTrade);
   const nextRealizedTrades = (state.realized_trades ?? []).map(toTrade);
   const nextOrders = state.orders.working.map(toWorkingOrder);
@@ -342,38 +383,61 @@ export function applyTradingState(
   const nextStrategyAnalytics = state.strategy_analytics ?? {};
   const nextEventArchiveRunDir = state.event_archive_run_dir ?? null;
 
-  const systemHealthSame =
-    (!prev.systemHealth && !nextSystemHealth) ||
-    (prev.systemHealth != null &&
-      nextSystemHealth != null &&
-      systemHealthDisplayKey(prev.systemHealth) === systemHealthDisplayKey(nextSystemHealth));
+  const healthTouch = touchSystemHealth(prev, nextSystemHealth);
 
-  const unchanged =
+  const metaUnchanged =
     prev.backendReachable &&
     prev.error === null &&
     prev.status === nextStatus &&
     prev.paperMode === nextPaperMode &&
-    prev.uptimeSec === nextUptimeSec &&
-    prev.sessionStartedAt === nextSessionStartedAt &&
     prev.strategy?.name === nextStrategy?.name &&
     prev.strategies.length === nextStrategies.length &&
     prev.strategies.every((s, i) => s.name === nextStrategies[i]?.name) &&
+    JSON.stringify(prev.strategyAnalytics) === JSON.stringify(nextStrategyAnalytics) &&
+    prev.eventArchiveRunDir === nextEventArchiveRunDir &&
+    JSON.stringify(prev.startupProgress) === JSON.stringify(nextStartupProgress) &&
+    JSON.stringify(prev.bookResyncProgress) === JSON.stringify(nextBookResyncProgress);
+
+  const heartbeatUnchanged =
+    prev.uptimeSec === nextUptimeSec &&
+    prev.sessionStartedAt === nextSessionStartedAt &&
+    healthTouch.systemHealthAsOf === prev.systemHealthAsOf;
+
+  const portfolioUnchanged =
     equityCurveFingerprint(prev.equityCurve) === equityCurveFingerprint(nextEquityCurve) &&
     positionsFingerprint(prev.positions) === positionsFingerprint(nextPositions) &&
+    kpiFingerprint(prev.kpi) === kpiFingerprint(nextKpi);
+
+  const executionUnchanged =
     tradesFingerprint(prev.trades) === tradesFingerprint(nextTrades) &&
     tradesFingerprint(prev.realizedTrades) === tradesFingerprint(nextRealizedTrades) &&
     ordersFingerprint(prev.orders) === ordersFingerprint(nextOrders) &&
     parentsFingerprint(prev.workingParents) === parentsFingerprint(nextWorkingParents) &&
     parentsFingerprint(prev.executionHistory) === parentsFingerprint(nextExecutionHistory) &&
-    JSON.stringify(prev.executionAggregate) === JSON.stringify(nextExecutionAggregate) &&
-    kpiFingerprint(prev.kpi) === kpiFingerprint(nextKpi) &&
-    JSON.stringify(prev.strategyAnalytics) === JSON.stringify(nextStrategyAnalytics) &&
-    prev.eventArchiveRunDir === nextEventArchiveRunDir &&
-    systemHealthSame &&
-    JSON.stringify(prev.startupProgress) === JSON.stringify(nextStartupProgress) &&
-    JSON.stringify(prev.bookResyncProgress) === JSON.stringify(nextBookResyncProgress);
+    JSON.stringify(prev.executionAggregate) === JSON.stringify(nextExecutionAggregate);
 
-  if (unchanged) return prev;
+  if (metaUnchanged && heartbeatUnchanged && portfolioUnchanged && executionUnchanged) {
+    return prev;
+  }
+
+  if (metaUnchanged) {
+    return {
+      ...prev,
+      uptimeSec: nextUptimeSec,
+      sessionStartedAt: nextSessionStartedAt,
+      equityCurve: nextEquityCurve,
+      positions: nextPositions,
+      trades: nextTrades,
+      realizedTrades: nextRealizedTrades,
+      orders: nextOrders,
+      workingParents: nextWorkingParents,
+      executionHistory: nextExecutionHistory,
+      executionAggregate: nextExecutionAggregate,
+      ...healthTouch,
+      kpi: nextKpi,
+      error: null,
+    };
+  }
 
   return {
     ...prev,
@@ -394,7 +458,7 @@ export function applyTradingState(
     workingParents: nextWorkingParents,
     executionHistory: nextExecutionHistory,
     executionAggregate: nextExecutionAggregate,
-    systemHealth: nextSystemHealth,
+    ...healthTouch,
     kpi: nextKpi,
     strategyAnalytics: nextStrategyAnalytics,
     eventArchiveRunDir: nextEventArchiveRunDir,
@@ -464,9 +528,25 @@ export function systemHealthFromStatus(
 function systemHealthDisplayKey(health: SystemHealth): string {
   return JSON.stringify({
     ...health,
-    tickAgeSec: Math.floor(health.tickAgeSec),
-    userDataAgeSec: Math.floor(health.userDataAgeSec),
+    tickAgeSec: Math.round(health.tickAgeSec * 10) / 10,
+    userDataAgeSec: Math.round(health.userDataAgeSec * 10) / 10,
   });
+}
+
+function touchSystemHealth(
+  prev: AlgoStream,
+  nextHealth: SystemHealth | null,
+): Pick<AlgoStream, "systemHealth" | "systemHealthAsOf"> {
+  if (!nextHealth) {
+    return { systemHealth: null, systemHealthAsOf: null };
+  }
+  const same =
+    prev.systemHealth != null &&
+    systemHealthDisplayKey(prev.systemHealth) === systemHealthDisplayKey(nextHealth);
+  return {
+    systemHealth: nextHealth,
+    systemHealthAsOf: same && prev.systemHealthAsOf != null ? prev.systemHealthAsOf : Date.now(),
+  };
 }
 
 function logEntryFromWsEvent(event: WsEvent): LogEntry {
@@ -485,14 +565,20 @@ export function isUrgentWsEvent(event: WsEvent): boolean {
     case "parent":
     case "execution":
     case "breaker":
+    case "equity":
+    case "position":
       return true;
     case "status": {
       const data = event.data;
       if (data.status !== undefined) return true;
       if (data.kind === "book_resync") return true;
+      if (data.kind === "system_health") return true;
+      if (data.kind === "latency_metrics") return true;
       if (data.replay_summary) return true;
       return false;
     }
+    case "strategy_hub":
+      return true;
     default:
       return false;
   }
@@ -661,13 +747,7 @@ export function applyWsEvent(
 
       if (data.kind === "system_health") {
         const systemHealth = systemHealthFromStatus(prev.systemHealth, data);
-        if (
-          prev.systemHealth &&
-          systemHealthDisplayKey(prev.systemHealth) === systemHealthDisplayKey(systemHealth)
-        ) {
-          return next;
-        }
-        return { ...next, systemHealth };
+        return { ...next, ...touchSystemHealth(prev, systemHealth) };
       }
 
       if (data.kind === "latency_metrics") {
@@ -688,11 +768,9 @@ export function applyWsEvent(
       const ts = Number(d.ts ?? event.ts);
       const sample: EquityCurvePoint = { ts, equity };
       const nextCurve = appendEquityPoint(prev.equityCurve, sample);
-      if (nextCurve === prev.equityCurve) return prev;
-      return {
-        ...prev,
-        equityCurve: nextCurve,
-        systemHealth: systemHealthFromStatus(prev.systemHealth, {
+      const healthTouch = touchSystemHealth(
+        prev,
+        systemHealthFromStatus(prev.systemHealth, {
           gross_notional: d.gross_notional as number | undefined,
           net_notional: d.net_notional as number | undefined,
           realized_pnl: d.realized_pnl as number | undefined,
@@ -702,15 +780,32 @@ export function applyWsEvent(
           session_max_drawdown_abs: d.session_max_drawdown_abs as number | undefined,
           session_max_drawdown_pct: d.session_max_drawdown_pct as number | undefined,
         }),
+      );
+      const nextKpi = kpiFromEquityPayload(prev.kpi, d);
+      const nextPositions = normalizePositionsForDisplay(prev.positions);
+      const portfolioUnchanged =
+        nextCurve === prev.equityCurve &&
+        healthTouch.systemHealthAsOf === prev.systemHealthAsOf &&
+        kpiFingerprint(nextKpi) === kpiFingerprint(prev.kpi) &&
+        positionsFingerprint(nextPositions) === positionsFingerprint(prev.positions);
+      if (portfolioUnchanged) return prev;
+      return {
+        ...prev,
+        equityCurve: nextCurve,
+        ...healthTouch,
+        kpi: nextKpi,
+        positions: nextPositions,
       };
     }
 
     case "strategy_hub": {
       const hub = toStrategyHubPayload(event.data);
+      const logLine = strategyHubPayloadToLogLine(event.ts, event.data);
       return {
         ...prev,
         strategyHub: hub,
         strategyAnalytics: hub.analytics,
+        strategyHubLogLines: appendStrategyHubLogLine(prev.strategyHubLogLines, logLine),
       };
     }
 
@@ -747,12 +842,7 @@ export function applyWsEvent(
         (incoming as { avg_entry_price?: number }).avg_entry_price ?? incoming.entry ?? 0,
       );
       const mark = Number((incoming as { mark_price?: number }).mark_price ?? incoming.mark ?? 0);
-      const dir = side === "short" ? -1 : 1;
-      const rawUp = (incoming as { unrealized_pnl?: number }).unrealized_pnl;
-      const unrealizedPnl =
-        rawUp !== undefined && Number.isFinite(Number(rawUp))
-          ? Number(rawUp)
-          : (mark - entry) * size * dir;
+      const unrealizedPnl = markDerivedPositionPnl({ side, size, entry, mark });
       return {
         ...prev,
         positions: [...others, { symbol, side, size, entry, mark, unrealizedPnl }],

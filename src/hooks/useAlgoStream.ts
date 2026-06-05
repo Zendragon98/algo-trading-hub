@@ -14,7 +14,7 @@ import {
 } from "react";
 
 import { api, getAlgoWsUrl, toBreakerList, type WsEvent } from "@/lib/api";
-import { equityDtoToPoints } from "@/lib/equityCurve";
+import { mergeStrategyHubLogLines, STRATEGY_HUB_LOG_CAP } from "@/lib/strategyHubLog";
 import {
   applyBackendOffline,
   applyTradingState,
@@ -50,17 +50,40 @@ function useAlgoStreamInternal(): AlgoStream {
     setStream((prev) => applyBackendOffline(prev, message));
   }, []);
 
+  const loadStrategyHubLogs = useCallback(async () => {
+    const logDto = await api.strategyHubLog(STRATEGY_HUB_LOG_CAP);
+    setStream((prev) => {
+      const lines = mergeStrategyHubLogLines(prev.strategyHubLogLines, logDto.lines);
+      if (
+        prev.strategyHubLogLines.length === lines.length &&
+        prev.strategyHubLogLines[0]?.ts === lines[0]?.ts &&
+        prev.strategyHubLogLines[lines.length - 1]?.ts === lines[lines.length - 1]?.ts
+      ) {
+        return prev;
+      }
+      return { ...prev, strategyHubLogLines: lines };
+    });
+  }, []);
+
   const syncTradingState = useCallback(async () => {
-    const state = await api.state();
+    const [state, logs] = await Promise.all([api.state(), api.logs(80)]);
     startedAtRef.current = Date.now() / 1000 - state.status.uptime_sec;
     lastHydrateRef.current = Date.now();
-    setStream((prev) =>
-      applyTradingState(
+    setStream((prev) => {
+      const next = applyTradingState(
         { ...prev, hydrated: true },
         state,
         parentClosePendingRef.current,
-      ),
-    );
+      );
+      const logsFingerprint = logs.length
+        ? `${logs.length}:${logs[0]?.ts}:${logs[logs.length - 1]?.ts}`
+        : "";
+      const prevLogsFingerprint = prev.logs.length
+        ? `${prev.logs.length}:${prev.logs[0]?.ts}:${prev.logs[prev.logs.length - 1]?.ts}`
+        : "";
+      if (next === prev && logsFingerprint === prevLogsFingerprint) return prev;
+      return { ...next, logs };
+    });
   }, []);
 
   syncTradingStateRef.current = syncTradingState;
@@ -173,26 +196,11 @@ function useAlgoStreamInternal(): AlgoStream {
 
     const syncEquityFromApi = async () => {
       if (cancelled) return;
+      // WS down: pull full state (not just the curve) so KPI/positions/OMS stay aligned.
       try {
-        const eq = await api.equity();
-        if (!eq.equity.length) return;
-        const curve = equityDtoToPoints(eq);
-        startTransition(() => {
-          setStream((prev) => {
-            const prevLast = prev.equityCurve[prev.equityCurve.length - 1];
-            const nextLast = curve[curve.length - 1];
-            if (
-              prev.equityCurve.length === curve.length &&
-              prevLast?.ts === nextLast?.ts &&
-              prevLast?.equity === nextLast?.equity
-            ) {
-              return prev;
-            }
-            return { ...prev, equityCurve: curve };
-          });
-        });
+        await syncTradingStateRef.current?.();
       } catch {
-        // keep WS-driven updates; poll is a safety net
+        // fallback poll will keep retrying
       }
     };
 
@@ -314,7 +322,7 @@ function useAlgoStreamInternal(): AlgoStream {
     };
   }, [refresh]);
 
-  return { ...stream, refresh, markBackendOffline };
+  return { ...stream, refresh, markBackendOffline, loadStrategyHubLogs };
 }
 
 export function AlgoStreamProvider({ children }: { children: ReactNode }) {

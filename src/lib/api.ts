@@ -578,19 +578,25 @@ export type WsEvent =
 
 // --- camelCase mappers (DTO -> view model) ---
 
+/** Mark-to-market PnL for dashboard rows — matches engine ``mark_to_market(use_mark_pnl=True)``. */
+export function markDerivedPositionPnl(position: {
+  side: Position["side"];
+  size: number;
+  entry: number;
+  mark: number;
+}): number {
+  const { entry, mark, size } = position;
+  if (!(mark > 0) || !(entry > 0) || !(size > 0)) return 0;
+  const dir = position.side === "short" ? -1 : 1;
+  return (mark - entry) * size * dir;
+}
+
 export function toPosition(d: PositionDTO): Position {
   const side: Position["side"] = d.side === "short" ? "short" : "long";
-  const dir = d.side === "short" ? -1 : 1;
   const entry = Number(d.entry);
   const mark = Number(d.mark);
   const size = Number(d.size);
-  const fallbackMarkPnl =
-    Number.isFinite(entry) && Number.isFinite(mark) && Number.isFinite(size)
-      ? (mark - entry) * size * dir
-      : 0;
-  const u = d.unrealized_pnl;
-  const unrealizedPnl =
-    u !== undefined && u !== null && Number.isFinite(Number(u)) ? Number(u) : fallbackMarkPnl;
+  const unrealizedPnl = markDerivedPositionPnl({ side, size, entry, mark });
   return {
     symbol: String(d.symbol ?? ""),
     side,

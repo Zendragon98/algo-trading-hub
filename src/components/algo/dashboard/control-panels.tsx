@@ -93,14 +93,14 @@ export function StrategyPicker({
               type="button"
               onClick={() => onSelect(s.name)}
               className={cn(
-                "flex flex-col items-start gap-0.5 rounded-sm border px-2.5 py-2 text-left transition-colors",
+                "flex flex-col items-start gap-0.5 rounded-sm border px-2 py-1.5 text-left transition-colors",
                 highlighted
                   ? "border-bull/60 bg-bull/10 text-bull"
                   : "border-border bg-background/40 text-foreground/80 hover:border-bull/30 hover:text-foreground",
               )}
             >
               <div className="flex w-full items-center gap-2">
-                <span className="text-sm font-semibold tracking-tight">{s.label}</span>
+                <span className="text-xs font-semibold tracking-tight">{s.label}</span>
                 {isActive && (
                   <span className="ml-auto rounded-sm border border-bull/40 bg-bull/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wider">
                     Active

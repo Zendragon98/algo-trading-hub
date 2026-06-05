@@ -36,6 +36,7 @@ import {
   SystemHealthPanel,
   TopBar,
   TradesTable,
+  useLiveSystemHealth,
   WinRateKpiCard,
 } from "@/components/algo/dashboard";
 import type {
@@ -51,7 +52,7 @@ import type {
   WorkingOrder,
 } from "@/components/algo/types";
 import { useAlgoStream } from "@/hooks/useAlgoStream";
-import { api } from "@/lib/api";
+import { api, markDerivedPositionPnl } from "@/lib/api";
 import { LIVE_DISABLE_CONFIRM_TOKEN } from "@/lib/breaker-presets";
 import { notifyError, notifySuccess } from "@/lib/notify";
 import {
@@ -88,7 +89,7 @@ function Index() {
   const workingParents: ExecutionParent[] = live.workingParents;
   const executionHistory: ExecutionParent[] = live.executionHistory;
   const executionAggregate: ExecutionAggregate = live.executionAggregate;
-  const systemHealth = live.systemHealth;
+  const systemHealth = useLiveSystemHealth(live.systemHealth, live.systemHealthAsOf);
   const maxRiskPct = live.maxRiskPct;
   const maxGrossNotional = live.maxGrossNotional;
   const breakers = live.breakers;
@@ -145,11 +146,12 @@ function Index() {
   const pnlPct = startEquity > 0 ? (pnlAbs / startEquity) * 100 : 0;
 
   const openPnl = useMemo(() => {
-    if (systemHealth != null) {
-      return systemHealth.unrealizedPnl;
+    if (positions.length > 0) {
+      return positions.reduce((acc, p) => acc + markDerivedPositionPnl(p), 0);
     }
-    return positions.reduce((acc, p) => acc + p.unrealizedPnl, 0);
-  }, [systemHealth, positions]);
+    if (systemHealth != null) return systemHealth.unrealizedPnl;
+    return kpi.open_pnl;
+  }, [positions, systemHealth, kpi.open_pnl]);
 
   
 
@@ -352,7 +354,7 @@ function Index() {
         />
       )}
 
-      {!backendReachable && backendError && (
+      {!backendReachable && backendError ? (
         <div
           role="alert"
           className="border-b border-bear/40 bg-bear/10 px-4 py-2 text-center text-xs text-bear lg:px-8"
@@ -361,9 +363,19 @@ function Index() {
           {" · "}
           {backendError ??
             "Cannot reach the trading API. Restart the server process if it is down, then use Start."}
-          {!streamConnected && backendReachable && " · Reconnecting live stream…"}
         </div>
-      )}
+      ) : null}
+
+      {backendReachable && !streamConnected ? (
+        <div
+          role="status"
+          className="border-b border-warning/40 bg-warning/10 px-4 py-2 text-center text-xs text-warning lg:px-8"
+        >
+          <span className="font-medium uppercase tracking-wider">Reconnecting live stream</span>
+          {" · "}
+          Dashboard is using REST snapshots (~5s) until WebSocket reconnects.
+        </div>
+      ) : null}
 
       <TopBar
         status={status}
@@ -371,6 +383,7 @@ function Index() {
         paperMode={paperMode}
         strategy={strategy}
         backendReachable={backendReachable}
+        streamConnected={streamConnected}
         controlsBusy={systemBusy}
         startDisabled={startDisabled}
         onStart={onStart}
@@ -381,9 +394,9 @@ function Index() {
         onFlatten={onFlatten}
       />
 
-      <main className="mx-auto max-w-[1500px] px-4 pb-10 pt-6 lg:px-8">
+      <main className="mx-auto max-w-[1500px] px-4 pb-6 pt-3 lg:px-8">
         {/* KPI row */}
-        <section className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <section className="grid grid-cols-1 gap-2 md:grid-cols-3">
           <PortfolioSnapshotCard
             totalEquity={totalEquity}
             pnlAbs={pnlAbs}
@@ -417,14 +430,14 @@ function Index() {
         </section>
 
         {replaySummary ? (
-          <section className="mt-4">
-            <div className="rounded-md border border-bull/30 bg-bull/5 px-4 py-2 text-xs text-bull">
+          <section className="mt-3">
+            <div className="rounded-md border border-bull/30 bg-bull/5 px-3 py-1.5 text-xs text-bull">
               {replaySummary}
             </div>
           </section>
         ) : null}
 
-        <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <section className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
           {/* Equity chart */}
           <Panel
             className="lg:col-span-2"
@@ -441,8 +454,8 @@ function Index() {
               </div>
             }
           >
-            <div className="h-[280px] px-2 pb-2">
-              <EquityChart points={equityCurve} />
+            <div className="h-[160px] px-2 pb-1">
+              <EquityChart points={equityCurve} interactive />
             </div>
           </Panel>
 
@@ -455,12 +468,13 @@ function Index() {
               </Badge>
             }
           >
-            <div className="space-y-5 p-4">
-              <div className="grid grid-cols-3 gap-2">
+            <div className="space-y-3 p-3">
+              <div className="grid grid-cols-3 gap-1.5">
                 {status === "paused" ? (
                   <Button
                     onClick={onResume}
                     disabled={!backendReachable || systemBusy}
+                    size="sm"
                     className="col-span-2 bg-bull text-bull-foreground hover:bg-bull/90"
                   >
                     <Play className="size-4" /> RESUME
@@ -470,6 +484,7 @@ function Index() {
                     <Button
                       onClick={onStart}
                       disabled={startDisabled}
+                      size="sm"
                       className="bg-bull text-bull-foreground hover:bg-bull/90 disabled:opacity-40"
                     >
                       {systemBusy ? (
@@ -482,6 +497,7 @@ function Index() {
                     <Button
                       onClick={onPause}
                       disabled={status !== "running" || systemBusy}
+                      size="sm"
                       variant="secondary"
                       className="border border-border"
                     >
@@ -492,6 +508,7 @@ function Index() {
                 <Button
                   onClick={onStop}
                   disabled={status === "stopped" || systemBusy}
+                  size="sm"
                   variant="destructive"
                 >
                   <Square className="size-4" /> STOP
@@ -536,6 +553,7 @@ function Index() {
               <Button
                 onClick={onFlatten}
                 disabled={!backendReachable || controlPending === "flatten"}
+                size="sm"
                 variant="outline"
                 className="w-full border-bear/40 text-bear hover:bg-bear/10 hover:text-bear"
               >
@@ -552,8 +570,8 @@ function Index() {
           </Panel>
         </section>
 
-        <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <div className="flex flex-col gap-4">
+        <section className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
+          <div className="flex flex-col gap-3">
             <BreakersPanel
               breakers={breakers}
               paperMode={paperMode}
@@ -581,11 +599,11 @@ function Index() {
               </span>
             }
           >
-            <LogStream logs={logs} className="h-[400px]" />
+            <LogStream logs={logs} className="h-[240px]" />
           </Panel>
         </section>
 
-        <section className="mt-4">
+        <section className="mt-3">
           <Panel
             title="OPEN POSITIONS"
             right={
@@ -597,7 +615,7 @@ function Index() {
         </section>
 
         {systemHealth ? (
-          <section className="mt-4">
+          <section className="mt-3">
             <SystemHealthPanel
               health={systemHealth}
               maxGrossNotional={maxGrossNotional}
@@ -611,7 +629,7 @@ function Index() {
         ) : null}
 
         {/* OMS: working parent VWAPs + their child orders */}
-        <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <section className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
           <Panel
             className="lg:col-span-2"
             title="ORDER MANAGEMENT"
@@ -637,11 +655,16 @@ function Index() {
           </Panel>
         </section>
 
-        <section className="mt-4">
+        <section className="mt-3">
           <Panel
             title="RECENT TRADES"
             right={
-              <Button variant="ghost" size="sm" className="h-7 gap-1 text-[11px]">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 text-[11px]"
+                onClick={() => void live.refresh()}
+              >
                 <RefreshCcw className="size-3" /> refresh
               </Button>
             }

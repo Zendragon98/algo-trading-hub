@@ -85,8 +85,8 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
   const sliceRollupGap = sessionClosed > rollingClosed;
 
   return (
-    <div className="relative overflow-hidden rounded-sm border border-border bg-card/60 p-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+    <div className="relative overflow-hidden rounded-sm border border-border bg-card/60 p-3">
+      <div className="flex flex-col gap-1.5 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-[0.18em] text-muted-foreground sm:justify-start">
           <span className="flex items-center gap-1.5 font-mono">
             <Gauge className="size-4" strokeWidth={2} />
@@ -116,7 +116,7 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
       </div>
 
       {!closed ? (
-        <div className="mt-10 space-y-2 pb-8 text-center text-xs text-muted-foreground">
+        <div className="mt-4 space-y-1.5 pb-2 text-center text-xs text-muted-foreground">
           <p>
             {scope === "session"
               ? "No reducing fills with realized P&L this session yet."
@@ -145,20 +145,20 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
         </div>
       ) : (
         <>
-          <div className="mt-3 flex items-end justify-between gap-3">
-            <div className="text-4xl font-mono font-semibold tabular-nums leading-none tracking-tight text-foreground">
+          <div className="mt-2 flex items-end justify-between gap-2">
+            <div className="text-2xl font-mono font-semibold tabular-nums leading-none tracking-tight text-foreground">
               {winRatePct.toFixed(1)}
-              <span className="align-top text-xl font-semibold text-muted-foreground">%</span>
+              <span className="align-top text-sm font-semibold text-muted-foreground">%</span>
             </div>
             <div className="flex flex-shrink-0 flex-wrap justify-end gap-1">
-              <Badge variant="outline" className="h-6 border-bull/35 bg-bull/10 px-1.5 font-mono text-[10px] text-bull">
+              <Badge variant="outline" className="h-5 border-bull/35 bg-bull/10 px-1 font-mono text-[9px] text-bull">
                 {winCount}W
               </Badge>
-              <Badge variant="outline" className="h-6 border-bear/35 bg-bear/10 px-1.5 font-mono text-[10px] text-bear">
+              <Badge variant="outline" className="h-5 border-bear/35 bg-bear/10 px-1 font-mono text-[9px] text-bear">
                 {lossCount}L
               </Badge>
               {breakevenCount ? (
-                <Badge variant="outline" className="h-6 border-muted-foreground/35 px-1.5 font-mono text-[10px] text-muted-foreground">
+                <Badge variant="outline" className="h-5 border-muted-foreground/35 px-1 font-mono text-[9px] text-muted-foreground">
                   {breakevenCount}BE
                 </Badge>
               ) : null}
@@ -189,20 +189,20 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
             ) : null}
           </p>
 
-          <div className="mt-4 rounded-md border border-border/55 bg-muted/10 p-2.5">
-            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+          <div className="mt-2 rounded-md border border-border/55 bg-muted/10 p-2">
+            <p className="mb-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-muted-foreground">
               Payoff profile
             </p>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-2.5">
+            <div className="grid grid-cols-4 gap-x-2 gap-y-1">
               <div>
                 <p className="font-mono text-[9px] uppercase tracking-wide text-muted-foreground">Avg win</p>
-                <p className="mt-0.5 font-mono text-sm tabular-nums text-bull">
+                <p className="mt-0.5 font-mono text-xs tabular-nums text-bull">
                   {avgWin != null ? `+$${formatUsdPayoffCell(avgWin)}` : EM_DASH}
                 </p>
               </div>
-              <div className="text-right">
+              <div>
                 <p className="font-mono text-[9px] uppercase tracking-wide text-muted-foreground">Avg loss</p>
-                <p className="mt-0.5 font-mono text-sm tabular-nums text-bear">
+                <p className="mt-0.5 font-mono text-xs tabular-nums text-bear">
                   {avgLoss != null ? formatNegativeUsd(avgLoss) : EM_DASH}
                 </p>
               </div>
@@ -210,7 +210,7 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
                 <p className="font-mono text-[9px] uppercase tracking-wide text-muted-foreground">Payoff (R)</p>
                 <p
                   className={cn(
-                    "mt-0.5 font-mono text-sm tabular-nums",
+                    "mt-0.5 font-mono text-xs tabular-nums",
                     payoffRatio != null && payoffRatio >= 1
                       ? "text-bull"
                       : payoffRatio != null
@@ -229,10 +229,10 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
                   )}
                 </p>
               </div>
-              <div className="text-right">
+              <div>
                 <p className="font-mono text-[9px] uppercase tracking-wide text-muted-foreground">Expectancy</p>
                 <p
-                  className={cn("mt-0.5 font-mono text-sm tabular-nums", expectancyTone)}
+                  className={cn("mt-0.5 font-mono text-xs tabular-nums", expectancyTone)}
                   title="Net P&L per realized close"
                 >
                   {expectancyFormatted}
@@ -245,7 +245,7 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
             {breakevenWrPct != null && decisiveWinRatePct != null ? (
               <p
                 className={cn(
-                  "mt-2 border-t border-border/40 pt-2 font-mono text-[10px] leading-snug",
+                  "mt-1.5 border-t border-border/40 pt-1.5 font-mono text-[9px] leading-snug",
                   wrVsBreakeven === "at-or-above" ? "text-bull/90" : "text-bear/90",
                 )}
               >
@@ -269,8 +269,8 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
             ) : null}
           </div>
 
-          <div className="mt-4 space-y-2">
-            <div className="flex items-center justify-between gap-2 text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
+          <div className="mt-2 space-y-1">
+            <div className="flex items-center justify-between gap-2 text-[9px] font-mono uppercase tracking-wide text-muted-foreground">
               <span className="flex items-center gap-1">
                 <TrendingUp className="size-3 text-bull" />
                 Gross wins
@@ -294,43 +294,44 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
               <div className="h-full min-w-0 flex-1 rounded-r-md bg-bear shadow-[inset_0_-1px_0_rgba(0,0,0,0.35)]" />
             </div>
 
-            <div className="flex items-baseline justify-between gap-3 font-mono text-sm tabular-nums">
+            <div className="flex items-baseline justify-between gap-3 font-mono text-xs tabular-nums">
               <span className="text-bull">{`+$${formatUsdPayoffCell(grossWin)}`}</span>
               <span className="text-bear">{formatNegativeUsd(grossLoss)}</span>
             </div>
           </div>
 
-          <div
-            className={cn(
-              "mt-4 flex items-center justify-between rounded-md border px-3 py-2 font-mono",
-              profitFactor != null && profitFactor >= 1
-                ? "border-bull/30 bg-bull/10"
-                : profitFactor != null
-                  ? "border-bear/30 bg-bear/10"
-                  : "border-border bg-muted/20",
-            )}
-          >
-            <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">Profit factor</span>
-            <span className="text-xl tabular-nums tracking-tight">
-              {profitFactor != null ? (
-                <>
-                  {profitFactor.toFixed(2)}
-                  <span className="text-sm text-muted-foreground">{TIMES}</span>
-                </>
-              ) : grossWin > 0 && grossLoss <= 1e-12 ? (
-                <>
-                  {"\u221E"}
-                  <span className="text-sm text-muted-foreground">{TIMES}</span>
-                </>
-              ) : (
-                <span className="text-muted-foreground">{EM_DASH}</span>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <div
+              className={cn(
+                "flex items-center justify-between rounded-md border px-2 py-1 font-mono",
+                profitFactor != null && profitFactor >= 1
+                  ? "border-bull/30 bg-bull/10"
+                  : profitFactor != null
+                    ? "border-bear/30 bg-bear/10"
+                    : "border-border bg-muted/20",
               )}
-            </span>
-          </div>
-
-          <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2 font-mono text-xs">
-            <span className="text-muted-foreground">Net · realized closes</span>
-            <span className={cn("tabular-nums font-semibold", netTone)}>{netFormatted}</span>
+            >
+              <span className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground">Profit factor</span>
+              <span className="text-base tabular-nums tracking-tight">
+                {profitFactor != null ? (
+                  <>
+                    {profitFactor.toFixed(2)}
+                    <span className="text-xs text-muted-foreground">{TIMES}</span>
+                  </>
+                ) : grossWin > 0 && grossLoss <= 1e-12 ? (
+                  <>
+                    {"\u221E"}
+                    <span className="text-xs text-muted-foreground">{TIMES}</span>
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">{EM_DASH}</span>
+                )}
+              </span>
+            </div>
+            <div className="flex items-center justify-between rounded-md border border-border/55 bg-muted/10 px-2 py-1 font-mono text-[11px]">
+              <span className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground">Net</span>
+              <span className={cn("tabular-nums font-semibold", netTone)}>{netFormatted}</span>
+            </div>
           </div>
 
           {sessionClosed > 0 && rollingClosed > 0 ? (
@@ -417,8 +418,8 @@ function SnapshotMetric({
         {icon}
         {label}
       </div>
-      <div className="mt-2 font-mono text-2xl font-semibold tabular-nums">{value}</div>
-      <div className={cn("mt-1 text-xs tabular-nums", subColor)}>{sub}</div>
+      <div className="mt-1 font-mono text-lg font-semibold tabular-nums">{value}</div>
+      <div className={cn("mt-0.5 text-[10px] tabular-nums", subColor)}>{sub}</div>
     </div>
   );
 }
@@ -446,32 +447,32 @@ export const PortfolioSnapshotCard = memo(function PortfolioSnapshotCard({
   const drawdownPctTone = sessionMaxDrawdownPct > 0 ? "bear" : "neutral";
 
   return (
-    <div className="relative overflow-hidden rounded-sm border border-border bg-card/60 p-4">
-      <CircleDot className="absolute right-4 top-4 size-3 opacity-40" />
-      <div className="grid grid-cols-2 gap-x-4 gap-y-5">
+    <div className="relative overflow-hidden rounded-sm border border-border bg-card/60 p-3">
+      <CircleDot className="absolute right-3 top-3 size-2.5 opacity-40" />
+      <div className="grid grid-cols-2 gap-x-3 gap-y-3">
         <SnapshotMetric
-          icon={<Wallet className="size-4" />}
+          icon={<Wallet className="size-3.5" />}
           label="EQUITY"
           value={`$${totalEquity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
           sub={`${pnlAbs >= 0 ? "+" : ""}${pnlAbs.toFixed(2)} (${pnlPct.toFixed(2)}%)`}
           tone={equityTone}
         />
         <SnapshotMetric
-          icon={<Activity className="size-4" />}
+          icon={<Activity className="size-3.5" />}
           label="OPEN P&L"
           value={`${openPnl >= 0 ? "+" : ""}$${openPnl.toFixed(2)}`}
           sub={`${openPositionCount} open position${openPositionCount === 1 ? "" : "s"}`}
           tone={openPnlTone}
         />
         <SnapshotMetric
-          icon={<TrendingDown className="size-4" />}
+          icon={<TrendingDown className="size-3.5" />}
           label="MAX DRAWDOWN"
           value={sessionMaxDrawdownAbs > 0 ? `-${sessionMaxDrawdownAbs.toFixed(2)}` : "0.00"}
           sub="session peak-to-trough (venue)"
           tone={drawdownAbsTone}
         />
         <SnapshotMetric
-          icon={<TrendingDown className="size-4" />}
+          icon={<TrendingDown className="size-3.5" />}
           label="MAX DRAWDOWN %"
           value={
             sessionMaxDrawdownPct > 0
@@ -502,13 +503,13 @@ export function KpiCard({
   const subColor =
     tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : "text-muted-foreground";
   return (
-    <div className="relative overflow-hidden rounded-sm border border-border bg-card/60 p-4">
+    <div className="relative overflow-hidden rounded-sm border border-border bg-card/60 p-3">
       <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
         <span className="flex items-center gap-1.5">{icon}{label}</span>
-        <CircleDot className="size-3 opacity-40" />
+        <CircleDot className="size-2.5 opacity-40" />
       </div>
-      <div className="mt-2 font-mono text-2xl font-semibold tabular-nums">{value}</div>
-      <div className={cn("mt-1 text-xs tabular-nums", subColor)}>{sub}</div>
+      <div className="mt-1 font-mono text-lg font-semibold tabular-nums">{value}</div>
+      <div className={cn("mt-0.5 line-clamp-2 text-[10px] tabular-nums", subColor)}>{sub}</div>
     </div>
   );
 }

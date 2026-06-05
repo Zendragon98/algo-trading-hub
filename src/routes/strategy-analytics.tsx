@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowLeft, BarChart3 } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { StreamStatus, useLiveSystemHealth } from "@/components/algo/dashboard/health";
 import { StrategyAnalyticsView } from "@/components/algo/strategy-hub/StrategyAnalyticsView";
 import { useAlgoStream } from "@/hooks/useAlgoStream";
 import { api, toStrategyHub } from "@/lib/api";
@@ -11,18 +12,18 @@ export const Route = createFileRoute("/strategy-analytics")({
   component: StrategyAnalyticsPage,
 });
 
-const LOG_POLL_MS = 5_000;
+const LOG_FALLBACK_POLL_MS = 5_000;
 
 function StrategyAnalyticsPage() {
   const live = useAlgoStream();
   const [bootHub, setBootHub] = useState<StrategyHubSnapshot | null>(null);
   const hub = live.strategyHub ?? bootHub;
+  const systemHealth = useLiveSystemHealth(live.systemHealth, live.systemHealthAsOf);
   const equityCurveDelta =
     live.equityCurve.length >= 2
       ? live.equityCurve[live.equityCurve.length - 1]!.equity - live.equityCurve[0]!.equity
       : null;
-  const [logLines, setLogLines] = useState<Array<Record<string, unknown>>>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [logError, setLogError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,29 +43,34 @@ function StrategyAnalyticsPage() {
   useEffect(() => {
     let cancelled = false;
 
-    const refreshLogs = async () => {
+    const loadLogs = async () => {
       try {
-        const logDto = await api.strategyHubLog(20);
-        if (cancelled) return;
-        setLogLines(logDto.lines);
-        setError(null);
+        await live.loadStrategyHubLogs();
+        if (!cancelled) setLogError(null);
       } catch (err) {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Failed to load strategy analytics log");
+        if (!cancelled) {
+          setLogError(
+            err instanceof Error ? err.message : "Failed to load strategy analytics log",
+          );
+        }
       }
     };
 
-    void refreshLogs();
-    const timer = window.setInterval(() => void refreshLogs(), LOG_POLL_MS);
+    void loadLogs();
+    if (live.connected) return () => {
+      cancelled = true;
+    };
+
+    const timer = window.setInterval(() => void loadLogs(), LOG_FALLBACK_POLL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [live.connected, live.loadStrategyHubLogs]);
 
   useEffect(() => {
     if (live.backendReachable && live.error) {
-      setError(live.error);
+      setLogError(live.error);
     }
   }, [live.backendReachable, live.error]);
 
@@ -84,14 +90,18 @@ function StrategyAnalyticsPage() {
               <span className="text-sm font-semibold tracking-wide">Strategy analytics</span>
             </div>
           </div>
-          <div className="hidden items-center gap-2 text-xs md:flex">
-            <Link to="/backtesting" className="text-muted-foreground hover:text-foreground">
-              Backtest
-            </Link>
-            <span className="text-border">·</span>
-            <Link to="/settings" className="text-muted-foreground hover:text-foreground">
-              Settings
-            </Link>
+          <div className="flex items-center gap-3 text-xs">
+            <StreamStatus connected={live.connected} backendReachable={live.backendReachable} />
+            <span className="hidden text-border md:inline">·</span>
+            <div className="hidden items-center gap-2 md:flex">
+              <Link to="/backtesting" className="text-muted-foreground hover:text-foreground">
+                Backtest
+              </Link>
+              <span className="text-border">·</span>
+              <Link to="/settings" className="text-muted-foreground hover:text-foreground">
+                Settings
+              </Link>
+            </div>
           </div>
         </div>
       </header>
@@ -99,9 +109,9 @@ function StrategyAnalyticsPage() {
       <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-6 lg:px-8">
         <StrategyAnalyticsView
           hub={hub}
-          logLines={logLines}
-          error={error}
-          systemHealth={live.systemHealth}
+          logLines={live.strategyHubLogLines}
+          error={logError}
+          systemHealth={systemHealth}
           equityCurveDelta={equityCurveDelta}
         />
       </main>

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { ChevronDown, Download } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -11,6 +12,32 @@ import { cn } from "@/lib/utils";
 import { CLOCK_SKEW_WARN_MS } from "@/components/algo/dashboard/constants";
 import { EM_DASH } from "@/lib/algo-format";
 import type { AlgoStatus, SystemHealth } from "@/components/algo/types";
+/** Advance tick/user-data ages between backend samples so the panel keeps ticking. */
+export function useLiveSystemHealth(
+  health: SystemHealth | null,
+  asOfMs: number | null,
+): SystemHealth | null {
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (!health || asOfMs == null) return;
+    const id = window.setInterval(() => setTick((n) => n + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [health, asOfMs]);
+
+  if (!health || asOfMs == null) return health;
+
+  // tick drives recompute once per second
+  void tick;
+  const elapsedSec = (Date.now() - asOfMs) / 1000;
+  return {
+    ...health,
+    tickAgeSec: health.tickAgeSec >= 0 ? health.tickAgeSec + elapsedSec : health.tickAgeSec,
+    userDataAgeSec:
+      health.userDataAgeSec >= 0 ? health.userDataAgeSec + elapsedSec : health.userDataAgeSec,
+  };
+}
+
 export function latencyP95Display(
   latency: SystemHealth["latency"],
   key: string,
@@ -228,6 +255,37 @@ export function LiveDot({ active }: { active: boolean }) {
     <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
       <span className={cn("size-1.5 rounded-full", active ? "bg-bull pulse-dot" : "bg-muted-foreground")} />
       {active ? "live" : "idle"}
+    </span>
+  );
+}
+
+/** WebSocket feed status for the dashboard chrome (distinct from engine RUNNING/STOPPED). */
+export function StreamStatus({
+  connected,
+  backendReachable,
+}: {
+  connected: boolean;
+  backendReachable: boolean;
+}) {
+  if (!backendReachable) {
+    return (
+      <span className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">
+        <span className="size-1.5 rounded-full bg-bear" />
+        offline
+      </span>
+    );
+  }
+  return (
+    <span
+      className={cn(
+        "flex items-center gap-1.5 text-[11px] uppercase tracking-wider",
+        connected ? "text-bull" : "text-warning",
+      )}
+    >
+      <span
+        className={cn("size-1.5 rounded-full", connected ? "bg-bull pulse-dot" : "bg-warning")}
+      />
+      {connected ? "stream live" : "reconnecting"}
     </span>
   );
 }

@@ -67,13 +67,18 @@ def _fmt_ts(epoch: float) -> str:
 
 
 def position_to_dto(position: Position) -> PositionDTO:
+    mark_upnl = (
+        (position.mark_price - position.avg_entry_price) * position.qty
+        if position.mark_price > 0 and position.qty != 0
+        else position.unrealized_pnl
+    )
     return PositionDTO(
         symbol=position.symbol,
         side=position.side.value,
         size=position.size,
         entry=position.avg_entry_price,
         mark=position.mark_price,
-        unrealized_pnl=position.unrealized_pnl,
+        unrealized_pnl=mark_upnl,
     )
 
 
@@ -194,7 +199,9 @@ def strategy_to_dto(strategy: StrategyBase, *, active: bool = False) -> Strategy
 
 
 def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
-    open_pnl = sum(p.unrealized_pnl for p in snapshot.positions)
+    # Match the ~1Hz mark-to-market pulse the dashboard streams over /ws.
+    mark_snap = engine.portfolio.snapshot(use_mark_pnl=True)
+    open_pnl = mark_snap.unrealized_pnl
     active_name = engine.active_strategy_name
     multi = engine.is_multi_strategy_mode()
     strategies = [
@@ -222,16 +229,16 @@ def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
         strategy=active_dto,
         strategies=strategies,
         kpi=KpiDTO(
-            equity=snapshot.equity,
+            equity=mark_snap.equity,
             open_pnl=open_pnl,
             win_rate=snapshot.win_rate,
             gross_win_pnl=snapshot.gross_win_pnl,
             gross_loss_pnl=snapshot.gross_loss_pnl,
             profit_factor=snapshot.profit_factor,
-            realized_pnl=snapshot.realized_pnl,
-            unrealized_pnl=snapshot.unrealized_pnl,
-            gross_notional=snapshot.gross_notional,
-            net_notional=snapshot.net_notional,
+            realized_pnl=mark_snap.realized_pnl,
+            unrealized_pnl=mark_snap.unrealized_pnl,
+            gross_notional=mark_snap.gross_notional,
+            net_notional=mark_snap.net_notional,
             win_rate_session=snapshot.win_rate_session,
             gross_win_pnl_session=snapshot.gross_win_pnl_session,
             gross_loss_pnl_session=snapshot.gross_loss_pnl_session,

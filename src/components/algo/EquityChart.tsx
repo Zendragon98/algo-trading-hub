@@ -152,7 +152,7 @@ function InteractiveEquityChart({ points }: { points: EquityCurvePoint[] }) {
       </div>
 
       <ChartContainer config={chartConfig} className="aspect-auto min-h-0 flex-1 w-full">
-        <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+        <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 4, bottom: 4 }}>
           <defs>
             <linearGradient id="equityFillLive" x1="0" x2="0" y1="0" y2="1">
               <stop offset="0%" stopColor={stroke} stopOpacity="0.3" />
@@ -167,16 +167,16 @@ function InteractiveEquityChart({ points }: { points: EquityCurvePoint[] }) {
             tickFormatter={(ts) => formatEquityAxisTick(ts, windowSpan)}
             minTickGap={28}
             tick={{ fontSize: 10 }}
-            axisLine={false}
-            tickLine={false}
+            axisLine={{ stroke: "var(--border)" }}
+            tickLine={{ stroke: "var(--border)" }}
           />
           <YAxis
             domain={["auto", "auto"]}
             tickFormatter={(v) => Number(v).toFixed(0)}
             width={52}
             tick={{ fontSize: 10 }}
-            axisLine={false}
-            tickLine={false}
+            axisLine={{ stroke: "var(--border)" }}
+            tickLine={{ stroke: "var(--border)" }}
           />
           <ChartTooltip
             content={

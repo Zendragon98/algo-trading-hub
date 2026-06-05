@@ -27,6 +27,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { StreamStatus } from "@/components/algo/dashboard/health";
 import { EM_DASH } from "@/lib/algo-format";
 import type { AlgoStatus, StartupProgress, StrategyInfo } from "@/components/algo/types";
 
@@ -98,6 +99,7 @@ export const TopBar = memo(function TopBar(props: {
   paperMode: boolean;
   strategy: StrategyInfo | null;
   backendReachable: boolean;
+  streamConnected: boolean;
   controlsBusy: boolean;
   startDisabled: boolean;
   onStart: () => void;
@@ -127,11 +129,11 @@ export const TopBar = memo(function TopBar(props: {
   return (
     <TooltipProvider delayDuration={300}>
     <header className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur">
-      <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-4 px-4 py-3 lg:px-8">
-        <div className="flex items-center gap-4">
+      <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-3 px-4 py-2 lg:px-8">
+        <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <div className="grid size-8 place-items-center rounded-sm border border-bull/40 bg-bull/10">
-              <Cpu className="size-4 text-bull" />
+            <div className="grid size-7 place-items-center rounded-sm border border-bull/40 bg-bull/10">
+              <Cpu className="size-3.5 text-bull" />
             </div>
             <div className="leading-tight">
               <div className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
@@ -143,7 +145,7 @@ export const TopBar = memo(function TopBar(props: {
             </div>
           </div>
 
-          <Separator orientation="vertical" className="h-8" />
+          <Separator orientation="vertical" className="h-6" />
 
           <div className={cn("flex items-center gap-2 text-xs uppercase tracking-wider", statusMeta.color)}>
             <span className={cn("size-2 rounded-full pulse-dot", statusMeta.dot)} />
@@ -154,6 +156,10 @@ export const TopBar = memo(function TopBar(props: {
             <span className="flex items-center gap-1">
               <Wifi className="size-3 text-bull" /> binance · ws-feed
             </span>
+            <StreamStatus
+              connected={props.streamConnected}
+              backendReachable={props.backendReachable}
+            />
             <span>uptime <span className="text-foreground tabular-nums">{uptime}</span></span>
             {paperMode && (
               <Badge variant="outline" className="border-warning/50 text-warning">
@@ -273,18 +279,18 @@ export function ConsoleHydratingShell() {
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-[1500px] px-4 pb-10 pt-6 lg:px-8">
-        <section className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <HydratePlaceholder className="h-36" />
-          <HydratePlaceholder className="h-36" />
-          <HydratePlaceholder className="h-36" />
+      <main className="mx-auto max-w-[1500px] px-4 pb-6 pt-3 lg:px-8">
+        <section className="grid grid-cols-1 gap-2 md:grid-cols-3">
+          <HydratePlaceholder className="h-28" />
+          <HydratePlaceholder className="h-28" />
+          <HydratePlaceholder className="h-28" />
         </section>
-        <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <HydratePlaceholder className="h-[280px] lg:col-span-2" />
+        <section className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
+          <HydratePlaceholder className="h-[160px] lg:col-span-2" />
+          <HydratePlaceholder className="h-[160px]" />
+        </section>
+        <section className="mt-3">
           <HydratePlaceholder className="h-[280px]" />
-        </section>
-        <section className="mt-4">
-          <HydratePlaceholder className="h-[400px]" />
         </section>
       </main>
     </div>
