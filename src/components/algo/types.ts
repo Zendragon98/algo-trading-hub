@@ -34,6 +34,8 @@ export type Trade = {
   entryPrice: number | null;
   exitPrice: number | null;
   pnl: number | null;
+  /** Parent order strategy that produced this fill (entry on open, exit on close). */
+  strategyName: string;
 };
 
 export type LogEntry = {
@@ -122,6 +124,11 @@ export type StrategyInfo = {
   description: string;
   active: boolean;
 };
+
+export type StrategyAnalytics = Record<
+  string,
+  Record<string, string | number | boolean | null>
+>;
 
 // One historical OHLCV bar used by the position chart.
 export type Kline = {

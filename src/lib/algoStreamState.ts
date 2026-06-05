@@ -19,6 +19,7 @@ import {
   type StatusEventData,
   type WsEvent,
 } from "@/lib/api";
+import { downsampleSeries } from "@/lib/series";
 import {
   accumulateParentClose,
   appendRealizedClose,
@@ -37,6 +38,7 @@ import type {
   Position,
   StrategyInfo,
   SystemHealth,
+  StrategyAnalytics,
   Trade,
   WorkingOrder,
 } from "@/components/algo/types";
@@ -85,6 +87,7 @@ export type AlgoStream = {
   refresh: () => Promise<void>;
   markBackendOffline: (message?: string) => void;
   kpi: KpiDTO;
+  strategyAnalytics: StrategyAnalytics;
   eventArchiveRunDir: string | null;
 };
 
@@ -133,6 +136,12 @@ export const WS_RESYNC_DEBOUNCE_MS = 250;
 /** Coalesce non-urgent WS events before triggering a React update. */
 export const WS_EVENT_BATCH_MS = 250;
 
+export const EQUITY_CURVE_MAX = 256;
+
+export function downsampleEquityCurve(values: number[]): number[] {
+  return downsampleSeries(values, EQUITY_CURVE_MAX);
+}
+
 const LATENCY_KEYS = new Set([
   "tick_to_signal_ms",
   "signal_to_risk_ms",
@@ -175,6 +184,7 @@ export function createEmptyAlgoStream(): AlgoStream {
     refresh: NOOP_REFRESH,
     markBackendOffline: () => {},
     kpi: EMPTY_KPI,
+    strategyAnalytics: {},
     eventArchiveRunDir: null,
   };
 }
@@ -279,6 +289,7 @@ export function applyTradingState(
     executionAggregate: toExecutionAggregate(state.execution.aggregate),
     systemHealth: state.system_health ? toSystemHealth(state.system_health) : null,
     kpi: state.kpi,
+    strategyAnalytics: state.strategy_analytics ?? {},
     eventArchiveRunDir: state.event_archive_run_dir ?? null,
     error: null,
   };
@@ -503,7 +514,7 @@ export function applyWsEvent(
     case "equity": {
       const point = event.data.equity;
       const nextEquity = [...prev.equity, point];
-      const trimmed = nextEquity.length > 256 ? nextEquity.slice(-256) : nextEquity;
+      const trimmed = downsampleEquityCurve(nextEquity);
       const d = event.data as {
         gross_notional?: number;
         net_notional?: number;
@@ -593,6 +604,7 @@ export function applyWsEvent(
         entry_price?: number | null;
         exit_price?: number | null;
         pnl?: number | null;
+        strategy_name?: string;
       };
       const tradeId = String(d.id ?? d.trade_id ?? d.child_id ?? "");
       if (tradeId && prev.trades.some((t) => t.id === tradeId)) {
@@ -609,6 +621,7 @@ export function applyWsEvent(
         entry_price: d.entry_price,
         exit_price: d.exit_price,
         pnl: d.pnl,
+        strategy_name: d.strategy_name,
       });
       const isRealizedClose = trade.action === "close" && trade.pnl != null;
       const nextTrades = [trade, ...prev.trades].slice(0, PERFORMANCE_TRADE_HISTORY_CAP);

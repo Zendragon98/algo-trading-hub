@@ -9,6 +9,7 @@ import {
   applyTradingState,
   applyWsEvents,
   createEmptyAlgoStream,
+  downsampleEquityCurve,
   isUrgentWsEvent,
   numSetting,
   TRADING_STATE_SYNC_MS,
@@ -133,7 +134,7 @@ export function useAlgoStream(): AlgoStream {
       try {
         const eq = await api.equity();
         if (!eq.equity.length) return;
-        const curve = eq.equity.length > 256 ? eq.equity.slice(-256) : eq.equity;
+        const curve = downsampleEquityCurve(eq.equity);
         setStream((prev) => {
           const prevLast = prev.equity[prev.equity.length - 1];
           const nextLast = curve[curve.length - 1];

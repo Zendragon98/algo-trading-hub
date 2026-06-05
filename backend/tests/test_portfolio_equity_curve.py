@@ -33,3 +33,20 @@ async def test_mark_to_market_uses_tick_marks_when_user_data_stale() -> None:
 
     assert frozen.equity == 10_050.0
     assert live.equity == 10_100.0
+
+
+@pytest.mark.asyncio
+async def test_equity_curve_downsample_keeps_session_start() -> None:
+    bus = EventBus()
+    tracker = PositionTracker(bus)
+    portfolio = Portfolio(bus=bus, position_tracker=tracker, equity_curve_size=8)
+    portfolio.seed_balances({"USDT": 10_000.0})
+
+    for i in range(20):
+        portfolio._cash_by_asset["USDT"] = 10_000.0 + float(i)
+        await portfolio.mark_to_market()
+
+    curve = portfolio.equity_curve()
+    assert len(curve) == 8
+    assert curve[0].equity == 10_000.0
+    assert curve[-1].equity == 10_019.0

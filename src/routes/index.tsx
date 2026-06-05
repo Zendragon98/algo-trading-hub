@@ -10,6 +10,7 @@ import {
   Settings2,
   Square,
   Target,
+  TrendingDown,
   Wallet,
   Zap,
 } from "lucide-react";
@@ -32,6 +33,7 @@ import {
   PositionsTable,
   RiskPanel,
   StartupProgressBanner,
+  StrategyAnalyticsPanel,
   StrategyPicker,
   SystemHealthPanel,
   TopBar,
@@ -51,6 +53,7 @@ import type {
   WorkingOrder,
 } from "@/components/algo/types";
 import { useAlgoStream } from "@/hooks/useAlgoStream";
+import { computeMaxDrawdown } from "@/lib/series";
 import { api } from "@/lib/api";
 import { LIVE_DISABLE_CONFIRM_TOKEN } from "@/lib/breaker-presets";
 import { notifyError, notifySuccess } from "@/lib/notify";
@@ -96,6 +99,7 @@ function Index() {
   const settingsSnapshot = live.settingsSnapshot;
   const replaySummary = live.replaySummary;
   const kpi = live.kpi;
+  const strategyAnalytics = live.strategyAnalytics;
   const backendReachable = live.backendReachable;
   const backendError = live.error;
   const streamConnected = live.connected;
@@ -142,6 +146,8 @@ function Index() {
   const startEquity = equity.length ? equity[0] : 0;
   const pnlAbs = totalEquity - startEquity;
   const pnlPct = startEquity > 0 ? (pnlAbs / startEquity) * 100 : 0;
+
+  const maxDrawdown = useMemo(() => computeMaxDrawdown(equity), [equity]);
 
   const openPnl = useMemo(() => {
     if (systemHealth != null) {
@@ -468,6 +474,31 @@ function Index() {
           />
         </section>
 
+        <section className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4">
+          <KpiCard
+            icon={<TrendingDown className="size-4" />}
+            label="MAX DRAWDOWN"
+            value={maxDrawdown.abs > 0 ? `-${maxDrawdown.abs.toFixed(2)}` : "0.00"}
+            sub="session peak-to-trough"
+            tone={maxDrawdown.abs > 0 ? "bear" : "neutral"}
+          />
+          <KpiCard
+            icon={<TrendingDown className="size-4" />}
+            label="MAX DRAWDOWN %"
+            value={
+              maxDrawdown.pct > 0
+                ? `-${maxDrawdown.pct.toFixed(2)}%`
+                : "0.00%"
+            }
+            sub="from running equity peak"
+            tone={maxDrawdown.pct > 0 ? "bear" : "neutral"}
+          />
+          <StrategyAnalyticsPanel
+            analytics={strategyAnalytics}
+            className="md:col-span-2"
+          />
+        </section>
+
         {replaySummary ? (
           <section className="mt-4">
             <div className="rounded-md border border-bull/30 bg-bull/5 px-4 py-2 text-xs text-bull">
@@ -693,7 +724,7 @@ function Index() {
               </Button>
             }
           >
-            <TradesTable trades={trades} />
+            <TradesTable trades={trades} strategies={strategies} />
           </Panel>
         </section>
       </main>

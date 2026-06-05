@@ -53,6 +53,12 @@ class MarketMakingV2Strategy(StrategyBase):
         self._venue_position_provider = None
         self._gate_counts: dict[str, Counter[str]] = defaultdict(Counter)
         self._last_gate_log_ts: float = 0.0
+        self._analytics_cache: dict[str, str | float | int | bool | None] = {
+            "STRATEGY": self.display_label or self.name,
+        }
+
+    def analytics_snapshot(self) -> dict[str, str | float | int | bool | None]:
+        return dict(self._analytics_cache)
 
     def refresh_settings(self, settings: Settings) -> None:
         self._settings = settings
@@ -269,6 +275,19 @@ class MarketMakingV2Strategy(StrategyBase):
             self._stamp_obs(intent, feat, skew_avg=skew_avg, tape_p=tape_p)
             intents.append(intent)
         self._maybe_log_gate_summary(now)
+        active_quotes = sum(
+            1
+            for intent in intents
+            if intent.bid_price is not None or intent.ask_price is not None
+        )
+        self._analytics_cache = {
+            "STRATEGY": self.display_label or self.name,
+            "UNIVERSE": len(self._symbols),
+            "OPEN_POSITIONS": open_positions,
+            "QUOTE_INTENTS": len(intents),
+            "ACTIVE_QUOTES": active_quotes,
+            "INVENTORY_NOTIONAL": round(total_inv_notional, 2),
+        }
         return intents
 
     def _spread_ok(self, feat: Features) -> bool:

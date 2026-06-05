@@ -85,6 +85,7 @@ def trade_to_dto(trade: TradeRecord) -> TradeDTO:
         entry_price=trade.entry_price,
         exit_price=trade.exit_price,
         pnl=trade.pnl,
+        strategy_name=trade.strategy_name,
     )
 
 
@@ -241,6 +242,7 @@ def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
         orders=orders_dto(engine),
         execution=execution_stats_dto(engine),
         system_health=SystemHealthDTO(**engine.system_health()),
+        strategy_analytics=engine.strategy_analytics(),
         event_archive_run_dir=str(engine.event_archive_dir.resolve())
         if engine.event_archive_dir is not None
         else None,

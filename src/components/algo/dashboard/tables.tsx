@@ -4,7 +4,7 @@ import { ChevronDown, TrendingDown, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { EM_DASH, formatSignedRealizedPnl } from "@/lib/algo-format";
-import type { LogEntry, Position, Trade } from "@/components/algo/types";
+import type { LogEntry, Position, StrategyInfo, Trade } from "@/components/algo/types";
 export function PositionsTable({
   positions,
   onOpen,
@@ -87,7 +87,22 @@ export function PositionsTable({
   );
 }
 
-export function TradesTable({ trades }: { trades: Trade[] }) {
+function tradeStrategyLabel(name: string, strategies: StrategyInfo[]): string {
+  if (!name) return EM_DASH;
+  if (name === "__netted__") return "Netted";
+  const hit = strategies.find((s) => s.name === name);
+  if (hit) return hit.label;
+  const tag = logStrategyTag(`${name} `);
+  return tag ?? name.replace(/_/g, " ");
+}
+
+export function TradesTable({
+  trades,
+  strategies = [],
+}: {
+  trades: Trade[];
+  strategies?: StrategyInfo[];
+}) {
   const fmtPrice = (v: number | null) =>
     v === null ? EM_DASH : v.toLocaleString(undefined, { maximumFractionDigits: 6 });
 
@@ -98,6 +113,7 @@ export function TradesTable({ trades }: { trades: Trade[] }) {
           <tr className="text-[10px] uppercase tracking-wider text-muted-foreground">
             <th className="px-4 py-2 text-left font-normal">Time</th>
             <th className="px-2 py-2 text-left font-normal">Type</th>
+            <th className="px-2 py-2 text-left font-normal">Strategy</th>
             <th className="px-2 py-2 text-left font-normal">Symbol</th>
             <th className="px-2 py-2 text-left font-normal">Side</th>
             <th className="px-2 py-2 text-right font-normal">Qty</th>
@@ -121,6 +137,12 @@ export function TradesTable({ trades }: { trades: Trade[] }) {
                 >
                   {t.action}
                 </span>
+              </td>
+              <td
+                className="max-w-[7rem] truncate px-2 py-2 text-[11px] text-muted-foreground"
+                title={t.strategyName || undefined}
+              >
+                {tradeStrategyLabel(t.strategyName, strategies)}
               </td>
               <td className="px-2 py-2">{t.symbol}</td>
               <td className="px-2 py-2">

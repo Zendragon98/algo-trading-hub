@@ -226,6 +226,9 @@ class PairsTradingStrategy(StrategyBase):
         self._bar_bucket: int | None = None
         self._last_reference_log_ts: float = 0.0
         self._bar_interval_sec = max(0, int(settings.pair_bar_sec or 0))
+        self._analytics_cache: dict[str, str | float | int | bool | None] = {
+            "STRATEGY": self.display_label or self.name,
+        }
 
         self._load_calibration(settings)
 
@@ -397,6 +400,9 @@ class PairsTradingStrategy(StrategyBase):
         # any single leg's absolute price move. Skip the per-leg bracket.
         return True
 
+    def analytics_snapshot(self) -> dict[str, str | float | int | bool | None]:
+        return dict(self._analytics_cache)
+
     def on_tick(self, features: dict[str, Features]) -> Iterable[Signal]:
         now = time.time()
         # 1. Compute per-pair basis. Skip pairs whose mids aren't ready
@@ -444,6 +450,18 @@ class PairsTradingStrategy(StrategyBase):
             if push_sample:
                 stats.push(now, deviation)
             z = stats.zscore(deviation)
+            usdt_mid, usdc_mid = mids_by_pair[key]
+            self._maybe_refresh_analytics(
+                pair=pair,
+                stats=stats,
+                z=z,
+                basis=basis,
+                reference=reference,
+                usdt_mid=usdt_mid,
+                usdc_mid=usdc_mid,
+                key=key,
+                bases=bases,
+            )
             if z is None:
                 if push_sample:
                     logger.debug(
@@ -455,7 +473,6 @@ class PairsTradingStrategy(StrategyBase):
                     )
                 continue
 
-            usdt_mid, usdc_mid = mids_by_pair[key]
             signals.extend(
                 self._check_partial_pending(pair, stats, now),
             )
@@ -474,6 +491,55 @@ class PairsTradingStrategy(StrategyBase):
                     self._evaluate(pair, stats, z, basis, reference, usdt_mid, usdc_mid)
                 )
         return self._cap_new_entries(signals)
+
+    def _maybe_refresh_analytics(
+        self,
+        *,
+        pair: PairConfig,
+        stats: _DeviationStats,
+        z: float | None,
+        basis: float,
+        reference: float,
+        usdt_mid: float,
+        usdc_mid: float,
+        key: str,
+        bases: dict[str, float],
+    ) -> None:
+        lead_key = (
+            _BTC_PAIR_KEY
+            if _BTC_PAIR_KEY in bases
+            else _ETH_PAIR_KEY
+            if _ETH_PAIR_KEY in bases
+            else next(iter(bases), None)
+        )
+        if lead_key is None or key != lead_key:
+            return
+        ref_mode = (self._settings.pair_reference_mode or "btc_anchor").strip().lower()
+        use_reference = ref_mode != "independent"
+        deviation = basis if not use_reference else basis - reference
+        signal = "WARMUP"
+        if z is not None:
+            if stats.open_side != 0:
+                signal = "IN_POSITION"
+            elif z >= pair.entry_z:
+                signal = "SHORT"
+            elif z <= -pair.entry_z:
+                signal = "LONG"
+            else:
+                signal = "HOLD"
+        self._analytics_cache = {
+            "STRATEGY": self.display_label or self.name,
+            "PAIR": f"{pair.usdt_symbol}/{pair.usdc_symbol}",
+            "BASE_MID": round(usdt_mid, 4),
+            "HEDGE_MID": round(usdc_mid, 4),
+            "SPREAD": round(deviation, 4),
+            "BASIS": round(basis, 6),
+            "REFERENCE": round(reference, 6),
+            "SIGNAL": signal,
+            "PAIR_STATE": stats.open_side,
+            "WINDOW": f"{len(stats.samples)}/{stats.min_samples}",
+            "Z_SCORE": round(z, 4) if z is not None else None,
+        }
 
     def _min_bases_required(self) -> int:
         mode = (self._settings.pair_reference_mode or "btc_anchor").strip().lower()

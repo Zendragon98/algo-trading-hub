@@ -183,6 +183,7 @@ export type TradeDTO = {
   entry_price?: number | null;
   exit_price?: number | null;
   pnl?: number | null;
+  strategy_name?: string;
 };
 
 export type KlineDTO = {
@@ -246,6 +247,7 @@ export type StateDTO = {
   orders: OrdersDTO;
   execution: ExecutionStatsDTO;
   system_health?: SystemHealthDTO | null;
+  strategy_analytics?: Record<string, Record<string, string | number | boolean | null>>;
   /** Absolute path to this process's run folder (journal + JSONL). */
   event_archive_run_dir?: string | null;
 };
@@ -603,6 +605,7 @@ export function toTrade(d: TradeDTO): Trade {
     entryPrice: d.entry_price ?? d.price,
     exitPrice: d.exit_price ?? null,
     pnl: d.pnl ?? null,
+    strategyName: d.strategy_name ?? "",
   };
 }
 

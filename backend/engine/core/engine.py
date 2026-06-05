@@ -1946,6 +1946,8 @@ class Engine:
                 fallback_entry=self._positions.entry_before_flat(fill.symbol),
             )
         classification = classify_fill(pre_position, fill)
+        parent = self._oms.parent(fill.parent_id) if fill.parent_id else None
+        strategy_name = parent.strategy_name if parent else ""
         exclude_from_streak = self._is_emergency_flatten_fill(fill)
         # Binance ACCOUNT_UPDATE already carries authoritative ``pa``; applying
         # the same ORDER_TRADE_UPDATE fill doubles qty when events arrive out
@@ -1957,6 +1959,7 @@ class Engine:
         record = self._performance.record_fill(
             fill,
             classification,
+            strategy_name=strategy_name,
             exclude_from_streak=exclude_from_streak,
         )
         if classification.action == "close":
@@ -1970,6 +1973,7 @@ class Engine:
                     "entry_price": record.entry_price,
                     "exit_price": record.exit_price,
                     "pnl": record.pnl,
+                    "strategy_name": record.strategy_name,
                 },
             )
         )
@@ -1989,7 +1993,6 @@ class Engine:
                 await self._slippage_guard.on_fill(
                     fill.parent_id, parent.max_slippage_bps,
                 )
-        parent = self._oms.parent(fill.parent_id) if fill.parent_id else None
         self._record_strategy_ledger_fill(fill, parent)
         if parent is not None and mm_core.is_mm_strategy(parent.strategy_name):
             await self._handle_mm_fill(fill, parent.strategy_name)
@@ -3124,6 +3127,24 @@ class Engine:
             f"local_only={result.get('local_only')}",
             extra=result,
         )
+
+    def strategy_analytics(self) -> dict[str, dict[str, object]]:
+        """Per-strategy live diagnostics for the dashboard."""
+        if self.is_multi_strategy_mode():
+            targets = list(self._strategies)
+        else:
+            active = self._strategies_by_name.get(self._active_strategy_name)
+            targets = [active] if active is not None else []
+        out: dict[str, dict[str, object]] = {}
+        for strat in targets:
+            try:
+                snap = strat.analytics_snapshot()
+            except Exception:  # noqa: BLE001 — one bad strategy must not break state
+                logger.debug("analytics_snapshot failed for %s", strat.name, exc_info=True)
+                continue
+            if snap:
+                out[strat.name] = dict(snap)
+        return out
 
     def system_health(self) -> dict[str, object]:
         """Snapshot for REST /api/state."""

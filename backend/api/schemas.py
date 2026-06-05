@@ -32,6 +32,7 @@ class TradeDTO(BaseModel):
     entry_price: float | None
     exit_price: float | None
     pnl: float | None
+    strategy_name: str = ""
 
 
 class LogDTO(BaseModel):
@@ -242,6 +243,9 @@ class StateDTO(BaseModel):
     orders: OrdersDTO
     execution: ExecutionStatsDTO
     system_health: SystemHealthDTO | None = None
+    strategy_analytics: dict[str, dict[str, str | float | int | bool | None]] = Field(
+        default_factory=dict,
+    )
     event_archive_run_dir: str | None = None
 
 

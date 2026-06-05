@@ -82,6 +82,10 @@ class StrategyBase(ABC):
         """
         return False
 
+    def analytics_snapshot(self) -> dict[str, str | float | int | bool | None]:
+        """Optional live diagnostics for the dashboard strategy panel."""
+        return {}
+
     def refresh_settings(self, settings: Settings) -> None:
         """Apply operator updates after ``PATCH /api/settings`` (default no-op)."""
         pass

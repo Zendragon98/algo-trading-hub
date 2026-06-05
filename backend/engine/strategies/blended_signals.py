@@ -98,7 +98,13 @@ class BlendedSignalsStrategy(StrategyBase):
         self._equity_provider: EquityProvider | None = None
         self._mm2_symbols_provider: Mm2SymbolsProvider | None = None
         self._last_scan_log_ts: float = 0.0
+        self._analytics_cache: dict[str, str | float | int | bool | None] = {
+            "STRATEGY": self.display_label or self.name,
+        }
         self._validate_windows(settings)
+
+    def analytics_snapshot(self) -> dict[str, str | float | int | bool | None]:
+        return dict(self._analytics_cache)
 
     @staticmethod
     def _validate_windows(settings: Settings) -> None:
@@ -186,6 +192,14 @@ class BlendedSignalsStrategy(StrategyBase):
 
         signals = self._cap_entries(signals)
         self._maybe_log_scan(now=now, quoted=quoted, warming=warming, ready=ready, n_sig=len(signals))
+        self._analytics_cache = {
+            "STRATEGY": self.display_label or self.name,
+            "UNIVERSE": len(self._symbols),
+            "QUOTED": quoted,
+            "READY": ready,
+            "WARMING": warming,
+            "SIGNALS": len(signals),
+        }
         return signals
 
     def _on_bar_close(

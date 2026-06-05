@@ -198,6 +198,18 @@ class Portfolio:
     def equity_curve(self) -> list[EquityPoint]:
         return list(self._equity_curve)
 
+    def _downsample_equity_curve(self) -> None:
+        """Keep the full session span in memory without unbounded growth."""
+        curve = self._equity_curve
+        n = self._curve_size
+        if len(curve) <= n:
+            return
+        last_idx = len(curve) - 1
+        self._equity_curve = [
+            curve[round(i * last_idx / (n - 1))]
+            for i in range(n)
+        ]
+
     # --- Periodic recompute ---
 
     async def mark_to_market(self, *, use_mark_pnl: bool = False) -> EquityPoint:
@@ -215,8 +227,7 @@ class Portfolio:
             point = EquityPoint(ts=time(), equity=snap.equity)
             self._equity_curve.append(point)
             if len(self._equity_curve) > self._curve_size:
-                # Bound the in-memory curve so long sessions don't bloat.
-                self._equity_curve = self._equity_curve[-self._curve_size:]
+                self._downsample_equity_curve()
 
         await self._bus.publish(
             Event(

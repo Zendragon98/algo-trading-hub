@@ -1,5 +1,9 @@
 import { useMemo } from "react";
 
+import { downsampleSeries } from "@/lib/series";
+
+const MAX_DISPLAY_POINTS = 256;
+
 function normalizeSeries(values: number[]): number[] {
   if (values.length >= 2) return values;
   if (values.length === 1) return [values[0]!, values[0]!];
@@ -7,26 +11,39 @@ function normalizeSeries(values: number[]): number[] {
 }
 
 export function EquityChart({ data }: { data: number[] }) {
-  const series = useMemo(() => normalizeSeries(data), [data]);
+  const series = useMemo(
+    () => normalizeSeries(downsampleSeries(data, MAX_DISPLAY_POINTS)),
+    [data],
+  );
 
-  const { path, area, min, max, last, first } = useMemo(() => {
-    const min = Math.min(...series);
-    const max = Math.max(...series);
+  const { path, area, startY, lastY, start, last } = useMemo(() => {
+    const start = series[0]!;
+    const last = series[series.length - 1]!;
+    const minVal = Math.min(...series);
+    const maxVal = Math.max(...series);
+    const span = maxVal - minVal;
+    const pad = Math.max(span * 0.12, Math.abs(start) * 0.001, 1);
+    const min = Math.min(minVal, start) - pad;
+    const max = Math.max(maxVal, start) + pad;
     const range = max - min || 1;
     const w = 100;
     const h = 100;
     const step = w / (series.length - 1);
-    const pts = series.map((v, i) => {
-      const x = i * step;
-      const y = h - ((v - min) / range) * h;
-      return [x, y] as const;
-    });
+    const yFor = (v: number) => h - ((v - min) / range) * h;
+    const pts = series.map((v, i) => [i * step, yFor(v)] as const);
     const path = pts.map(([x, y], i) => (i === 0 ? `M${x},${y}` : `L${x},${y}`)).join(" ");
     const area = `${path} L${w},${h} L0,${h} Z`;
-    return { path, area, min, max, last: series[series.length - 1]!, first: series[0]! };
+    return {
+      path,
+      area,
+      startY: yFor(start),
+      lastY: yFor(last),
+      start,
+      last,
+    };
   }, [series]);
 
-  const up = last >= first;
+  const up = last >= start;
   const stroke = up ? "var(--bull)" : "var(--bear)";
 
   return (
@@ -55,6 +72,16 @@ export function EquityChart({ data }: { data: number[] }) {
             vectorEffect="non-scaling-stroke"
           />
         ))}
+        <line
+          x1="0"
+          x2="100"
+          y1={startY}
+          y2={startY}
+          stroke="var(--muted-foreground)"
+          strokeWidth="0.4"
+          strokeDasharray="1 1"
+          vectorEffect="non-scaling-stroke"
+        />
         <path d={area} fill="url(#equityFill)" />
         <path
           d={path}
@@ -65,12 +92,26 @@ export function EquityChart({ data }: { data: number[] }) {
           strokeLinejoin="round"
           strokeLinecap="round"
         />
+        <circle cx="0" cy={startY} r="0.9" fill="var(--muted-foreground)" vectorEffect="non-scaling-stroke" />
+        <circle cx="100" cy={lastY} r="0.9" fill={stroke} vectorEffect="non-scaling-stroke" />
       </svg>
-      <div className="pointer-events-none absolute right-2 top-2 text-[10px] tabular-nums text-muted-foreground">
-        HIGH {max.toFixed(2)}
+      <div
+        className="pointer-events-none absolute left-2 -translate-y-1/2 rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground"
+        style={{ top: `calc(${startY}% + 8px)` }}
+      >
+        START {start.toFixed(2)}
       </div>
-      <div className="pointer-events-none absolute bottom-2 right-2 text-[10px] tabular-nums text-muted-foreground">
-        LOW {min.toFixed(2)}
+      <div
+        className="pointer-events-none absolute right-2 -translate-y-1/2 rounded-sm px-1.5 py-0.5 font-mono text-[10px] tabular-nums"
+        style={{ top: `calc(${lastY}% + 8px)`, backgroundColor: stroke, color: "var(--background)" }}
+      >
+        NOW {last.toFixed(2)}
+      </div>
+      <div className="pointer-events-none absolute bottom-2 left-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+        session start
+      </div>
+      <div className="pointer-events-none absolute bottom-2 right-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+        now
       </div>
     </div>
   );

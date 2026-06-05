@@ -85,6 +85,12 @@ class SmaCrossoverStrategy(StrategyBase):
         self._state: dict[str, _SymbolState] = {}
         self._equity_provider: EquityProvider | None = None
         self._last_scan_log_ts: float = 0.0
+        self._analytics_cache: dict[str, str | float | int | bool | None] = {
+            "STRATEGY": self.display_label or self.name,
+        }
+
+    def analytics_snapshot(self) -> dict[str, str | float | int | bool | None]:
+        return dict(self._analytics_cache)
 
     @staticmethod
     def _resolve_universe(settings: Settings) -> list[str]:
@@ -239,6 +245,16 @@ class SmaCrossoverStrategy(StrategyBase):
             bearish=bearish,
             signal_count=len(signals),
         )
+        self._analytics_cache = {
+            "STRATEGY": self.display_label or self.name,
+            "UNIVERSE": len(self._symbols),
+            "QUOTED": quoted,
+            "READY": ready,
+            "WARMING": warming,
+            "BULLISH": bullish,
+            "BEARISH": bearish,
+            "SIGNALS": len(signals),
+        }
         return signals
 
     def _cap_entries(self, signals: list[Signal]) -> list[Signal]:

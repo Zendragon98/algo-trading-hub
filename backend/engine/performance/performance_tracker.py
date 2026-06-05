@@ -29,6 +29,7 @@ class TradeRecord:
     entry_price: float | None
     exit_price: float | None
     pnl: float | None
+    strategy_name: str = ""
     exclude_from_streak: bool = False
 
 
@@ -42,6 +43,7 @@ class _PendingParentClose:
     entry_price: float | None = None
     ts_first: float = 0.0
     ts_last: float = 0.0
+    strategy_name: str = ""
     exclude_from_streak: bool = False
 
 
@@ -77,6 +79,7 @@ class PerformanceTracker:
         fill: Fill,
         classification: FillClassification,
         *,
+        strategy_name: str = "",
         exclude_from_streak: bool = False,
     ) -> TradeRecord:
         record = TradeRecord(
@@ -90,6 +93,7 @@ class PerformanceTracker:
             entry_price=classification.entry_price,
             exit_price=classification.exit_price,
             pnl=classification.pnl,
+            strategy_name=strategy_name,
             exclude_from_streak=exclude_from_streak,
         )
         self._fills.append(record)
@@ -129,6 +133,7 @@ class PerformanceTracker:
             entry_price=acc.entry_price,
             exit_price=exit_vwap,
             pnl=acc.total_pnl,
+            strategy_name=acc.strategy_name,
             exclude_from_streak=acc.exclude_from_streak,
         )
         self._append_realized(record)
@@ -156,6 +161,8 @@ class PerformanceTracker:
             acc.exit_notional += record.exit_price * record.qty
         if acc.entry_price is None and record.entry_price is not None:
             acc.entry_price = record.entry_price
+        if not acc.strategy_name and record.strategy_name:
+            acc.strategy_name = record.strategy_name
         acc.ts_last = record.ts
         if exclude_from_streak:
             acc.exclude_from_streak = True

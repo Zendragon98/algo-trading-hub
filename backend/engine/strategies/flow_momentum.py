@@ -100,6 +100,12 @@ class FlowMomentumStrategy(StrategyBase):
         self._equity_provider: EquityProvider | None = None
         self._venue_position_provider: VenuePositionProvider | None = None
         self._last_scan_log_ts: float = 0.0
+        self._analytics_cache: dict[str, str | float | int | bool | None] = {
+            "STRATEGY": self.display_label or self.name,
+        }
+
+    def analytics_snapshot(self) -> dict[str, str | float | int | bool | None]:
+        return dict(self._analytics_cache)
 
     @staticmethod
     def _resolve_universe(settings: Settings) -> list[str]:
@@ -321,6 +327,16 @@ class FlowMomentumStrategy(StrategyBase):
             exits=exits,
             signal_count=len(signals),
         )
+        self._analytics_cache = {
+            "STRATEGY": self.display_label or self.name,
+            "UNIVERSE": len(self._symbols),
+            "QUOTED": quoted,
+            "IN_POSITION": in_pos,
+            "WARMING": warming,
+            "ENTRIES": entries,
+            "EXITS": exits,
+            "SIGNALS": len(signals),
+        }
         return signals
 
     def _tape_exit_pressure(
