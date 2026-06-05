@@ -1,5 +1,6 @@
 export * from "./chrome";
 export * from "./control-panels";
+export * from "./strategy-hover-rail";
 export * from "./health";
 export * from "./kpi";
 export * from "./oms";

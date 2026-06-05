@@ -1062,7 +1062,15 @@ def compute_quote_intent(
         tick=infer_price_tick(feat),
     )
 
-    size_pct = params.size_pct if params.size_pct is not None else float(settings.mm_quote_size_pct)
+    if params.size_pct is not None:
+        size_pct = float(params.size_pct)
+    else:
+        size_pct = float(settings.mm_quote_size_pct)
+    floor_pct = max(
+        float(settings.mm_quote_size_pct),
+        float(getattr(settings, "mm_risk_per_trade_pct", 0.0) or 0.0),
+    )
+    size_pct = max(size_pct, floor_pct)
     size_notional = equity * size_pct if equity > 0 else 0.0
     if size_notional <= 0:
         size_notional = float(settings.mm_qty) * venue_mid

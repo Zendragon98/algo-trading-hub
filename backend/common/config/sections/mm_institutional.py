@@ -113,7 +113,7 @@ class MmInstitutionalMixin(BaseModel):
     mm_spread_calib_min_samples: int = 30
     mm_quote_refresh_bps: float = 1.0
     mm_quote_min_rest_sec: float = 0.5
-    mm_quote_size_pct: float = 0.002
+    mm_quote_size_pct: float = 0.02
     mm_quote_max_refresh_per_tick: int = 16
     mm_quote_toxic_widen_bps: float = 6.0
     # Execution zones (slide: place/cancel ranges in bps; 0 = disabled).

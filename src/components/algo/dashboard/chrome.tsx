@@ -4,8 +4,6 @@ import {
   AlertTriangle,
   Cpu,
   Loader2,
-  Pause,
-  Play,
   Power,
   Settings2,
   Wifi,
@@ -101,13 +99,8 @@ export const TopBar = memo(function TopBar(props: {
   backendReachable: boolean;
   streamConnected: boolean;
   controlsBusy: boolean;
-  startDisabled: boolean;
-  onStart: () => void;
-  onResume?: () => void;
-  onPause: () => void;
   onEStop: () => void;
   onHaltTrading: (opts?: { flatten?: boolean; pause?: boolean }) => void;
-  onFlatten: () => void;
 }) {
   const { status, sessionStartedAt, paperMode, strategy } = props;
   const [uptime, setUptime] = useState(() => formatUptime(sessionStartedAt));
@@ -181,40 +174,6 @@ export const TopBar = memo(function TopBar(props: {
               <Settings2 className="size-4" /> Settings
             </Link>
           </Button>
-          {status === "paused" && props.onResume ? (
-            <Button
-              size="sm"
-              onClick={props.onResume}
-              disabled={!props.backendReachable || props.controlsBusy}
-              className="bg-bull text-bull-foreground hover:bg-bull/90"
-            >
-              <Play className="size-4" /> Resume
-            </Button>
-          ) : (
-            <>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={props.onPause}
-                disabled={status !== "running" || props.controlsBusy}
-              >
-                <Pause className="size-4" />
-              </Button>
-              <Button
-                size="sm"
-                onClick={props.onStart}
-                disabled={props.startDisabled}
-                className="bg-bull text-bull-foreground hover:bg-bull/90"
-              >
-                {props.controlsBusy ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Play className="size-4" />
-                )}{" "}
-                {props.controlsBusy ? "Starting…" : "Start"}
-              </Button>
-            </>
-          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button

@@ -14,6 +14,7 @@ _MM2_FIELD_MAP = {
     "mm_min_exit_profit_bps": "mm2_min_exit_profit_bps",
     "mm_max_hold_sec": "mm2_max_hold_sec",
     "mm_qty": "mm2_qty",
+    "mm_risk_per_trade_pct": "mm2_risk_per_trade_pct",
     "mm_market_exit_loss_bps": "mm2_market_exit_loss_bps",
     "mm_aggressive_exit_loss_bps": "mm2_aggressive_exit_loss_bps",
     "mm_exit_inside_touch_bps": "mm2_exit_inside_touch_bps",

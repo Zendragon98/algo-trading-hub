@@ -31,7 +31,7 @@ import {
   RiskPanel,
   ConsoleHydratingShell,
   StartupProgressBanner,
-  StrategyPicker,
+  StrategyHoverRail,
   SystemHealthPanel,
   TopBar,
   TradesTable,
@@ -384,19 +384,14 @@ function Index() {
         backendReachable={backendReachable}
         streamConnected={streamConnected}
         controlsBusy={systemBusy}
-        startDisabled={startDisabled}
-        onStart={onStart}
-        onResume={onResume}
-        onPause={onPause}
         onEStop={onEStop}
         onHaltTrading={onHaltTrading}
-        onFlatten={onFlatten}
       />
 
       <main className="mx-auto max-w-[1500px] px-4 pb-6 pt-3 lg:px-8">
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px]">
           <div className="order-2 flex min-w-0 flex-col gap-3 lg:order-1">
-            <section className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            <section className="grid grid-cols-1 items-start gap-2 md:grid-cols-2 xl:grid-cols-3">
               <PortfolioSnapshotCard
                 totalEquity={totalEquity}
                 pnlAbs={pnlAbs}
@@ -418,36 +413,7 @@ function Index() {
                 sessionTradePerf={sessionTradePerf}
                 rollingTradePerf={rollingTradePerf}
               />
-            </section>
-
-            {replaySummary ? (
-              <div className="rounded-md border border-bull/30 bg-bull/5 px-3 py-1.5 text-xs text-bull">
-                {replaySummary}
-              </div>
-            ) : null}
-
-            <section className="grid grid-cols-1 gap-3 lg:grid-cols-5">
-              <Panel
-                className="lg:col-span-3"
-                title="EQUITY CURVE"
-                right={
-                  <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-                    <span className="flex items-center gap-1.5">
-                      <span className="size-1.5 rounded-full bg-bull" /> realized
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <span className="size-1.5 rounded-full bg-muted-foreground" /> mark
-                    </span>
-                    <span>· {equityCurve.length.toLocaleString()} samples</span>
-                  </div>
-                }
-              >
-                <div className="h-[200px] px-2 pb-1">
-                  <EquityChart points={equityCurve} interactive />
-                </div>
-              </Panel>
-
-              <div className="flex flex-col gap-3 lg:col-span-2">
+              <div className="flex flex-col gap-2 md:col-span-2 xl:col-span-1">
                 <RiskPanel
                   systemHealth={systemHealth}
                   maxRiskPct={maxRiskPct}
@@ -463,19 +429,46 @@ function Index() {
               </div>
             </section>
 
-            <Panel
-              title="LIVE LOG"
-              right={
-                <span className="flex items-center gap-3">
-                  <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-                    {logs.length.toLocaleString()} lines
+            {replaySummary ? (
+              <div className="rounded-md border border-bull/30 bg-bull/5 px-3 py-1.5 text-xs text-bull">
+                {replaySummary}
+              </div>
+            ) : null}
+
+            <section className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <Panel
+                title="EQUITY CURVE"
+                right={
+                  <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      <span className="size-1.5 rounded-full bg-bull" /> realized
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="size-1.5 rounded-full bg-muted-foreground" /> mark
+                    </span>
+                    <span>· {equityCurve.length.toLocaleString()} samples</span>
+                  </div>
+                }
+              >
+                <div className="h-[220px] px-2 pb-1">
+                  <EquityChart points={equityCurve} interactive />
+                </div>
+              </Panel>
+
+              <Panel
+                title="LIVE LOG"
+                right={
+                  <span className="flex items-center gap-3">
+                    <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                      {logs.length.toLocaleString()} lines
+                    </span>
+                    <LiveDot active={status === "running"} />
                   </span>
-                  <LiveDot active={status === "running"} />
-                </span>
-              }
-            >
-              <LogStream logs={logs} className="h-[280px]" />
-            </Panel>
+                }
+              >
+                <LogStream logs={logs} className="h-[220px]" />
+              </Panel>
+            </section>
 
             <Panel
               title="OPEN POSITIONS"
@@ -606,15 +599,16 @@ function Index() {
                   </Button>
                 </div>
 
-                <Separator />
-
-                <StrategyPicker
-                  strategies={strategies}
-                  activeName={strategy?.name ?? null}
-                  multiMode={strategy?.name === "all"}
-                  backendReachable={backendReachable}
-                  onSelect={onSelectStrategy}
-                />
+                <Button
+                  onClick={onFlatten}
+                  disabled={!backendReachable || controlPending === "flatten"}
+                  size="sm"
+                  variant="outline"
+                  className="w-full border-bear/40 text-bear hover:bg-bear/10 hover:text-bear"
+                >
+                  <AlertTriangle className="size-4" />
+                  {controlPending === "flatten" ? "Flattening…" : "Flatten all positions"}
+                </Button>
 
                 <Separator />
 
@@ -639,19 +633,6 @@ function Index() {
                   onPatchSettings={onPatchSettings}
                 />
 
-                <Separator />
-
-                <Button
-                  onClick={onFlatten}
-                  disabled={!backendReachable || controlPending === "flatten"}
-                  size="sm"
-                  variant="outline"
-                  className="w-full border-bear/40 text-bear hover:bg-bear/10 hover:text-bear"
-                >
-                  <AlertTriangle className="size-4" />
-                  {controlPending === "flatten" ? "Flattening…" : "Flatten all positions"}
-                </Button>
-
                 <Button variant="outline" className="w-full lg:hidden" asChild>
                   <Link to="/settings">
                     <Settings2 className="size-4" /> Engine settings
@@ -662,6 +643,14 @@ function Index() {
           </aside>
         </div>
       </main>
+
+      <StrategyHoverRail
+        strategies={strategies}
+        activeName={strategy?.name ?? null}
+        multiMode={strategy?.name === "all"}
+        backendReachable={backendReachable}
+        onSelect={onSelectStrategy}
+      />
 
       <PositionChartDialog
         position={positions.find((p) => p.symbol === chartSymbol) ?? null}

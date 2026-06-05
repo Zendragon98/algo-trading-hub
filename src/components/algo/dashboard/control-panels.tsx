@@ -59,24 +59,32 @@ export function StrategyPicker({
   multiMode,
   backendReachable,
   onSelect,
+  hideHeader = false,
 }: {
   strategies: StrategyInfo[];
   activeName: string | null;
   multiMode: boolean;
   backendReachable: boolean;
   onSelect: (name: string) => void;
+  hideHeader?: boolean;
 }) {
   const options = [ALL_STRATEGIES_OPTION, ...strategies];
   return (
     <div>
-      <div className="mb-2 flex items-center justify-between text-xs">
-        <span className="uppercase tracking-wider text-muted-foreground">Strategy</span>
-        {strategies.length === 0 && (
-          <span className="text-[11px] text-muted-foreground">
-            {backendReachable ? "Loading\u2026" : "Backend offline"}
-          </span>
-        )}
-      </div>
+      {!hideHeader ? (
+        <div className="mb-2 flex items-center justify-between text-xs">
+          <span className="uppercase tracking-wider text-muted-foreground">Strategy</span>
+          {strategies.length === 0 && (
+            <span className="text-[11px] text-muted-foreground">
+              {backendReachable ? "Loading\u2026" : "Backend offline"}
+            </span>
+          )}
+        </div>
+      ) : strategies.length === 0 ? (
+        <p className="mb-2 text-[11px] text-muted-foreground">
+          {backendReachable ? "Loading\u2026" : "Backend offline"}
+        </p>
+      ) : null}
       {multiMode && strategies.length > 0 ? (
         <p className="mb-2 text-[11px] text-muted-foreground">
           All registered strategies are ticking; alpha legs are netted per symbol before execution.

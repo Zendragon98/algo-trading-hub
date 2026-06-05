@@ -50,10 +50,10 @@ class Mm2Mixin(BaseModel):
     mm2_early_loss_hold_frac: float = 0.0
     mm2_min_samples: int = 60
     mm2_quote_during_warmup: bool = True
-    mm2_risk_per_trade_pct: float = 0.008
-    mm2_max_inventory_notional: float = 300.0
+    mm2_risk_per_trade_pct: float = 0.02
+    mm2_max_inventory_notional: float = 1500.0
     # Sum of |position| notionals across MM2 symbols; blocks new flat entries when exceeded.
-    mm2_max_inventory_notional_total: float = 600.0
+    mm2_max_inventory_notional_total: float = 3000.0
     mm2_max_concurrent_positions: int = 6
     # On moderate risk (elevated toxicity/markout/depletion): widen half-spread and damp size.
     mm2_risk_widen_multiplier: float = 2.0
@@ -65,7 +65,7 @@ class Mm2Mixin(BaseModel):
     mm2_side_halt_sec: float = 120.0
     mm2_vol_regime_spike_mult: float = 1.8
     mm2_vol_regime_pause_sec: float = 90.0
-    mm2_qty: float = 0.001
+    mm2_qty: float = 0.005
     mm2_cooldown_sec: float = 25.0
     mm2_max_entries_per_tick: int = 1
     # When >0, require |composite| >= entry + fee_rt×scale (composite-fee gate).

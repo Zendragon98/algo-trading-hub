@@ -65,6 +65,35 @@ def test_compute_quote_intent_caps_reduce_only_side_to_position() -> None:
     assert intent.bid_qty <= abs(-0.031) + 1e-12
 
 
+def test_compute_quote_intent_default_size_pct_of_equity() -> None:
+    feat = Features(
+        symbol="BTCUSDT",
+        mid=50_000.0,
+        spread_bps=10.0,
+        imbalance_topn=0.0,
+        jump_active=False,
+        is_toxic=False,
+        bid_depth_ratio=1.0,
+        ask_depth_ratio=1.0,
+        best_bid=49_995.0,
+        best_ask=50_005.0,
+    )
+    own = OwnBookState(symbol="BTCUSDT")
+    s = Settings()
+    intent = mm_core.compute_quote_intent(
+        feat=feat,
+        settings=s,
+        own=own,
+        position_qty=0.0,
+        equity=10_000.0,
+        skew_avg=0.0,
+        strategy_name="market_making_v2",
+    )
+    # Default 2% of equity => $200 notional => 0.004 BTC at $50k
+    assert intent.bid_qty == pytest.approx(0.004, rel=1e-4)
+    assert intent.ask_qty == pytest.approx(0.004, rel=1e-4)
+
+
 def test_clamp_targets_no_cross_in_intent() -> None:
     feat = Features(
         symbol="BTCUSDT",
