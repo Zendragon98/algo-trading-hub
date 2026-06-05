@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 
-import { downsampleSeries } from "@/lib/series";
+import { downsampleSeriesPreserveExtrema } from "@/lib/series";
 
 const MAX_DISPLAY_POINTS = 256;
 
@@ -12,7 +12,7 @@ function normalizeSeries(values: number[]): number[] {
 
 export function EquityChart({ data }: { data: number[] }) {
   const series = useMemo(
-    () => normalizeSeries(downsampleSeries(data, MAX_DISPLAY_POINTS)),
+    () => normalizeSeries(downsampleSeriesPreserveExtrema(data, MAX_DISPLAY_POINTS)),
     [data],
   );
 
@@ -48,11 +48,7 @@ export function EquityChart({ data }: { data: number[] }) {
 
   return (
     <div className="relative h-full w-full">
-      <svg
-        viewBox="0 0 100 100"
-        preserveAspectRatio="none"
-        className="h-full w-full"
-      >
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full">
         <defs>
           <linearGradient id="equityFill" x1="0" x2="0" y1="0" y2="1">
             <stop offset="0%" stopColor={stroke} stopOpacity="0.35" />
@@ -92,7 +88,13 @@ export function EquityChart({ data }: { data: number[] }) {
           strokeLinejoin="round"
           strokeLinecap="round"
         />
-        <circle cx="0" cy={startY} r="0.9" fill="var(--muted-foreground)" vectorEffect="non-scaling-stroke" />
+        <circle
+          cx="0"
+          cy={startY}
+          r="0.9"
+          fill="var(--muted-foreground)"
+          vectorEffect="non-scaling-stroke"
+        />
         <circle cx="100" cy={lastY} r="0.9" fill={stroke} vectorEffect="non-scaling-stroke" />
       </svg>
       <div
@@ -103,7 +105,11 @@ export function EquityChart({ data }: { data: number[] }) {
       </div>
       <div
         className="pointer-events-none absolute right-2 -translate-y-1/2 rounded-sm px-1.5 py-0.5 font-mono text-[10px] tabular-nums"
-        style={{ top: `calc(${lastY}% + 8px)`, backgroundColor: stroke, color: "var(--background)" }}
+        style={{
+          top: `calc(${lastY}% + 8px)`,
+          backgroundColor: stroke,
+          color: "var(--background)",
+        }}
       >
         NOW {last.toFixed(2)}
       </div>

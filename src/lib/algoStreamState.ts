@@ -20,7 +20,7 @@ import {
   type StatusEventData,
   type WsEvent,
 } from "@/lib/api";
-import { downsampleSeries } from "@/lib/series";
+import { downsampleSeriesPreserveExtrema } from "@/lib/series";
 import {
   accumulateParentClose,
   appendRealizedClose,
@@ -142,7 +142,7 @@ export const WS_EVENT_BATCH_MS = 250;
 export const EQUITY_CURVE_MAX = 256;
 
 export function downsampleEquityCurve(values: number[]): number[] {
-  return downsampleSeries(values, EQUITY_CURVE_MAX);
+  return downsampleSeriesPreserveExtrema(values, EQUITY_CURVE_MAX);
 }
 
 const LATENCY_KEYS = new Set([
@@ -212,9 +212,7 @@ export function numSetting(
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
 }
 
-function formatReplaySummary(
-  summary: NonNullable<StatusEventData["replay_summary"]>,
-): string {
+function formatReplaySummary(summary: NonNullable<StatusEventData["replay_summary"]>): string {
   const parts = [
     `WAL replay: ${summary.events_read ?? 0} events`,
     `${summary.fills_applied ?? 0} fills`,
@@ -326,8 +324,7 @@ export function systemHealthFromStatus(
   };
   return {
     latency: data.latency ? { ...base.latency, ...data.latency } : base.latency,
-    orderReconcile:
-      (data.order_reconcile as SystemHealth["orderReconcile"]) ?? base.orderReconcile,
+    orderReconcile: (data.order_reconcile as SystemHealth["orderReconcile"]) ?? base.orderReconcile,
     mdHealth: data.md_health
       ? Object.fromEntries(
           Object.entries(data.md_health).map(([k, v]) => [
@@ -345,9 +342,7 @@ export function systemHealthFromStatus(
     userDataAgeSec: Number(data.user_data_age_sec ?? base.userDataAgeSec),
     userDataMonitored: Boolean(data.user_data_monitored ?? base.userDataMonitored),
     userDataStale: Boolean(data.user_data_stale ?? base.userDataStale),
-    userDataReconcileStale: Boolean(
-      data.user_data_reconcile_stale ?? base.userDataReconcileStale,
-    ),
+    userDataReconcileStale: Boolean(data.user_data_reconcile_stale ?? base.userDataReconcileStale),
     clockSkewSynced: Boolean(data.clock_skew_synced ?? base.clockSkewSynced),
     activeBreakers: (data.active_breakers as string[]) ?? base.activeBreakers,
     grossNotional: Number(data.gross_notional ?? base.grossNotional),
@@ -356,12 +351,8 @@ export function systemHealthFromStatus(
     unrealizedPnl: Number(data.unrealized_pnl ?? base.unrealizedPnl),
     equity: Number(data.equity ?? base.equity),
     sessionPeakEquity: Number(data.session_peak_equity ?? base.sessionPeakEquity),
-    sessionMaxDrawdownAbs: Number(
-      data.session_max_drawdown_abs ?? base.sessionMaxDrawdownAbs,
-    ),
-    sessionMaxDrawdownPct: Number(
-      data.session_max_drawdown_pct ?? base.sessionMaxDrawdownPct,
-    ),
+    sessionMaxDrawdownAbs: Number(data.session_max_drawdown_abs ?? base.sessionMaxDrawdownAbs),
+    sessionMaxDrawdownPct: Number(data.session_max_drawdown_pct ?? base.sessionMaxDrawdownPct),
   };
 }
 
@@ -446,9 +437,7 @@ export function applyWsEvents(
   );
 }
 
-export function aggregateExecutionHistory(
-  history: ExecutionParent[],
-): ExecutionAggregate {
+export function aggregateExecutionHistory(history: ExecutionParent[]): ExecutionAggregate {
   if (!history.length) return EMPTY_AGG;
   const n = history.length;
   return {
@@ -539,31 +528,21 @@ export function applyWsEvent(
       const point = event.data.equity;
       const nextEquity = [...prev.equity, point];
       const trimmed = downsampleEquityCurve(nextEquity);
-      const d = event.data;
-      if (prev.systemHealth) {
-        return {
-          ...prev,
-          equity: trimmed,
-          systemHealth: {
-            ...prev.systemHealth,
-            grossNotional: Number(d.gross_notional ?? prev.systemHealth.grossNotional),
-            netNotional: Number(d.net_notional ?? prev.systemHealth.netNotional),
-            realizedPnl: Number(d.realized_pnl ?? prev.systemHealth.realizedPnl),
-            unrealizedPnl: Number(d.unrealized_pnl ?? prev.systemHealth.unrealizedPnl),
-            equity: Number(d.equity ?? point),
-            sessionPeakEquity: Number(
-              d.session_peak_equity ?? prev.systemHealth.sessionPeakEquity,
-            ),
-            sessionMaxDrawdownAbs: Number(
-              d.session_max_drawdown_abs ?? prev.systemHealth.sessionMaxDrawdownAbs,
-            ),
-            sessionMaxDrawdownPct: Number(
-              d.session_max_drawdown_pct ?? prev.systemHealth.sessionMaxDrawdownPct,
-            ),
-          },
-        };
-      }
-      return { ...prev, equity: trimmed };
+      const d = event.data as Record<string, unknown>;
+      return {
+        ...prev,
+        equity: trimmed,
+        systemHealth: systemHealthFromStatus(prev.systemHealth, {
+          gross_notional: d.gross_notional as number | undefined,
+          net_notional: d.net_notional as number | undefined,
+          realized_pnl: d.realized_pnl as number | undefined,
+          unrealized_pnl: d.unrealized_pnl as number | undefined,
+          equity: Number(d.equity ?? point),
+          session_peak_equity: d.session_peak_equity as number | undefined,
+          session_max_drawdown_abs: d.session_max_drawdown_abs as number | undefined,
+          session_max_drawdown_pct: d.session_max_drawdown_pct as number | undefined,
+        }),
+      };
     }
 
     case "strategy_hub": {

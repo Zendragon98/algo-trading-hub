@@ -23,6 +23,35 @@ from ..position.position_tracker import PositionTracker
 
 logger = logging.getLogger(__name__)
 
+
+def _extrema_indices(values: list[float], max_points: int) -> list[int]:
+    """Downsample indices while preserving per-bucket min/max (drawdown fidelity)."""
+    n = len(values)
+    if n <= max_points:
+        return list(range(n))
+    last_idx = n - 1
+    num_buckets = max(1, (max_points - 2) // 2)
+    indices: set[int] = {0, last_idx}
+    for bucket in range(num_buckets):
+        start = 1 + (bucket * (last_idx - 1)) // num_buckets
+        end = 1 + ((bucket + 1) * (last_idx - 1)) // num_buckets - 1
+        if start > end:
+            continue
+        min_i = start
+        max_i = start
+        for i in range(start + 1, end + 1):
+            if values[i] < values[min_i]:
+                min_i = i
+            if values[i] > values[max_i]:
+                max_i = i
+        indices.add(min_i)
+        indices.add(max_i)
+    sorted_idx = sorted(indices)
+    if len(sorted_idx) > max_points:
+        step = (len(sorted_idx) - 1) / (max_points - 1)
+        return [sorted_idx[round(i * step)] for i in range(max_points)]
+    return sorted_idx
+
 # Stablecoin assets we treat as 1:1 cash when ``BASE_CURRENCY`` is one of
 # them. Both wallets contribute to dashboard equity so users with split
 # USDT/USDC balances see their real account value.
@@ -236,11 +265,9 @@ class Portfolio:
         n = self._curve_size
         if len(curve) <= n:
             return
-        last_idx = len(curve) - 1
-        self._equity_curve = [
-            curve[round(i * last_idx / (n - 1))]
-            for i in range(n)
-        ]
+        equities = [point.equity for point in curve]
+        keep = _extrema_indices(equities, n)
+        self._equity_curve = [curve[i] for i in keep]
 
     # --- Periodic recompute ---
 

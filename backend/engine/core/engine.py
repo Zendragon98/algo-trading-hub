@@ -64,7 +64,11 @@ from ..orders.order_manager import OrderManager, _fill_to_dict, new_client_order
 from ..orders.order_state_machine import TERMINAL_ORDER_STATUSES
 from ..performance.fill_classification import classify_fill, position_before_fill
 from ..performance.performance_tracker import PerformanceTracker
-from ..performance.strategy_attribution import FLATTEN_STRATEGY
+from ..performance.strategy_attribution import (
+    FLATTEN_STRATEGY,
+    NETTED_STRATEGY,
+    strategy_for_risk_exit,
+)
 from ..performance.strategy_hub import StrategyHubService
 from ..persistence.journal import replay_wal_async
 from ..portfolio.portfolio import Portfolio
@@ -1694,6 +1698,31 @@ class Engine:
             return FLATTEN_STRATEGY
         return ""
 
+    def _strategy_contributions_for_fill(
+        self,
+        fill: Fill,
+        parent: ParentOrder | None,
+        strategy_name: str,
+    ) -> dict[str, float] | None:
+        """Per-strategy signed qty intent for netted parents (opens and closes)."""
+        contribs: dict[str, float] = {}
+        if fill.parent_id:
+            report = self._exec_tracker.report_for_parent(fill.parent_id)
+            if report is not None and report.strategy_contributions:
+                contribs = dict(report.strategy_contributions)
+        if not contribs and fill.parent_id:
+            attr = self._parent_attribution.get(fill.parent_id)
+            if attr:
+                sym = fill.symbol.upper()
+                contribs = {
+                    strat: float(deltas.get(sym, 0.0))
+                    for strat, deltas in attr.items()
+                    if abs(deltas.get(sym, 0.0)) > 1e-12
+                }
+        if strategy_name == NETTED_STRATEGY:
+            return contribs or None
+        return None
+
     def _is_emergency_flatten_fill(self, fill: Fill) -> bool:
         """True for reduce-only unwind parents (auto-/operator-flatten path).
 
@@ -1987,11 +2016,11 @@ class Engine:
             await self._positions.on_fill(fill)
         position = self._positions.get(fill.symbol) or Position(symbol=fill.symbol)
         self._risk.on_fill(fill, position)
-        strategy_contributions: dict[str, float] | None = None
-        if fill.parent_id:
-            report = self._exec_tracker.report_for_parent(fill.parent_id)
-            if report is not None and report.strategy_name == "__netted__":
-                strategy_contributions = dict(report.strategy_contributions or {})
+        strategy_contributions = self._strategy_contributions_for_fill(
+            fill,
+            parent,
+            strategy_name,
+        )
         record = self._performance.record_fill(
             fill,
             classification,
@@ -2453,11 +2482,20 @@ class Engine:
             qty = intent.qty
         if qty <= tol:
             return
+        risk_attr = strategy_for_risk_exit(
+            symbol=intent.symbol,
+            reason=intent.reason,
+            multi_mode=self.is_multi_strategy_mode(),
+            active_strategy=self._active_strategy_name,
+            ledger_snapshot=self._strategy_ledger.snapshot(),
+        )
         await self._router.submit(
             symbol=intent.symbol,
             side=side,
             qty=qty,
             notes=f"risk: {intent.reason}",
+            strategy_name=risk_attr.strategy_name,
+            strategy_contributions=risk_attr.strategy_contributions,
             # Risk exits always reduce an existing position. Mark them
             # reduce-only so Binance waives MIN_NOTIONAL on tiny positions
             # (otherwise a sub-$50 SL/TP cannot close out at all).
@@ -2715,6 +2753,11 @@ class Engine:
         try:
             if not signal.reduce_only:
                 await self._ensure_leverage_before_entry(signal.symbol)
+            resolved_strategy = (
+                NETTED_STRATEGY
+                if strategy_contributions
+                else (signal.strategy_name or self._active_strategy_name)
+            )
             parent = await self._router.submit(
                 symbol=signal.symbol,
                 side=signal.side,
@@ -2722,7 +2765,7 @@ class Engine:
                 notes=self._parent_notes_for_signal(signal),
                 signal_score=self._signal_score_for_dispatch(signal),
                 reduce_only=signal.reduce_only,
-                strategy_name=signal.strategy_name,
+                strategy_name=resolved_strategy,
                 strategy_contributions=strategy_contributions,
             )
             self._latency.on_child_submitted(signal.symbol)
@@ -2921,6 +2964,15 @@ class Engine:
             group_id, len(submitted), exc,
         )
         for leg, parent in submitted:
+            report = self._exec_tracker.report_for_parent(parent.id)
+            unwind_contribs = (
+                dict(report.strategy_contributions)
+                if report is not None and report.strategy_contributions
+                else None
+            )
+            unwind_strategy = leg.strategy_name or parent.strategy_name
+            if unwind_contribs and not unwind_strategy:
+                unwind_strategy = NETTED_STRATEGY
             try:
                 await self._router.submit(
                     symbol=leg.symbol,
@@ -2929,6 +2981,8 @@ class Engine:
                     notes=f"compensate:{group_id}",
                     reduce_only=True,
                     urgency=Urgency.AGGRESSIVE,
+                    strategy_name=unwind_strategy,
+                    strategy_contributions=unwind_contribs,
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("compensating unwind failed for %s", leg.symbol)

@@ -30,3 +30,32 @@ export function downsampleSeries(values: number[], maxPoints: number): number[] 
   }
   return out;
 }
+
+/** Downsample while preserving per-bucket min/max so drawdown troughs survive. */
+export function downsampleSeriesPreserveExtrema(values: number[], maxPoints: number): number[] {
+  const n = values.length;
+  if (n <= maxPoints) return values;
+  const lastIdx = n - 1;
+  const numBuckets = Math.max(1, Math.floor((maxPoints - 2) / 2));
+  const indices = new Set<number>([0, lastIdx]);
+
+  for (let bucket = 0; bucket < numBuckets; bucket++) {
+    const start = 1 + Math.floor((bucket * (lastIdx - 1)) / numBuckets);
+    const end = 1 + Math.floor(((bucket + 1) * (lastIdx - 1)) / numBuckets) - 1;
+    if (start > end) continue;
+    let minI = start;
+    let maxI = start;
+    for (let i = start + 1; i <= end; i++) {
+      if (values[i]! < values[minI]!) minI = i;
+      if (values[i]! > values[maxI]!) maxI = i;
+    }
+    indices.add(minI);
+    indices.add(maxI);
+  }
+
+  const sorted = [...indices].sort((a, b) => a - b);
+  if (sorted.length > maxPoints) {
+    return downsampleSeries(values, maxPoints);
+  }
+  return sorted.map((i) => values[i]!);
+}

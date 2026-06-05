@@ -182,8 +182,14 @@ class PerformanceTracker:
             acc.entry_price = record.entry_price
         if not acc.strategy_name and record.strategy_name:
             acc.strategy_name = record.strategy_name
-        if strategy_contributions and not acc.strategy_contributions:
-            acc.strategy_contributions = dict(strategy_contributions)
+        if strategy_contributions:
+            if not acc.strategy_contributions:
+                acc.strategy_contributions = dict(strategy_contributions)
+            else:
+                for strat, qty in strategy_contributions.items():
+                    acc.strategy_contributions[strat] = (
+                        acc.strategy_contributions.get(strat, 0.0) + qty
+                    )
         acc.ts_last = record.ts
         if exclude_from_streak:
             acc.exclude_from_streak = True

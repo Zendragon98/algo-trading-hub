@@ -3,6 +3,7 @@ import { EM_DASH } from "@/lib/algo-format";
 
 const NETTED = "__netted__";
 const FLATTEN = "__flatten__";
+const RISK = "risk_exit";
 
 function strategyShortTag(name: string): string | null {
   if (name.includes("pairs_")) return "PAIRS";
@@ -28,6 +29,7 @@ export function formatTradeStrategyLabel(
 ): string {
   if (!strategyName) return EM_DASH;
   if (strategyName === FLATTEN) return "Flatten";
+  if (strategyName === RISK) return "Risk";
   if (strategyName === NETTED) {
     const names = Object.keys(strategyContributions);
     if (names.length) {
