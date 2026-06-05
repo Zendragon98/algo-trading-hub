@@ -136,6 +136,8 @@ def test_parent_close_slices_roll_up_for_rolling_not_session() -> None:
     perf.finalize_parent_close(parent_id)
     assert len(perf.realized_transactions()) == 1
     assert perf.session_losses == 3
+    assert perf.rolling_close_losses == 1
+    assert perf.rolling_close_wins == 0
     row = perf.realized_transactions()[0]
     assert row.id == parent_id
     assert row.pnl == pytest.approx(sum(slices))
@@ -164,3 +166,45 @@ def test_session_rollups_survive_rolling_trim() -> None:
     assert gw == pytest.approx(3.0)
     assert gl == pytest.approx(1.0)
     assert len(perf.realized_transactions()) == 2
+
+
+def test_reset_session_clears_session_rollups_and_trade_tape() -> None:
+    portfolio = MagicMock()
+    perf = PerformanceTracker(portfolio)
+
+    perf.record_fill(_fill(Side.SELL, 1.0, 52.0, idx=0), _cls(1.0))
+    perf.record_fill(_fill(Side.SELL, 1.0, 53.0, idx=1), _cls(-2.0))
+    assert perf.session_wins == 1
+    assert perf.session_losses == 1
+    assert len(perf.trades()) == 2
+    assert perf.realized_pnl_by_strategy()
+
+    perf.reset_session()
+
+    assert perf.session_wins == 0
+    assert perf.session_losses == 0
+    assert perf.win_rate_session() == pytest.approx(0.0)
+    assert perf.trades() == []
+    assert perf.realized_transactions() == []
+    assert perf.realized_pnl_by_strategy() == {}
+
+
+def test_reset_session_clears_session_rollups_and_trade_tape() -> None:
+    portfolio = MagicMock()
+    perf = PerformanceTracker(portfolio)
+
+    perf.record_fill(_fill(Side.SELL, 1.0, 52.0, idx=0), _cls(1.0))
+    perf.record_fill(_fill(Side.SELL, 1.0, 53.0, idx=1), _cls(-2.0))
+    assert perf.session_wins == 1
+    assert perf.session_losses == 1
+    assert len(perf.trades()) == 2
+    assert perf.realized_pnl_by_strategy()
+
+    perf.reset_session()
+
+    assert perf.session_wins == 0
+    assert perf.session_losses == 0
+    assert perf.win_rate_session() == pytest.approx(0.0)
+    assert perf.trades() == []
+    assert perf.realized_transactions() == []
+    assert perf.realized_pnl_by_strategy() == {}

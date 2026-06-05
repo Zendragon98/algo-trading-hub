@@ -1,7 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity,
   AlertTriangle,
   Loader2,
   Pause,
@@ -10,8 +9,6 @@ import {
   Settings2,
   Square,
   Target,
-  TrendingDown,
-  Wallet,
   Zap,
 } from "lucide-react";
 
@@ -27,13 +24,14 @@ import {
   ExecutionQualityPanel,
   KpiCard,
   LiveDot,
+  PortfolioSnapshotCard,
   LogStream,
   OmsTable,
   Panel,
   PositionsTable,
   RiskPanel,
+  ConsoleHydratingShell,
   StartupProgressBanner,
-  StrategyAnalyticsPanel,
   StrategyPicker,
   SystemHealthPanel,
   TopBar,
@@ -57,8 +55,7 @@ import { api } from "@/lib/api";
 import { LIVE_DISABLE_CONFIRM_TOKEN } from "@/lib/breaker-presets";
 import { notifyError, notifySuccess } from "@/lib/notify";
 import {
-  derivePayoffMetrics,
-  emptyClosedTradePerf,
+  closedTradePerfFromKpi,
 } from "@/lib/algo-format";
 
 export const Route = createFileRoute("/")({
@@ -75,18 +72,18 @@ export const Route = createFileRoute("/")({
 });
 function Index() {
   const live = useAlgoStream();
+  const hydrated = live.hydrated;
   const status: AlgoStatus = live.status;
   const startupProgress = live.startupProgress;
   const bookResyncProgress = live.bookResyncProgress;
   const paperMode: boolean = live.paperMode;
   const strategy: StrategyInfo | null = live.strategy;
   const strategies: StrategyInfo[] = live.strategies;
-  const equity: number[] = live.equity;
+  const equityCurve = live.equityCurve;
   const positions: Position[] = live.positions;
   const trades: Trade[] = live.trades;
-  const realizedTrades: Trade[] = live.realizedTrades;
   const logs: LogEntry[] = live.logs;
-  const uptimeSec: number = live.uptimeSec;
+  const sessionStartedAt = live.sessionStartedAt;
   const workingOrders: WorkingOrder[] = live.orders;
   const workingParents: ExecutionParent[] = live.workingParents;
   const executionHistory: ExecutionParent[] = live.executionHistory;
@@ -98,7 +95,6 @@ function Index() {
   const settingsSnapshot = live.settingsSnapshot;
   const replaySummary = live.replaySummary;
   const kpi = live.kpi;
-  const strategyAnalytics = live.strategyAnalytics;
   const sessionMaxDrawdownAbs = systemHealth?.sessionMaxDrawdownAbs ?? 0;
   const sessionMaxDrawdownPct = systemHealth?.sessionMaxDrawdownPct ?? 0;
   const backendReachable = live.backendReachable;
@@ -143,8 +139,8 @@ function Index() {
     riskHydrated.current = true;
   }, [maxRiskPct]);
 
-  const totalEquity = equity.length ? equity[equity.length - 1] : 0;
-  const startEquity = equity.length ? equity[0] : 0;
+  const totalEquity = equityCurve.length ? equityCurve[equityCurve.length - 1]!.equity : 0;
+  const startEquity = equityCurve.length ? equityCurve[0]!.equity : 0;
   const pnlAbs = totalEquity - startEquity;
   const pnlPct = startEquity > 0 ? (pnlAbs / startEquity) * 100 : 0;
 
@@ -158,79 +154,9 @@ function Index() {
   
 
   /** Rolling = last ≤200 parent-level closes; session = every reducing fill since backend start. */
-  const closedTradePerf = useMemo(() => {
-    if (kpiScope === "session") {
-      const wins = kpi.session_close_wins;
-      const losses = kpi.session_close_losses;
-      const be = kpi.session_close_breakevens;
-      const closed = wins + losses + be;
-      if (!closed) {
-        return emptyClosedTradePerf();
-      }
-      const gw = kpi.gross_win_pnl_session;
-      const gl = kpi.gross_loss_pnl_session;
-      const netFromCloses = gw - gl;
-      return {
-        winRatePct: kpi.win_rate_session,
-        profitFactor: kpi.profit_factor_session,
-        grossWin: gw,
-        grossLoss: gl,
-        netFromCloses,
-        closed,
-        winCount: wins,
-        lossCount: losses,
-        breakevenCount: be,
-        ...derivePayoffMetrics(wins, losses, gw, gl, closed, netFromCloses),
-      };
-    }
-
-    const closed =
-      realizedTrades.length > 0
-        ? realizedTrades
-        : trades.filter((t) => t.action === "close" && t.pnl != null);
-    if (!closed.length) {
-      return emptyClosedTradePerf();
-    }
-    let grossWin = 0;
-    let grossLoss = 0;
-    let winCount = 0;
-    let lossCount = 0;
-    let breakevenCount = 0;
-    for (const t of closed) {
-      const p = t.pnl ?? 0;
-      if (p > 0) {
-        grossWin += p;
-        winCount += 1;
-      } else if (p < 0) {
-        grossLoss -= p;
-        lossCount += 1;
-      } else {
-        breakevenCount += 1;
-      }
-    }
-    const profitFactor = grossLoss > 0 ? grossWin / grossLoss : null;
-    const netFromCloses = grossWin - grossLoss;
-    const winRatePct = (winCount / closed.length) * 100;
-    return {
-      winRatePct,
-      profitFactor,
-      grossWin,
-      grossLoss,
-      netFromCloses,
-      closed: closed.length,
-      winCount,
-      lossCount,
-      breakevenCount,
-      ...derivePayoffMetrics(
-        winCount,
-        lossCount,
-        grossWin,
-        grossLoss,
-        closed.length,
-        netFromCloses,
-      ),
-    };
-  }, [kpiScope, kpi, realizedTrades, trades]);
+  const sessionTradePerf = useMemo(() => closedTradePerfFromKpi("session", kpi), [kpi]);
+  const rollingTradePerf = useMemo(() => closedTradePerfFromKpi("rolling", kpi), [kpi]);
+  const closedTradePerf = kpiScope === "session" ? sessionTradePerf : rollingTradePerf;
 
   const winRateTapeStats = useMemo(() => {
     let opens = 0;
@@ -249,18 +175,21 @@ function Index() {
 
   // Fire-and-forget control commands. The engine drives the next status
   // update over the WebSocket so we don't optimistically mutate React state.
-  const handleControl = (fn: () => Promise<unknown>, opts?: { successMessage?: string }) => {
-    fn()
-      .then(() => {
-        if (opts?.successMessage) notifySuccess(opts.successMessage);
-      })
-      .catch((err) => {
-        console.error("control command failed", err);
-        notifyError(err);
-      });
-  };
+  const handleControl = useCallback(
+    (fn: () => Promise<unknown>, opts?: { successMessage?: string }) => {
+      fn()
+        .then(() => {
+          if (opts?.successMessage) notifySuccess(opts.successMessage);
+        })
+        .catch((err) => {
+          console.error("control command failed", err);
+          notifyError(err);
+        });
+    },
+    [],
+  );
 
-  const onStart = () => {
+  const onStart = useCallback(() => {
     if (status === "running" || status === "starting" || controlPending === "start") return;
     setControlPending("start");
     handleControl(() =>
@@ -268,17 +197,17 @@ function Index() {
         setControlPending(null);
       }),
     );
-  };
+  }, [status, controlPending, handleControl]);
 
   useEffect(() => {
     if (controlPending === "start" && (status === "starting" || status === "running")) {
       setControlPending(null);
     }
   }, [controlPending, status]);
-  const onPause = () => handleControl(api.pause);
-  const onResume = () => handleControl(api.resume);
-  const onStop = () => handleControl(api.stop);
-  const onEStop = () => {
+  const onPause = useCallback(() => handleControl(api.pause), [handleControl]);
+  const onResume = useCallback(() => handleControl(api.resume), [handleControl]);
+  const onStop = useCallback(() => handleControl(api.stop), [handleControl]);
+  const onEStop = useCallback(() => {
     const ok = window.confirm(
       "E-Stop will flatten all open positions and stop the trading engine.\n\n" +
         "The API server keeps running — use Start on this dashboard to trade again.\n\nContinue?",
@@ -291,20 +220,23 @@ function Index() {
       },
       { successMessage: "Engine stopped. Press Start when you are ready to trade again." },
     );
-  };
-  const onHaltTrading = (opts?: { flatten?: boolean; pause?: boolean }) =>
-    handleControl(
-      async () => {
-        await api.tripBreakers({
-          flatten: opts?.flatten ?? true,
-          pause: opts?.pause ?? true,
-        });
-        await live.refresh();
-      },
-      { successMessage: "Trading halt applied" },
-    );
+  }, [handleControl, live]);
+  const onHaltTrading = useCallback(
+    (opts?: { flatten?: boolean; pause?: boolean }) =>
+      handleControl(
+        async () => {
+          await api.tripBreakers({
+            flatten: opts?.flatten ?? true,
+            pause: opts?.pause ?? true,
+          });
+          await live.refresh();
+        },
+        { successMessage: "Trading halt applied" },
+      ),
+    [handleControl, live],
+  );
 
-  const onPatchBreakerEnabled = async (
+  const onPatchBreakerEnabled = useCallback(async (
     patch: Record<string, boolean>,
     opts?: { confirmLiveDisable?: boolean; confirmToken?: string },
   ) => {
@@ -321,9 +253,9 @@ function Index() {
       notifyError(err, "Failed to update circuit breakers");
       throw err;
     }
-  };
+  }, [live]);
 
-  const onPatchSettings = async (patch: Record<string, unknown>) => {
+  const onPatchSettings = useCallback(async (patch: Record<string, unknown>) => {
     try {
       await api.patchSettings(patch);
       await live.refresh();
@@ -332,8 +264,8 @@ function Index() {
       notifyError(err, "Failed to update settings");
       throw err;
     }
-  };
-  const onFlatten = () => {
+  }, [live]);
+  const onFlatten = useCallback(() => {
     if (controlPending === "flatten") return;
     setControlPending("flatten");
     handleControl(() =>
@@ -341,33 +273,33 @@ function Index() {
         setControlPending(null);
       }),
     );
-  };
+  }, [controlPending, handleControl]);
 
   // Push the slider's percentage (0-100) to the engine as a fraction.
-  const onRiskCommit = (value: number[]) => {
+  const onRiskCommit = useCallback((value: number[]) => {
     setRisk(value);
     handleControl(() => api.setRisk(value[0] / 100));
-  };
+  }, [handleControl]);
 
   // Hot-swap the active strategy. The /api/state response drives the
   // ``active`` flag; we re-hydrate immediately so the UI flips without
   // waiting for the next status push.
-  const onSelectStrategy = (name: string) => {
+  const onSelectStrategy = useCallback((name: string) => {
     if (strategy?.name === name) return;
     handleControl(async () => {
       await api.setStrategy(name);
       await live.refresh();
     });
-  };
+  }, [strategy?.name, handleControl, live]);
 
-  const onRearmBreakers = (code?: string) => {
+  const onRearmBreakers = useCallback((code?: string) => {
     handleControl(async () => {
       await api.rearmBreakers(code ? { code } : {});
       await live.refresh();
     });
-  };
+  }, [handleControl, live]);
 
-  const onExportReport = async () => {
+  const onExportReport = useCallback(async () => {
     setExportError(null);
     try {
       const report = await api.reportsLatest();
@@ -381,12 +313,26 @@ function Index() {
     } catch (err) {
       setExportError((err as Error).message);
     }
-  };
+  }, []);
+
+  const onOpenPosition = useCallback((p: Position) => setChartSymbol(p.symbol), []);
+  const onCloseChart = useCallback((o: boolean) => {
+    if (!o) setChartSymbol(null);
+  }, []);
+  const onRearmAllBreakers = useCallback(() => onRearmBreakers(), [onRearmBreakers]);
+  const onRearmBreakerCode = useCallback(
+    (code: string) => onRearmBreakers(code),
+    [onRearmBreakers],
+  );
 
   const systemBusy =
     status === "starting" || controlPending === "start" || bookResyncProgress != null;
   const startDisabled =
     !backendReachable || status === "running" || systemBusy;
+
+  if (!hydrated) {
+    return <ConsoleHydratingShell />;
+  }
 
   return (
     <div className="min-h-screen text-foreground">
@@ -421,7 +367,7 @@ function Index() {
 
       <TopBar
         status={status}
-        uptimeSec={uptimeSec}
+        sessionStartedAt={sessionStartedAt}
         paperMode={paperMode}
         strategy={strategy}
         backendReachable={backendReachable}
@@ -437,20 +383,15 @@ function Index() {
 
       <main className="mx-auto max-w-[1500px] px-4 pb-10 pt-6 lg:px-8">
         {/* KPI row */}
-        <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <KpiCard
-            icon={<Wallet className="size-4" />}
-            label="EQUITY"
-            value={`$${totalEquity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-            sub={`${pnlAbs >= 0 ? "+" : ""}${pnlAbs.toFixed(2)} (${pnlPct.toFixed(2)}%)`}
-            tone={pnlAbs >= 0 ? "bull" : "bear"}
-          />
-          <KpiCard
-            icon={<Activity className="size-4" />}
-            label="OPEN P&L"
-            value={`${openPnl >= 0 ? "+" : ""}$${openPnl.toFixed(2)}`}
-            sub={`${positions.length} open positions`}
-            tone={openPnl >= 0 ? "bull" : "bear"}
+        <section className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <PortfolioSnapshotCard
+            totalEquity={totalEquity}
+            pnlAbs={pnlAbs}
+            pnlPct={pnlPct}
+            openPnl={openPnl}
+            openPositionCount={positions.length}
+            sessionMaxDrawdownAbs={sessionMaxDrawdownAbs}
+            sessionMaxDrawdownPct={sessionMaxDrawdownPct}
           />
           <WinRateKpiCard
             perf={closedTradePerf}
@@ -458,6 +399,8 @@ function Index() {
             onScopeChange={setKpiScope}
             tapeStats={winRateTapeStats}
             openPositionCount={positions.length}
+            sessionTradePerf={sessionTradePerf}
+            rollingTradePerf={rollingTradePerf}
           />
           <KpiCard
             icon={<Zap className="size-4" />}
@@ -470,31 +413,6 @@ function Index() {
                   (backendReachable ? "Loading..." : "Backend offline — restart API")
             }
             tone="neutral"
-          />
-        </section>
-
-        <section className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4">
-          <KpiCard
-            icon={<TrendingDown className="size-4" />}
-            label="MAX DRAWDOWN"
-            value={sessionMaxDrawdownAbs > 0 ? `-${sessionMaxDrawdownAbs.toFixed(2)}` : "0.00"}
-            sub="session peak-to-trough (venue)"
-            tone={sessionMaxDrawdownAbs > 0 ? "bear" : "neutral"}
-          />
-          <KpiCard
-            icon={<TrendingDown className="size-4" />}
-            label="MAX DRAWDOWN %"
-            value={
-              sessionMaxDrawdownPct > 0
-                ? `-${sessionMaxDrawdownPct.toFixed(2)}%`
-                : "0.00%"
-            }
-            sub="authoritative session peak"
-            tone={sessionMaxDrawdownPct > 0 ? "bear" : "neutral"}
-          />
-          <StrategyAnalyticsPanel
-            analytics={strategyAnalytics}
-            className="md:col-span-2"
           />
         </section>
 
@@ -519,12 +437,12 @@ function Index() {
                 <span className="flex items-center gap-1.5">
                   <span className="size-1.5 rounded-full bg-muted-foreground" /> mark
                 </span>
-                <span>· last {equity.length} ticks</span>
+                <span>· {equityCurve.length.toLocaleString()} samples</span>
               </div>
             }
           >
             <div className="h-[280px] px-2 pb-2">
-              <EquityChart data={equity} />
+              <EquityChart points={equityCurve} />
             </div>
           </Panel>
 
@@ -625,12 +543,10 @@ function Index() {
                 {controlPending === "flatten" ? "Flattening…" : "Flatten all positions"}
               </Button>
 
-              <Button
-                variant="outline"
-                className="w-full md:hidden"
-                onClick={() => setSettingsOpen(true)}
-              >
-                <Settings2 className="size-4" /> Engine settings
+              <Button variant="outline" className="w-full md:hidden" asChild>
+                <Link to="/settings">
+                  <Settings2 className="size-4" /> Engine settings
+                </Link>
               </Button>
             </div>
           </Panel>
@@ -642,8 +558,8 @@ function Index() {
               breakers={breakers}
               paperMode={paperMode}
               backendReachable={backendReachable}
-              onRearmAll={() => onRearmBreakers()}
-              onRearmCode={(code) => onRearmBreakers(code)}
+              onRearmAll={onRearmAllBreakers}
+              onRearmCode={onRearmBreakerCode}
               onPatchEnabled={onPatchBreakerEnabled}
             />
             <RiskPanel
@@ -656,7 +572,14 @@ function Index() {
           <Panel
             className="lg:col-span-2"
             title="LIVE LOG"
-            right={<LiveDot active={status === "running"} />}
+            right={
+              <span className="flex items-center gap-3">
+                <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                  {logs.length.toLocaleString()} lines
+                </span>
+                <LiveDot active={status === "running"} />
+              </span>
+            }
           >
             <LogStream logs={logs} className="h-[400px]" />
           </Panel>
@@ -669,7 +592,7 @@ function Index() {
               <span className="text-[11px] text-muted-foreground">{positions.length} active</span>
             }
           >
-            <PositionsTable positions={positions} onOpen={(p) => setChartSymbol(p.symbol)} />
+            <PositionsTable positions={positions} onOpen={onOpenPosition} />
           </Panel>
         </section>
 
@@ -731,7 +654,7 @@ function Index() {
       <PositionChartDialog
         position={positions.find((p) => p.symbol === chartSymbol) ?? null}
         open={chartSymbol !== null}
-        onOpenChange={(o) => !o && setChartSymbol(null)}
+        onOpenChange={onCloseChart}
       />
 
     </div>

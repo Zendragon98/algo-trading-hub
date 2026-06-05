@@ -99,9 +99,12 @@ export type KpiDTO = {
   session_close_wins: number;
   session_close_losses: number;
   session_close_breakevens: number;
+  rolling_close_wins: number;
+  rolling_close_losses: number;
+  rolling_close_breakevens: number;
 };
 
-export type EquityDTO = { equity: number[]; last_ts: number };
+export type EquityDTO = { equity: number[]; timestamps: number[]; last_ts: number };
 
 // Wire shapes for the OMS + Execution Quality panels. snake_case here so
 // the file mirrors the Python DTOs verbatim; the camelCase translation
@@ -274,11 +277,19 @@ export type StrategyPnlDTO = {
   open_legs: StrategyLegDTO[];
 };
 
+export type StrategyHubPortfolioDTO = {
+  realized_pnl: number;
+  unrealized_pnl: number;
+  equity: number;
+  session_start_equity: number;
+};
+
 export type StrategyHubDTO = {
   ts: number;
   mode: "single" | "all";
   strategies: StrategyPnlDTO[];
   analytics: Record<string, Record<string, string | number | boolean | null>>;
+  portfolio: StrategyHubPortfolioDTO;
   run_dir: string | null;
   log_path: string | null;
 };
@@ -701,6 +712,18 @@ export function toBreakerList(d: BreakerListDTO): import("@/components/algo/type
   };
 }
 
+function toStrategyHubPortfolio(
+  raw: StrategyHubPortfolioDTO | Record<string, unknown> | undefined,
+): import("@/components/algo/types").StrategyHubPortfolio {
+  const p = (raw ?? {}) as Record<string, unknown>;
+  return {
+    realizedPnl: Number(p.realized_pnl ?? p.realizedPnl ?? 0),
+    unrealizedPnl: Number(p.unrealized_pnl ?? p.unrealizedPnl ?? 0),
+    equity: Number(p.equity ?? 0),
+    sessionStartEquity: Number(p.session_start_equity ?? p.sessionStartEquity ?? 0),
+  };
+}
+
 export function toStrategyHub(d: StrategyHubDTO): import("@/components/algo/types").StrategyHubSnapshot {
   return {
     ts: d.ts,
@@ -721,6 +744,7 @@ export function toStrategyHub(d: StrategyHubDTO): import("@/components/algo/type
       })),
     })),
     analytics: d.analytics ?? {},
+    portfolio: toStrategyHubPortfolio(d.portfolio),
     runDir: d.run_dir,
     logPath: d.log_path,
   };
@@ -802,6 +826,9 @@ export function toStrategyHubPayload(
     }),
     analytics:
       (data.analytics as import("@/components/algo/types").StrategyAnalytics) ?? {},
+    portfolio: toStrategyHubPortfolio(
+      data.portfolio as Record<string, unknown> | undefined,
+    ),
     runDir: null,
     logPath: null,
   };

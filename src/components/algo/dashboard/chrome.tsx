@@ -1,3 +1,4 @@
+import { memo, useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   AlertTriangle,
@@ -82,9 +83,18 @@ export function StartupProgressBanner(props: {
   );
 }
 
-export function TopBar(props: {
+function formatUptime(sessionStartedAt: number | null): string {
+  if (sessionStartedAt === null) return "00:00:00";
+  const uptimeSec = Math.max(0, Math.floor(Date.now() / 1000 - sessionStartedAt));
+  const h = Math.floor(uptimeSec / 3600);
+  const m = Math.floor((uptimeSec % 3600) / 60);
+  const s = uptimeSec % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+export const TopBar = memo(function TopBar(props: {
   status: AlgoStatus;
-  uptimeSec: number;
+  sessionStartedAt: number | null;
   paperMode: boolean;
   strategy: StrategyInfo | null;
   backendReachable: boolean;
@@ -97,18 +107,22 @@ export function TopBar(props: {
   onHaltTrading: (opts?: { flatten?: boolean; pause?: boolean }) => void;
   onFlatten: () => void;
 }) {
-  const { status, uptimeSec, paperMode, strategy } = props;
+  const { status, sessionStartedAt, paperMode, strategy } = props;
+  const [uptime, setUptime] = useState(() => formatUptime(sessionStartedAt));
+
+  useEffect(() => {
+    setUptime(formatUptime(sessionStartedAt));
+    if (sessionStartedAt === null) return;
+    const id = window.setInterval(() => setUptime(formatUptime(sessionStartedAt)), 1000);
+    return () => window.clearInterval(id);
+  }, [sessionStartedAt]);
+
   const statusMeta = {
     running: { label: "RUNNING", color: "text-bull", dot: "bg-bull glow-bull" },
     paused: { label: "PAUSED", color: "text-warning", dot: "bg-warning" },
     stopped: { label: "STOPPED", color: "text-bear", dot: "bg-bear glow-bear" },
     starting: { label: "STARTING", color: "text-warning", dot: "bg-warning pulse-dot" },
   }[status];
-
-  const h = Math.floor(uptimeSec / 3600);
-  const m = Math.floor((uptimeSec % 3600) / 60);
-  const s = uptimeSec % 60;
-  const uptime = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -151,7 +165,7 @@ export function TopBar(props: {
 
         <div className="hidden items-center gap-2 md:flex">
           <Button size="sm" variant="outline" className="border-border" asChild>
-            <Link to="/strategy-hub">Strategy hub</Link>
+            <Link to="/strategy-analytics">Strategy analytics</Link>
           </Button>
           <Button size="sm" variant="outline" className="border-border" asChild>
             <Link to="/backtesting">Backtest</Link>
@@ -238,6 +252,42 @@ export function TopBar(props: {
       </div>
     </header>
     </TooltipProvider>
+  );
+});
+
+function HydratePlaceholder({ className }: { className?: string }) {
+  return (
+    <div className={cn("rounded-sm border border-border bg-card/40 animate-pulse", className)} />
+  );
+}
+
+/** Shown until GET /api/state returns — avoids a flash of empty/stopped console state. */
+export function ConsoleHydratingShell() {
+  return (
+    <div className="min-h-screen text-foreground">
+      <header className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur">
+        <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-4 px-4 py-3 lg:px-8">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            Loading engine snapshot…
+          </div>
+        </div>
+      </header>
+      <main className="mx-auto max-w-[1500px] px-4 pb-10 pt-6 lg:px-8">
+        <section className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <HydratePlaceholder className="h-36" />
+          <HydratePlaceholder className="h-36" />
+          <HydratePlaceholder className="h-36" />
+        </section>
+        <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+          <HydratePlaceholder className="h-[280px] lg:col-span-2" />
+          <HydratePlaceholder className="h-[280px]" />
+        </section>
+        <section className="mt-4">
+          <HydratePlaceholder className="h-[400px]" />
+        </section>
+      </main>
+    </div>
   );
 }
 

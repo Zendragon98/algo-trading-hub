@@ -78,15 +78,32 @@ export function appendRealizedClose(
 }
 
 export function rollingKpiFromRealized(realized: Trade[], kpi: KpiDTO): KpiDTO {
-  const wins = realized.filter((t) => (t.pnl ?? 0) > 0).length;
-  const grossWin = realized.reduce((a, t) => a + ((t.pnl ?? 0) > 0 ? (t.pnl ?? 0) : 0), 0);
-  const grossLoss = realized.reduce((a, t) => a + ((t.pnl ?? 0) < 0 ? -(t.pnl ?? 0) : 0), 0);
+  let winCount = 0;
+  let lossCount = 0;
+  let breakevenCount = 0;
+  let grossWin = 0;
+  let grossLoss = 0;
+  for (const t of realized) {
+    const p = t.pnl ?? 0;
+    if (p > 0) {
+      grossWin += p;
+      winCount += 1;
+    } else if (p < 0) {
+      grossLoss -= p;
+      lossCount += 1;
+    } else {
+      breakevenCount += 1;
+    }
+  }
   return {
     ...kpi,
-    win_rate: realized.length > 0 ? (wins / realized.length) * 100 : 0,
+    win_rate: realized.length > 0 ? (winCount / realized.length) * 100 : 0,
     gross_win_pnl: grossWin,
     gross_loss_pnl: grossLoss,
     profit_factor: grossLoss > 0 ? grossWin / grossLoss : null,
+    rolling_close_wins: winCount,
+    rolling_close_losses: lossCount,
+    rolling_close_breakevens: breakevenCount,
   };
 }
 

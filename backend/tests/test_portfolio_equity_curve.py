@@ -36,10 +36,10 @@ async def test_mark_to_market_uses_tick_marks_when_user_data_stale() -> None:
 
 
 @pytest.mark.asyncio
-async def test_equity_curve_downsample_keeps_session_start() -> None:
+async def test_equity_curve_retains_full_session() -> None:
     bus = EventBus()
     tracker = PositionTracker(bus)
-    portfolio = Portfolio(bus=bus, position_tracker=tracker, equity_curve_size=8)
+    portfolio = Portfolio(bus=bus, position_tracker=tracker)
     portfolio.seed_balances({"USDT": 10_000.0})
 
     for i in range(20):
@@ -47,7 +47,7 @@ async def test_equity_curve_downsample_keeps_session_start() -> None:
         await portfolio.mark_to_market()
 
     curve = portfolio.equity_curve()
-    assert len(curve) == 8
+    assert len(curve) == 20
     assert curve[0].equity == 10_000.0
     assert curve[-1].equity == 10_019.0
 
@@ -74,19 +74,3 @@ def test_extrema_downsample_preserves_drawdown_trough() -> None:
     keep = _extrema_indices(values, max_points=6)
     sampled = [values[i] for i in keep]
     assert min(sampled) == pytest.approx(9_800.0)
-
-
-@pytest.mark.asyncio
-async def test_equity_curve_downsample_preserves_trough() -> None:
-    bus = EventBus()
-    tracker = PositionTracker(bus)
-    portfolio = Portfolio(bus=bus, position_tracker=tracker, equity_curve_size=6)
-    portfolio.seed_balances({"USDT": 10_000.0})
-
-    for eq in [10_000.0, 10_200.0, 10_150.0, 9_800.0, 10_050.0, 10_100.0, 10_120.0, 10_130.0]:
-        portfolio._cash_by_asset["USDT"] = eq
-        await portfolio.mark_to_market()
-
-    equities = [point.equity for point in portfolio.equity_curve()]
-    assert len(equities) == 6
-    assert min(equities) == pytest.approx(9_800.0)

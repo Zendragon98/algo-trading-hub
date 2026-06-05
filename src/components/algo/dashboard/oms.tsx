@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import { ListOrdered } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -5,29 +6,30 @@ import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { ExecutionAggregate, ExecutionParent, WorkingOrder } from "@/components/algo/types";
-export function OmsTable({
+export const OmsTable = memo(function OmsTable({
   parents,
   children,
 }: {
   parents: ExecutionParent[];
   children: WorkingOrder[];
 }) {
+  const childrenByParent = useMemo(() => {
+    const map = new Map<string, WorkingOrder[]>();
+    for (const child of children) {
+      const key = child.parentId ?? "manual";
+      const existing = map.get(key) ?? [];
+      existing.push(child);
+      map.set(key, existing);
+    }
+    return map;
+  }, [children]);
+
   if (!parents.length && !children.length) {
     return (
       <div className="px-4 py-10 text-center text-xs text-muted-foreground">
         No working orders. The OMS lights up the moment a parent VWAP is in flight.
       </div>
     );
-  }
-
-  // Group children by parent for the nested rendering. Anything orphaned
-  // (e.g. an operator-side cancel from another UI) is shown under "manual".
-  const childrenByParent = new Map<string, WorkingOrder[]>();
-  for (const child of children) {
-    const key = child.parentId ?? "manual";
-    const existing = childrenByParent.get(key) ?? [];
-    existing.push(child);
-    childrenByParent.set(key, existing);
   }
 
   return (
@@ -52,9 +54,9 @@ export function OmsTable({
       </div>
     </ScrollArea>
   );
-}
+});
 
-export function ParentRow({
+const ParentRow = memo(function ParentRow({
   parent,
   children,
 }: {
@@ -133,9 +135,9 @@ export function ParentRow({
       )}
     </div>
   );
-}
+});
 
-export function ChildRow({ child }: { child: WorkingOrder }) {
+const ChildRow = memo(function ChildRow({ child }: { child: WorkingOrder }) {
   const sideClass =
     child.side === "buy"
       ? "border-bull/30 bg-bull/5 text-bull"
@@ -163,9 +165,9 @@ export function ChildRow({ child }: { child: WorkingOrder }) {
       </span>
     </div>
   );
-}
+});
 
-export function ExecutionQualityPanel({
+export const ExecutionQualityPanel = memo(function ExecutionQualityPanel({
   aggregate,
   history,
 }: {
@@ -264,7 +266,7 @@ export function ExecutionQualityPanel({
       </div>
     </div>
   );
-}
+});
 
 export function Stat({
   label,

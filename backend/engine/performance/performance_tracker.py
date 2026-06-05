@@ -57,9 +57,10 @@ class PerformanceTracker:
     ``_realized`` only — closes with a PnL figure (venue ``rp`` or computed),
     capped separately so opens cannot evict realized history.
 
-    Session KPIs count **every** reducing fill with realized PnL since process
-    start. The rolling ``_realized`` window still rolls VWAP parent slices into
-    **one** close when the parent completes (see ``finalize_parent_close``).
+    Session KPIs count **every** reducing fill with realized PnL since the last
+    engine start after stop or E-Stop (see ``reset_session``). The rolling
+    ``_realized`` window still rolls VWAP parent slices into **one** close when
+    the parent completes (see ``finalize_parent_close``).
     """
 
     def __init__(self, portfolio: Portfolio, history_size: int = 200) -> None:
@@ -70,7 +71,7 @@ class PerformanceTracker:
         self._realized: list[TradeRecord] = []
         self._history_size = history_size
         self._pending_parent_closes: dict[str, _PendingParentClose] = {}
-        # Cumulative session stats (since process start); independent of the 200 cap.
+        # Cumulative session stats (since last stop→start); independent of the 200 cap.
         self._session_wins = 0
         self._session_losses = 0
         self._session_breakevens = 0
@@ -256,6 +257,18 @@ class PerformanceTracker:
         return gross_win / gross_loss
 
     @property
+    def rolling_close_wins(self) -> int:
+        return sum(1 for f in self._realized if (f.pnl or 0.0) > 0.0)
+
+    @property
+    def rolling_close_losses(self) -> int:
+        return sum(1 for f in self._realized if (f.pnl or 0.0) < 0.0)
+
+    @property
+    def rolling_close_breakevens(self) -> int:
+        return sum(1 for f in self._realized if (f.pnl or 0.0) == 0.0)
+
+    @property
     def session_wins(self) -> int:
         return self._session_wins
 
@@ -281,3 +294,15 @@ class PerformanceTracker:
         if gl <= 0.0:
             return None
         return gw / gl
+
+    def reset_session(self) -> None:
+        """Clear session KPI rollups and trade tape for a new operator session."""
+        self._session_wins = 0
+        self._session_losses = 0
+        self._session_breakevens = 0
+        self._session_gross_win = 0.0
+        self._session_gross_loss = 0.0
+        self._fills.clear()
+        self._realized.clear()
+        self._pending_parent_closes.clear()
+        self._strategy_realized.clear()

@@ -1,5 +1,7 @@
 /** Shared formatters for the algo console KPIs and trade tables. */
 
+import type { KpiDTO } from "@/lib/api";
+
 /** N/A cell placeholder (em dash). Unicode escape avoids source-file encoding issues. */
 export const EM_DASH = "\u2014";
 
@@ -13,6 +15,8 @@ export type ClosedTradePerfVm = {
   winCount: number;
   lossCount: number;
   breakevenCount: number;
+  /** Wins / (wins + losses) — excludes breakeven closes; used vs breakeven WR target. */
+  decisiveWinRatePct: number | null;
   avgWin: number | null;
   avgLoss: number | null;
   payoffRatio: number | null;
@@ -62,7 +66,9 @@ export function derivePayoffMetrics(
     avgWin != null && avgLoss != null && avgWin + avgLoss > 1e-12
       ? (avgLoss / (avgWin + avgLoss)) * 100
       : null;
-  return { avgWin, avgLoss, payoffRatio, expectancy, breakevenWrPct };
+  const decisive = winCount + lossCount;
+  const decisiveWinRatePct = decisive > 0 ? (winCount / decisive) * 100 : null;
+  return { avgWin, avgLoss, payoffRatio, expectancy, breakevenWrPct, decisiveWinRatePct };
 }
 
 export function emptyClosedTradePerf(): ClosedTradePerfVm {
@@ -76,10 +82,65 @@ export function emptyClosedTradePerf(): ClosedTradePerfVm {
     winCount: 0,
     lossCount: 0,
     breakevenCount: 0,
+    decisiveWinRatePct: null,
     avgWin: null,
     avgLoss: null,
     payoffRatio: null,
     expectancy: null,
     breakevenWrPct: null,
+  };
+}
+
+/** Authoritative win-rate KPI rollup from backend ``KpiDTO`` (rolling or session). */
+export function closedTradePerfFromKpi(
+  scope: "rolling" | "session",
+  kpi: KpiDTO,
+): ClosedTradePerfVm {
+  if (scope === "session") {
+    const wins = kpi.session_close_wins;
+    const losses = kpi.session_close_losses;
+    const be = kpi.session_close_breakevens;
+    const closed = wins + losses + be;
+    if (!closed) {
+      return emptyClosedTradePerf();
+    }
+    const gw = kpi.gross_win_pnl_session;
+    const gl = kpi.gross_loss_pnl_session;
+    const netFromCloses = gw - gl;
+    return {
+      winRatePct: kpi.win_rate_session,
+      profitFactor: kpi.profit_factor_session,
+      grossWin: gw,
+      grossLoss: gl,
+      netFromCloses,
+      closed,
+      winCount: wins,
+      lossCount: losses,
+      breakevenCount: be,
+      ...derivePayoffMetrics(wins, losses, gw, gl, closed, netFromCloses),
+    };
+  }
+
+  const wins = kpi.rolling_close_wins;
+  const losses = kpi.rolling_close_losses;
+  const be = kpi.rolling_close_breakevens;
+  const closed = wins + losses + be;
+  if (!closed) {
+    return emptyClosedTradePerf();
+  }
+  const gw = kpi.gross_win_pnl;
+  const gl = kpi.gross_loss_pnl;
+  const netFromCloses = gw - gl;
+  return {
+    winRatePct: kpi.win_rate,
+    profitFactor: kpi.profit_factor,
+    grossWin: gw,
+    grossLoss: gl,
+    netFromCloses,
+    closed,
+    winCount: wins,
+    lossCount: losses,
+    breakevenCount: be,
+    ...derivePayoffMetrics(wins, losses, gw, gl, closed, netFromCloses),
   };
 }

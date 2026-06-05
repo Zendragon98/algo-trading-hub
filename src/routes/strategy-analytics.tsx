@@ -2,21 +2,25 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowLeft, BarChart3 } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { StrategyHubView } from "@/components/algo/strategy-hub/StrategyHubView";
+import { StrategyAnalyticsView } from "@/components/algo/strategy-hub/StrategyAnalyticsView";
 import { useAlgoStream } from "@/hooks/useAlgoStream";
 import { api, toStrategyHub } from "@/lib/api";
 import type { StrategyHubSnapshot } from "@/components/algo/types";
 
-export const Route = createFileRoute("/strategy-hub")({
-  component: StrategyHubPage,
+export const Route = createFileRoute("/strategy-analytics")({
+  component: StrategyAnalyticsPage,
 });
 
 const LOG_POLL_MS = 5_000;
 
-function StrategyHubPage() {
+function StrategyAnalyticsPage() {
   const live = useAlgoStream();
   const [bootHub, setBootHub] = useState<StrategyHubSnapshot | null>(null);
   const hub = live.strategyHub ?? bootHub;
+  const equityCurveDelta =
+    live.equityCurve.length >= 2
+      ? live.equityCurve[live.equityCurve.length - 1]!.equity - live.equityCurve[0]!.equity
+      : null;
   const [logLines, setLogLines] = useState<Array<Record<string, unknown>>>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -46,7 +50,7 @@ function StrategyHubPage() {
         setError(null);
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Failed to load strategy hub log");
+        setError(err instanceof Error ? err.message : "Failed to load strategy analytics log");
       }
     };
 
@@ -77,7 +81,7 @@ function StrategyHubPage() {
             </Link>
             <div className="flex items-center gap-2">
               <BarChart3 className="size-4 text-bull" />
-              <span className="text-sm font-semibold tracking-wide">Strategy hub</span>
+              <span className="text-sm font-semibold tracking-wide">Strategy analytics</span>
             </div>
           </div>
           <div className="hidden items-center gap-2 text-xs md:flex">
@@ -93,7 +97,13 @@ function StrategyHubPage() {
       </header>
 
       <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-6 lg:px-8">
-        <StrategyHubView hub={hub} logLines={logLines} error={error} />
+        <StrategyAnalyticsView
+          hub={hub}
+          logLines={logLines}
+          error={error}
+          systemHealth={live.systemHealth}
+          equityCurveDelta={equityCurveDelta}
+        />
       </main>
     </div>
   );

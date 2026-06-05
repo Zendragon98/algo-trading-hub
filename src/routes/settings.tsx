@@ -1,9 +1,9 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, Settings2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
 
 import { SettingsEditor } from "@/components/algo/settings/SettingsEditor";
-import { api } from "@/lib/api";
+import { useAlgoStream } from "@/hooks/useAlgoStream";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -11,28 +11,14 @@ export const Route = createFileRoute("/settings")({
 
 function SettingsPage() {
   const navigate = useNavigate();
-  const [activeStrategyLabel, setActiveStrategyLabel] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .state()
-      .then((s) => {
-        if (cancelled) return;
-        const { strategy, strategies } = s;
-        if (strategy?.name === "all" && strategies.length > 0) {
-          setActiveStrategyLabel(`All (${strategies.map((x) => x.label).join(", ")})`);
-        } else {
-          setActiveStrategyLabel(strategy?.label ?? null);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setActiveStrategyLabel(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const live = useAlgoStream();
+  const activeStrategyLabel = useMemo(() => {
+    const { strategy, strategies } = live;
+    if (strategy?.name === "all" && strategies.length > 0) {
+      return `All (${strategies.map((x) => x.label).join(", ")})`;
+    }
+    return strategy?.label ?? null;
+  }, [live.strategy, live.strategies]);
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
@@ -51,8 +37,8 @@ function SettingsPage() {
             </div>
           </div>
           <div className="hidden items-center gap-2 text-xs md:flex">
-            <Link to="/strategy-hub" className="text-muted-foreground hover:text-foreground">
-              Strategy hub
+            <Link to="/strategy-analytics" className="text-muted-foreground hover:text-foreground">
+              Strategy analytics
             </Link>
             <span className="text-border">·</span>
             <span className="text-muted-foreground">Runtime parameters · applies immediately on save</span>
@@ -63,6 +49,7 @@ function SettingsPage() {
       <main className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 flex-col">
         <SettingsEditor
           activeStrategyLabel={activeStrategyLabel}
+          initialSettings={live.hydrated ? live.settingsSnapshot : undefined}
           onCancel={() => navigate({ to: "/" })}
         />
       </main>

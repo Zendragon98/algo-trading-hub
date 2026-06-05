@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, Loader2, ShieldAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -250,7 +250,7 @@ export function BreakersPanel({
   } | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     setLocalEnabled(breakers.enabled);
   }, [breakers.enabled]);
 
@@ -525,7 +525,7 @@ export function ControlLimitsPanel({
   const [wsStale, setWsStale] = useState(() => String(num("ws_stale_pause_sec", 30)));
   const [maxRejects, setMaxRejects] = useState(() => String(num("max_consecutive_rejects", 3)));
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     setDailyLoss((num("daily_loss_kill_pct", 0.05) * 100).toFixed(1));
     setCooldown(String(num("breaker_minor_cooldown_sec", 60)));
     setWsStale(String(num("ws_stale_pause_sec", 30)));

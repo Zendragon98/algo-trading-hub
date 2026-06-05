@@ -1,4 +1,5 @@
-import { CircleDot, Gauge, TrendingDown, TrendingUp } from "lucide-react";
+import { memo } from "react";
+import { Activity, CircleDot, Gauge, TrendingDown, TrendingUp, Wallet } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -12,18 +13,22 @@ import {
 } from "@/lib/algo-format";
 
 const TIMES = "\u00D7";
-export function WinRateKpiCard({
+export const WinRateKpiCard = memo(function WinRateKpiCard({
   perf,
   scope,
   onScopeChange,
   tapeStats,
   openPositionCount,
+  sessionTradePerf,
+  rollingTradePerf,
 }: {
   perf: ClosedTradePerfVm;
   scope: "rolling" | "session";
   onScopeChange: (s: "rolling" | "session") => void;
   tapeStats: { fills: number; opens: number; closes: number; closesWithoutPnl: number };
   openPositionCount: number;
+  sessionTradePerf: ClosedTradePerfVm;
+  rollingTradePerf: ClosedTradePerfVm;
 }) {
   const {
     closed,
@@ -40,6 +45,7 @@ export function WinRateKpiCard({
     payoffRatio,
     expectancy,
     breakevenWrPct,
+    decisiveWinRatePct,
   } = perf;
 
   const winSeg = closed > 0 ? (winCount / closed) * 100 : 0;
@@ -66,11 +72,17 @@ export function WinRateKpiCard({
     expectancy != null ? formatSignedRealizedPnl(expectancy) : EM_DASH;
 
   const wrVsBreakeven =
-    breakevenWrPct != null
-      ? winRatePct >= breakevenWrPct - 0.05
+    breakevenWrPct != null && decisiveWinRatePct != null
+      ? decisiveWinRatePct >= breakevenWrPct - 0.05
         ? "at-or-above"
         : "below"
       : null;
+
+  const sessionClosed = sessionTradePerf.closed;
+  const rollingClosed = rollingTradePerf.closed;
+  const fillNetDelta = Math.abs(sessionTradePerf.netFromCloses - rollingTradePerf.netFromCloses);
+  const fillNetMismatch = sessionClosed > 0 && rollingClosed > 0 && fillNetDelta > 0.01;
+  const sliceRollupGap = sessionClosed > rollingClosed;
 
   return (
     <div className="relative overflow-hidden rounded-sm border border-border bg-card/60 p-4">
@@ -124,11 +136,11 @@ export function WinRateKpiCard({
                 ).{" "}
               </>
             ) : null}
-            Last 200 rolls slice fills into one close per parent; Session counts every reducing fill
-            open P&L
+            Last 200 rolls VWAP slice fills into one close per parent; Session counts every reducing
+            fill.
             {openPositionCount > 0
-              ? ` (${openPositionCount} leg${openPositionCount === 1 ? "" : "s"} still open).`
-              : "."}
+              ? ` ${openPositionCount} leg${openPositionCount === 1 ? "" : "s"} still open.`
+              : ""}
           </p>
         </div>
       ) : (
@@ -169,6 +181,12 @@ export function WinRateKpiCard({
           <p className="mt-1 font-mono text-[10px] text-muted-foreground">
             {scope === "session" ? "Session · " : "Rolling (\u2264200) · "}
             {closed} realized closes · {winSeg.toFixed(0)} / {flatSeg.toFixed(0)} / {lossSeg.toFixed(0)}% W / BE / L
+            {sliceRollupGap ? (
+              <span className="text-muted-foreground/80">
+                {" "}
+                · Last 200 parent closes: {rollingClosed}
+              </span>
+            ) : null}
           </p>
 
           <div className="mt-4 rounded-md border border-border/55 bg-muted/10 p-2.5">
@@ -224,7 +242,7 @@ export function WinRateKpiCard({
                 </p>
               </div>
             </div>
-            {breakevenWrPct != null ? (
+            {breakevenWrPct != null && decisiveWinRatePct != null ? (
               <p
                 className={cn(
                   "mt-2 border-t border-border/40 pt-2 font-mono text-[10px] leading-snug",
@@ -233,13 +251,20 @@ export function WinRateKpiCard({
               >
                 Breakeven WR{" "}
                 <span className="tabular-nums text-foreground">{breakevenWrPct.toFixed(1)}%</span>
-                <span className="text-muted-foreground"> at this avg win/loss · actual </span>
-                <span className="tabular-nums text-foreground">{winRatePct.toFixed(1)}%</span>
+                <span className="text-muted-foreground"> at this avg win/loss · decisive </span>
+                <span className="tabular-nums text-foreground">{decisiveWinRatePct.toFixed(1)}%</span>
                 <span className="text-muted-foreground">
+                  {breakevenCount > 0 ? " W/(W+L)" : ""}
                   {wrVsBreakeven === "at-or-above"
                     ? " (at or above)"
-                    : " (below breakeven - need higher WR or larger wins)"}
+                    : " (below breakeven — need higher WR or larger wins)"}
                 </span>
+                {breakevenCount > 0 ? (
+                  <span className="block text-muted-foreground/90">
+                    Headline {winRatePct.toFixed(1)}% includes {breakevenCount} breakeven
+                    {breakevenCount === 1 ? "" : "s"} ($0 P&L).
+                  </span>
+                ) : null}
               </p>
             ) : null}
           </div>
@@ -308,15 +333,48 @@ export function WinRateKpiCard({
             <span className={cn("tabular-nums font-semibold", netTone)}>{netFormatted}</span>
           </div>
 
+          {sessionClosed > 0 && rollingClosed > 0 ? (
+            <p
+              className={cn(
+                "mt-1 font-mono text-[10px] leading-snug",
+                fillNetMismatch ? "text-bear/90" : "text-muted-foreground",
+              )}
+            >
+              {fillNetMismatch ? (
+                <>
+                  Fill net mismatch — Session{" "}
+                  {formatSignedRealizedPnl(sessionTradePerf.netFromCloses)} vs Last 200{" "}
+                  {formatSignedRealizedPnl(rollingTradePerf.netFromCloses)}. Pending VWAP exit
+                  slices may not be rolled up yet.
+                </>
+              ) : (
+                <>
+                  Fill net matches both views ({formatSignedRealizedPnl(sessionTradePerf.netFromCloses)}
+                  ) · Session {sessionClosed} fills · Last 200 {rollingClosed} parent closes
+                </>
+              )}
+            </p>
+          ) : null}
+
           <details className="group mt-2 border border-border/50 bg-muted/15 font-mono text-[10px] leading-relaxed text-muted-foreground [&_summary::-webkit-details-marker]:hidden">
             <summary className="cursor-pointer select-none px-2 py-1.5 text-[10px] uppercase tracking-wide hover:bg-muted/30">
               <span className="text-muted-foreground">Methodology · </span>
               <span className="normal-case tracking-normal opacity-70">PnL sources & factor definition</span>
             </summary>
             <div className="border-t border-border/40 px-2 py-2 text-[10px]">
-              <strong className="text-foreground">Rolling</strong> is the last {"\u2264"}200 realized-PnL closes;{" "}
-              <strong className="text-foreground">Session</strong> is all such closes since the backend process started (a
-              restart resets it). Session KPI values refresh with{" "}
+              <strong className="text-foreground">Rolling</strong> is the last {"\u2264"}200 parent-level
+              realized closes (VWAP slices roll into one row);{" "}
+              <strong className="text-foreground">Session</strong> counts every reducing fill with
+              realized P&L since the last <strong className="text-foreground">Start</strong> after{" "}
+              <strong className="text-foreground">Stop</strong> or <strong className="text-foreground">E-Stop</strong>{" "}
+              (pause/resume keeps the same session). <strong className="text-foreground">Headline win rate</strong>{" "}
+              = wins / all closes (breakevens in the denominator).{" "}
+              <strong className="text-foreground">Breakeven WR</strong> compares{" "}
+              <strong className="text-foreground">decisive</strong> win rate wins / (wins + losses) to
+              avg loss / (avg win + avg loss). Breakeven closes are exactly $0 realized P&L (scratch exit
+              or net-zero VWAP rollup). Win rate and expectancy differ when VWAP exits split into multiple
+              fills, but <strong className="text-foreground">fill net should match</strong> once all parent
+              exits complete. Session KPI values refresh with{" "}
               <code className="rounded bg-muted/60 px-0.5">GET /api/state</code> (about every 5s). The rolling view matches live
               WebSocket fills. Binance Futures uses field{" "}
               <code className="rounded bg-muted/60 px-0.5">rp</code> when it is non-zero; otherwise the console uses{" "}
@@ -324,8 +382,7 @@ export function WinRateKpiCard({
               <code className="rounded bg-muted/60 px-0.5">rp</code> looks like dust vs that economics (e.g. sub-cent vs several
               dollars), the engine keeps the computed slice PnL. <strong className="text-foreground">Avg win/loss</strong> are
               mean P&L on winning vs losing closes; <strong className="text-foreground">payoff (R)</strong> = avg win / avg
-              loss; <strong className="text-foreground">expectancy</strong> = net / closes;{" "}
-              <strong className="text-foreground">breakeven WR</strong> = avg loss / (avg win + avg loss). Profit factor =
+              loss; <strong className="text-foreground">expectancy</strong> = net / closes. Profit factor =
               {"\u03A3"} positive closes / {"\u03A3"} |negative closes|. Excludes transfers, funding, and fees unless the venue folds
               them into{' '}
               <code className="rounded bg-muted/60 px-0.5">rp</code>. Dollar labels use extra precision when totals are small
@@ -337,7 +394,97 @@ export function WinRateKpiCard({
       )}
     </div>
   );
+});
+
+function SnapshotMetric({
+  icon,
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub: React.ReactNode;
+  tone: "bull" | "bear" | "neutral";
+}) {
+  const subColor =
+    tone === "bull" ? "text-bull" : tone === "bear" ? "text-bear" : "text-muted-foreground";
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+        {icon}
+        {label}
+      </div>
+      <div className="mt-2 font-mono text-2xl font-semibold tabular-nums">{value}</div>
+      <div className={cn("mt-1 text-xs tabular-nums", subColor)}>{sub}</div>
+    </div>
+  );
 }
+
+export const PortfolioSnapshotCard = memo(function PortfolioSnapshotCard({
+  totalEquity,
+  pnlAbs,
+  pnlPct,
+  openPnl,
+  openPositionCount,
+  sessionMaxDrawdownAbs,
+  sessionMaxDrawdownPct,
+}: {
+  totalEquity: number;
+  pnlAbs: number;
+  pnlPct: number;
+  openPnl: number;
+  openPositionCount: number;
+  sessionMaxDrawdownAbs: number;
+  sessionMaxDrawdownPct: number;
+}) {
+  const equityTone = pnlAbs >= 0 ? "bull" : "bear";
+  const openPnlTone = openPnl >= 0 ? "bull" : "bear";
+  const drawdownAbsTone = sessionMaxDrawdownAbs > 0 ? "bear" : "neutral";
+  const drawdownPctTone = sessionMaxDrawdownPct > 0 ? "bear" : "neutral";
+
+  return (
+    <div className="relative overflow-hidden rounded-sm border border-border bg-card/60 p-4">
+      <CircleDot className="absolute right-4 top-4 size-3 opacity-40" />
+      <div className="grid grid-cols-2 gap-x-4 gap-y-5">
+        <SnapshotMetric
+          icon={<Wallet className="size-4" />}
+          label="EQUITY"
+          value={`$${totalEquity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          sub={`${pnlAbs >= 0 ? "+" : ""}${pnlAbs.toFixed(2)} (${pnlPct.toFixed(2)}%)`}
+          tone={equityTone}
+        />
+        <SnapshotMetric
+          icon={<Activity className="size-4" />}
+          label="OPEN P&L"
+          value={`${openPnl >= 0 ? "+" : ""}$${openPnl.toFixed(2)}`}
+          sub={`${openPositionCount} open position${openPositionCount === 1 ? "" : "s"}`}
+          tone={openPnlTone}
+        />
+        <SnapshotMetric
+          icon={<TrendingDown className="size-4" />}
+          label="MAX DRAWDOWN"
+          value={sessionMaxDrawdownAbs > 0 ? `-${sessionMaxDrawdownAbs.toFixed(2)}` : "0.00"}
+          sub="session peak-to-trough (venue)"
+          tone={drawdownAbsTone}
+        />
+        <SnapshotMetric
+          icon={<TrendingDown className="size-4" />}
+          label="MAX DRAWDOWN %"
+          value={
+            sessionMaxDrawdownPct > 0
+              ? `-${sessionMaxDrawdownPct.toFixed(2)}%`
+              : "0.00%"
+          }
+          sub="authoritative session peak"
+          tone={drawdownPctTone}
+        />
+      </div>
+    </div>
+  );
+});
 
 export function KpiCard({
   icon,

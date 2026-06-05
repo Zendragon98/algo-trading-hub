@@ -5,6 +5,8 @@
 
 export type AlgoStatus = "running" | "paused" | "stopped" | "starting";
 
+export type EquityCurvePoint = { ts: number; equity: number };
+
 export type StartupProgress = {
   phase: string;
   label: string;
@@ -153,11 +155,19 @@ export type StrategyPnlRow = {
   openLegs: StrategyLeg[];
 };
 
+export type StrategyHubPortfolio = {
+  realizedPnl: number;
+  unrealizedPnl: number;
+  equity: number;
+  sessionStartEquity: number;
+};
+
 export type StrategyHubSnapshot = {
   ts: number;
   mode: "single" | "all";
   strategies: StrategyPnlRow[];
   analytics: StrategyAnalytics;
+  portfolio: StrategyHubPortfolio;
   runDir: string | null;
   logPath: string | null;
 };

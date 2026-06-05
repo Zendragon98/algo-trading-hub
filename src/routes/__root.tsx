@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-router";
 
 import { Toaster } from "@/components/ui/sonner";
+import { AlgoStreamProvider } from "@/hooks/useAlgoStream";
 
 import appCss from "../styles.css?url";
 
@@ -120,8 +121,10 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <Outlet />
-      <Toaster richColors closeButton position="top-right" />
+      <AlgoStreamProvider>
+        <Outlet />
+        <Toaster richColors closeButton position="top-right" />
+      </AlgoStreamProvider>
     </QueryClientProvider>
   );
 }

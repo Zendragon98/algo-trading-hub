@@ -6,8 +6,11 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from common.types import Position
+
 from ..position.position_tracker import PositionTracker
 from ..position.strategy_ledger import StrategyPositionLedger
+from ..strategies.position_sync import side_from_qty
 from ..strategies.strategy_base import StrategyBase
 from .performance_tracker import PerformanceTracker
 
@@ -52,6 +55,27 @@ def _leg_unrealized(qty: float, entry: float, mark: float) -> float:
     if abs(qty) < _QTY_EPS or entry <= 0 or mark <= 0:
         return 0.0
     return (mark - entry) * qty
+
+
+def _leg_unrealized_venue_aligned(
+    strategy_qty: float,
+    entry: float,
+    pos: Position | None,
+) -> float:
+    """Prefer Binance ``up`` scaled to the strategy's share of the venue leg."""
+    if abs(strategy_qty) < _QTY_EPS:
+        return 0.0
+    if pos is not None and abs(pos.qty) >= _QTY_EPS:
+        strat_side = side_from_qty(strategy_qty)
+        pos_side = side_from_qty(pos.qty)
+        if strat_side != 0 and strat_side == pos_side and pos.exchange_unrealized_pnl is not None:
+            share = min(1.0, abs(strategy_qty) / abs(pos.qty))
+            return float(pos.exchange_unrealized_pnl) * share
+    mark = pos.mark_price if pos is not None and pos.mark_price > 0 else 0.0
+    eff_entry = entry
+    if eff_entry <= 0 and pos is not None and pos.avg_entry_price > 0:
+        eff_entry = pos.avg_entry_price
+    return _leg_unrealized(strategy_qty, eff_entry, mark)
 
 
 class StrategyHubService:
@@ -166,7 +190,7 @@ class StrategyHubService:
             pos = self._positions.get(sym)
             mark = pos.mark_price if pos is not None and pos.mark_price > 0 else 0.0
             entry = self._ledger.fill_vwap(strategy, sym)
-            u = _leg_unrealized(qty, entry, mark)
+            u = _leg_unrealized_venue_aligned(qty, entry, pos)
             total += u
             legs.append(
                 StrategyLegSnapshot(

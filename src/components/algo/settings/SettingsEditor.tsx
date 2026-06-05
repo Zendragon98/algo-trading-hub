@@ -20,11 +20,18 @@ import { cn } from "@/lib/utils";
 
 type Props = {
   activeStrategyLabel?: string | null;
+  /** When provided (e.g. from live console hydrate), skip the initial GET /api/settings. */
+  initialSettings?: SettingsDTO;
   onSaved?: () => void;
   onCancel?: () => void;
 };
 
-export function SettingsEditor({ activeStrategyLabel, onSaved, onCancel }: Props) {
+export function SettingsEditor({
+  activeStrategyLabel,
+  initialSettings,
+  onSaved,
+  onCancel,
+}: Props) {
   const [baseline, setBaseline] = useState<SettingsDTO | null>(null);
   const [draft, setDraft] = useState<SettingsDTO>({});
   const [loading, setLoading] = useState(false);
@@ -49,8 +56,15 @@ export function SettingsEditor({ activeStrategyLabel, onSaved, onCancel }: Props
   }, []);
 
   useEffect(() => {
+    if (initialSettings && Object.keys(initialSettings).length > 0) {
+      setBaseline(initialSettings);
+      setDraft({ ...initialSettings });
+      setLoading(false);
+      setError(null);
+      return;
+    }
     void load();
-  }, [load]);
+  }, [load, initialSettings]);
 
   const allKeys = useMemo(() => Object.keys(draft).sort(), [draft]);
 

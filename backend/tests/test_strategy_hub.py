@@ -5,7 +5,9 @@ from __future__ import annotations
 import pytest
 
 from common.events import EventBus
+from common.types import Position
 from engine.performance.performance_tracker import PerformanceTracker
+from engine.performance.strategy_hub import _leg_unrealized_venue_aligned
 from engine.performance.strategy_attribution import split_pnl_by_strategy
 from engine.performance.strategy_hub import StrategyHubService
 from engine.portfolio.portfolio import Portfolio
@@ -110,6 +112,20 @@ def test_strategy_hub_material_change_gate() -> None:
         analytics={"stub": {"SIGNAL": "LONG"}},
     )
     assert third is True
+
+
+def test_leg_unrealized_prefers_venue_upnl_share() -> None:
+    pos = Position(
+        symbol="BTCUSDT",
+        qty=1.0,
+        avg_entry_price=100.0,
+        mark_price=110.0,
+        exchange_unrealized_pnl=10.0,
+    )
+    full = _leg_unrealized_venue_aligned(1.0, 100.0, pos)
+    half = _leg_unrealized_venue_aligned(0.5, 100.0, pos)
+    assert full == pytest.approx(10.0)
+    assert half == pytest.approx(5.0)
 
 
 def test_peek_snapshot_does_not_consume_material_change_gate() -> None:

@@ -20,7 +20,11 @@ import {
   type StatusEventData,
   type WsEvent,
 } from "@/lib/api";
-import { downsampleSeriesPreserveExtrema } from "@/lib/series";
+import {
+  appendEquityPoint,
+  equityDtoToPoints,
+  type EquityCurvePoint,
+} from "@/lib/equityCurve";
 import {
   accumulateParentClose,
   appendRealizedClose,
@@ -59,16 +63,19 @@ export const EMPTY_BREAKERS: BreakerList = {
 
 /** Must match ``PerformanceTracker`` default ``history_size`` (engine). */
 export const PERFORMANCE_TRADE_HISTORY_CAP = 200;
-
 export type AlgoStream = {
+  /** True after the first successful GET /api/state hydrate (core snapshot). */
+  hydrated: boolean;
   status: AlgoStatus;
   startupProgress: StartupProgress | null;
   bookResyncProgress: StartupProgress | null;
   paperMode: boolean;
   uptimeSec: number;
+  /** Epoch seconds when the current uptime window began (for local TopBar ticking). */
+  sessionStartedAt: number | null;
   strategy: StrategyInfo | null;
   strategies: StrategyInfo[];
-  equity: number[];
+  equityCurve: EquityCurvePoint[];
   positions: Position[];
   trades: Trade[];
   realizedTrades: Trade[];
@@ -123,6 +130,9 @@ export const EMPTY_KPI: KpiDTO = {
   session_close_wins: 0,
   session_close_losses: 0,
   session_close_breakevens: 0,
+  rolling_close_wins: 0,
+  rolling_close_losses: 0,
+  rolling_close_breakevens: 0,
 };
 
 export const TERMINAL_ORDER_STATUSES: ReadonlyArray<WorkingOrder["status"]> = [
@@ -139,12 +149,6 @@ export const WS_RESYNC_DEBOUNCE_MS = 250;
 /** Coalesce non-urgent WS events before triggering a React update. */
 export const WS_EVENT_BATCH_MS = 250;
 
-export const EQUITY_CURVE_MAX = 256;
-
-export function downsampleEquityCurve(values: number[]): number[] {
-  return downsampleSeriesPreserveExtrema(values, EQUITY_CURVE_MAX);
-}
-
 const LATENCY_KEYS = new Set([
   "tick_to_signal_ms",
   "signal_to_risk_ms",
@@ -159,14 +163,16 @@ export const BACKEND_OFFLINE_MSG =
 
 export function createEmptyAlgoStream(): AlgoStream {
   return {
+    hydrated: false,
     status: "stopped",
     startupProgress: null,
     bookResyncProgress: null,
     paperMode: false,
     uptimeSec: 0,
+    sessionStartedAt: null,
     strategy: null,
     strategies: [],
-    equity: [],
+    equityCurve: [],
     positions: [],
     trades: [],
     realizedTrades: [],
@@ -256,6 +262,7 @@ function mapPositionsFromState(raw: unknown): Position[] {
 export function applyBackendOffline(prev: AlgoStream, message?: string): AlgoStream {
   return {
     ...prev,
+    hydrated: true,
     connected: false,
     backendReachable: false,
     status: "stopped",
@@ -265,34 +272,132 @@ export function applyBackendOffline(prev: AlgoStream, message?: string): AlgoStr
   };
 }
 
+function positionsFingerprint(positions: Position[]): string {
+  return positions
+    .map(
+      (p) =>
+        `${p.symbol}:${p.side}:${p.size}:${p.entry}:${p.mark}:${p.unrealizedPnl.toFixed(4)}`,
+    )
+    .join("|");
+}
+
+function ordersFingerprint(orders: WorkingOrder[]): string {
+  return orders
+    .map((o) => `${o.id}:${o.status}:${o.filledQty}:${o.qty}:${o.price}`)
+    .join("|");
+}
+
+function parentsFingerprint(parents: ExecutionParent[]): string {
+  return parents
+    .map(
+      (p) =>
+        `${p.parentId}:${p.fillRatio}:${p.filledQty}:${p.vwapPrice}:${p.slippageBps}`,
+    )
+    .join("|");
+}
+
+function tradesFingerprint(trades: Trade[]): string {
+  if (!trades.length) return "";
+  return `${trades.length}:${trades[0]!.id}:${trades[trades.length - 1]!.id}`;
+}
+
+function equityCurveFingerprint(curve: EquityCurvePoint[]): string {
+  if (!curve.length) return "";
+  const last = curve[curve.length - 1]!;
+  return `${curve.length}:${last.ts}:${last.equity}`;
+}
+
+function kpiFingerprint(kpi: KpiDTO): string {
+  return JSON.stringify(kpi);
+}
+
 export function applyTradingState(
   prev: AlgoStream,
   state: StateDTO,
   parentClosePending: Map<string, PendingParentClose>,
 ): AlgoStream {
   parentClosePending.clear();
+
+  const nextStatus = state.status.status;
+  const nextStartupProgress = state.status.startup
+    ? toStartupProgress(state.status.startup)
+    : null;
+  const nextBookResyncProgress =
+    nextStatus === "starting" ? null : prev.bookResyncProgress;
+  const nextPaperMode = state.status.paper_mode;
+  const nextUptimeSec = Math.floor(state.status.uptime_sec);
+  const nextSessionStartedAt = Date.now() / 1000 - state.status.uptime_sec;
+  const nextStrategy = state.strategy ? toStrategyInfo(state.strategy) : null;
+  const nextStrategies = state.strategies.map(toStrategyInfo);
+  const nextEquityCurve = equityDtoToPoints(state.equity);
+  const nextPositions = mapPositionsFromState(state.positions);
+  const nextTrades = state.trades.map(toTrade);
+  const nextRealizedTrades = (state.realized_trades ?? []).map(toTrade);
+  const nextOrders = state.orders.working.map(toWorkingOrder);
+  const nextWorkingParents = state.execution.working.map(toExecutionParent);
+  const nextExecutionHistory = state.execution.history.map(toExecutionParent);
+  const nextExecutionAggregate = toExecutionAggregate(state.execution.aggregate);
+  const nextSystemHealth = state.system_health ? toSystemHealth(state.system_health) : null;
+  const nextKpi = state.kpi;
+  const nextStrategyAnalytics = state.strategy_analytics ?? {};
+  const nextEventArchiveRunDir = state.event_archive_run_dir ?? null;
+
+  const systemHealthSame =
+    (!prev.systemHealth && !nextSystemHealth) ||
+    (prev.systemHealth != null &&
+      nextSystemHealth != null &&
+      systemHealthDisplayKey(prev.systemHealth) === systemHealthDisplayKey(nextSystemHealth));
+
+  const unchanged =
+    prev.backendReachable &&
+    prev.error === null &&
+    prev.status === nextStatus &&
+    prev.paperMode === nextPaperMode &&
+    prev.uptimeSec === nextUptimeSec &&
+    prev.sessionStartedAt === nextSessionStartedAt &&
+    prev.strategy?.name === nextStrategy?.name &&
+    prev.strategies.length === nextStrategies.length &&
+    prev.strategies.every((s, i) => s.name === nextStrategies[i]?.name) &&
+    equityCurveFingerprint(prev.equityCurve) === equityCurveFingerprint(nextEquityCurve) &&
+    positionsFingerprint(prev.positions) === positionsFingerprint(nextPositions) &&
+    tradesFingerprint(prev.trades) === tradesFingerprint(nextTrades) &&
+    tradesFingerprint(prev.realizedTrades) === tradesFingerprint(nextRealizedTrades) &&
+    ordersFingerprint(prev.orders) === ordersFingerprint(nextOrders) &&
+    parentsFingerprint(prev.workingParents) === parentsFingerprint(nextWorkingParents) &&
+    parentsFingerprint(prev.executionHistory) === parentsFingerprint(nextExecutionHistory) &&
+    JSON.stringify(prev.executionAggregate) === JSON.stringify(nextExecutionAggregate) &&
+    kpiFingerprint(prev.kpi) === kpiFingerprint(nextKpi) &&
+    JSON.stringify(prev.strategyAnalytics) === JSON.stringify(nextStrategyAnalytics) &&
+    prev.eventArchiveRunDir === nextEventArchiveRunDir &&
+    systemHealthSame &&
+    JSON.stringify(prev.startupProgress) === JSON.stringify(nextStartupProgress) &&
+    JSON.stringify(prev.bookResyncProgress) === JSON.stringify(nextBookResyncProgress);
+
+  if (unchanged) return prev;
+
   return {
     ...prev,
     backendReachable: true,
-    status: state.status.status,
-    startupProgress: state.status.startup ? toStartupProgress(state.status.startup) : null,
-    bookResyncProgress: state.status.status === "starting" ? null : prev.bookResyncProgress,
-    paperMode: state.status.paper_mode,
-    uptimeSec: Math.floor(state.status.uptime_sec),
-    strategy: state.strategy ? toStrategyInfo(state.strategy) : null,
-    strategies: state.strategies.map(toStrategyInfo),
-    equity: state.equity.equity,
-    positions: mapPositionsFromState(state.positions),
-    trades: state.trades.map(toTrade),
-    realizedTrades: (state.realized_trades ?? []).map(toTrade),
-    orders: state.orders.working.map(toWorkingOrder),
-    workingParents: state.execution.working.map(toExecutionParent),
-    executionHistory: state.execution.history.map(toExecutionParent),
-    executionAggregate: toExecutionAggregate(state.execution.aggregate),
-    systemHealth: state.system_health ? toSystemHealth(state.system_health) : null,
-    kpi: state.kpi,
-    strategyAnalytics: state.strategy_analytics ?? {},
-    eventArchiveRunDir: state.event_archive_run_dir ?? null,
+    status: nextStatus,
+    startupProgress: nextStartupProgress,
+    bookResyncProgress: nextBookResyncProgress,
+    paperMode: nextPaperMode,
+    uptimeSec: nextUptimeSec,
+    sessionStartedAt: nextSessionStartedAt,
+    strategy: nextStrategy,
+    strategies: nextStrategies,
+    equityCurve: nextEquityCurve,
+    positions: nextPositions,
+    trades: nextTrades,
+    realizedTrades: nextRealizedTrades,
+    orders: nextOrders,
+    workingParents: nextWorkingParents,
+    executionHistory: nextExecutionHistory,
+    executionAggregate: nextExecutionAggregate,
+    systemHealth: nextSystemHealth,
+    kpi: nextKpi,
+    strategyAnalytics: nextStrategyAnalytics,
+    eventArchiveRunDir: nextEventArchiveRunDir,
     error: null,
   };
 }
@@ -364,6 +469,15 @@ function systemHealthDisplayKey(health: SystemHealth): string {
   });
 }
 
+function logEntryFromWsEvent(event: WsEvent): LogEntry {
+  return {
+    ts: fmtTime(event.ts),
+    level: event.data.level,
+    msg: event.data.msg ?? (event.data as { message?: string }).message ?? "",
+    logger: event.data.logger,
+  };
+}
+
 export function isUrgentWsEvent(event: WsEvent): boolean {
   switch (event.type) {
     case "fill":
@@ -371,7 +485,6 @@ export function isUrgentWsEvent(event: WsEvent): boolean {
     case "parent":
     case "execution":
     case "breaker":
-    case "log":
       return true;
     case "status": {
       const data = event.data;
@@ -385,13 +498,44 @@ export function isUrgentWsEvent(event: WsEvent): boolean {
   }
 }
 
-/** Drop superseded high-frequency status snapshots within one batch. */
+/** Drop superseded high-frequency snapshots within one batch. */
 export function coalesceWsEventBatch(events: WsEvent[]): WsEvent[] {
   if (events.length <= 1) return events;
   const out: WsEvent[] = [];
   let lastSystemHealth: WsEvent | null = null;
   let lastLatencyMetrics: WsEvent | null = null;
   let lastStrategyHub: WsEvent | null = null;
+  const pendingPositions = new Map<string, WsEvent>();
+  let pendingEquity: WsEvent | null = null;
+
+  const flushDeferredStatus = () => {
+    if (lastStrategyHub) {
+      out.push(lastStrategyHub);
+      lastStrategyHub = null;
+    }
+    if (lastSystemHealth) {
+      out.push(lastSystemHealth);
+      lastSystemHealth = null;
+    }
+    if (lastLatencyMetrics) {
+      out.push(lastLatencyMetrics);
+      lastLatencyMetrics = null;
+    }
+  };
+
+  const flushPositions = () => {
+    for (const ev of pendingPositions.values()) {
+      out.push(ev);
+    }
+    pendingPositions.clear();
+  };
+
+  const flushEquity = () => {
+    if (pendingEquity) {
+      out.push(pendingEquity);
+      pendingEquity = null;
+    }
+  };
 
   for (const event of events) {
     if (event.type === "strategy_hub") {
@@ -406,23 +550,23 @@ export function coalesceWsEventBatch(events: WsEvent[]): WsEvent[] {
       lastLatencyMetrics = event;
       continue;
     }
-    if (lastStrategyHub) {
-      out.push(lastStrategyHub);
-      lastStrategyHub = null;
+    if (event.type === "position") {
+      const symbol = String((event.data as { symbol?: string }).symbol ?? "");
+      if (symbol) pendingPositions.set(symbol, event);
+      continue;
     }
-    if (lastSystemHealth) {
-      out.push(lastSystemHealth);
-      lastSystemHealth = null;
+    if (event.type === "equity") {
+      pendingEquity = event;
+      continue;
     }
-    if (lastLatencyMetrics) {
-      out.push(lastLatencyMetrics);
-      lastLatencyMetrics = null;
-    }
+    flushDeferredStatus();
+    flushPositions();
+    flushEquity();
     out.push(event);
   }
-  if (lastStrategyHub) out.push(lastStrategyHub);
-  if (lastSystemHealth) out.push(lastSystemHealth);
-  if (lastLatencyMetrics) out.push(lastLatencyMetrics);
+  flushDeferredStatus();
+  flushPositions();
+  flushEquity();
   return out;
 }
 
@@ -431,10 +575,20 @@ export function applyWsEvents(
   events: WsEvent[],
   parentClosePending: Map<string, PendingParentClose>,
 ): AlgoStream {
-  return coalesceWsEventBatch(events).reduce(
+  const coalesced = coalesceWsEventBatch(events);
+  const logEvents: WsEvent[] = [];
+  const rest: WsEvent[] = [];
+  for (const event of coalesced) {
+    if (event.type === "log") logEvents.push(event);
+    else rest.push(event);
+  }
+  let next = rest.reduce(
     (state, event) => applyWsEvent(state, event, parentClosePending),
     prev,
   );
+  if (!logEvents.length) return next;
+  const appended = logEvents.map((event) => logEntryFromWsEvent(event));
+  return { ...next, logs: [...appended, ...next.logs] };
 }
 
 export function aggregateExecutionHistory(history: ExecutionParent[]): ExecutionAggregate {
@@ -464,6 +618,10 @@ export function applyWsEvent(
           ...prev,
           status: data.status,
           uptimeSec: Math.floor(data.uptime_sec ?? prev.uptimeSec),
+          sessionStartedAt:
+            data.uptime_sec !== undefined
+              ? Date.now() / 1000 - data.uptime_sec
+              : prev.sessionStartedAt,
           startupProgress:
             data.status === "starting" && data.startup
               ? toStartupProgress(data.startup)
@@ -525,19 +683,21 @@ export function applyWsEvent(
     }
 
     case "equity": {
-      const point = event.data.equity;
-      const nextEquity = [...prev.equity, point];
-      const trimmed = downsampleEquityCurve(nextEquity);
       const d = event.data as Record<string, unknown>;
+      const equity = Number(d.equity);
+      const ts = Number(d.ts ?? event.ts);
+      const sample: EquityCurvePoint = { ts, equity };
+      const nextCurve = appendEquityPoint(prev.equityCurve, sample);
+      if (nextCurve === prev.equityCurve) return prev;
       return {
         ...prev,
-        equity: trimmed,
+        equityCurve: nextCurve,
         systemHealth: systemHealthFromStatus(prev.systemHealth, {
           gross_notional: d.gross_notional as number | undefined,
           net_notional: d.net_notional as number | undefined,
           realized_pnl: d.realized_pnl as number | undefined,
           unrealized_pnl: d.unrealized_pnl as number | undefined,
-          equity: Number(d.equity ?? point),
+          equity,
           session_peak_equity: d.session_peak_equity as number | undefined,
           session_max_drawdown_abs: d.session_max_drawdown_abs as number | undefined,
           session_max_drawdown_pct: d.session_max_drawdown_pct as number | undefined,
@@ -711,13 +871,7 @@ export function applyWsEvent(
     }
 
     case "log": {
-      const log: LogEntry = {
-        ts: fmtTime(event.ts),
-        level: event.data.level,
-        msg: event.data.msg ?? (event.data as { message?: string }).message ?? "",
-        logger: event.data.logger,
-      };
-      return { ...prev, logs: [log, ...prev.logs] };
+      return { ...prev, logs: [logEntryFromWsEvent(event), ...prev.logs] };
     }
 
     case "breaker": {

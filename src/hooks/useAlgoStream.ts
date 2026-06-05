@@ -1,15 +1,25 @@
 // WebSocket + polling hook for the live console. Pure state reducers live in
-// `lib/algoStreamState.ts`.
+// `lib/algoStreamState.ts`. Mount once at the app root via `AlgoStreamProvider`.
 
-import { useCallback, useEffect, useRef, useState, startTransition } from "react";
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  startTransition,
+  type ReactNode,
+} from "react";
 
 import { api, getAlgoWsUrl, toBreakerList, type WsEvent } from "@/lib/api";
+import { equityDtoToPoints } from "@/lib/equityCurve";
 import {
   applyBackendOffline,
   applyTradingState,
   applyWsEvents,
   createEmptyAlgoStream,
-  downsampleEquityCurve,
   isUrgentWsEvent,
   numSetting,
   TRADING_STATE_SYNC_MS,
@@ -22,10 +32,16 @@ import type { PendingParentClose } from "@/lib/parentCloseKpi";
 export type { AlgoStream } from "@/lib/algoStreamState";
 export { PERFORMANCE_TRADE_HISTORY_CAP } from "@/lib/algoStreamState";
 
-export function useAlgoStream(): AlgoStream {
+/** Skip redundant GET /api/state right after a full hydrate. */
+const HYDRATE_RESYNC_GRACE_MS = 4_000;
+
+const AlgoStreamContext = createContext<AlgoStream | null>(null);
+
+function useAlgoStreamInternal(): AlgoStream {
   const [stream, setStream] = useState<AlgoStream>(createEmptyAlgoStream);
   const wsRef = useRef<WebSocket | null>(null);
   const startedAtRef = useRef<number | null>(null);
+  const lastHydrateRef = useRef(0);
   const syncTradingStateRef = useRef<(() => Promise<void>) | null>(null);
   const wsResyncTimerRef = useRef<number | null>(null);
   const parentClosePendingRef = useRef(new Map<string, PendingParentClose>());
@@ -37,30 +53,52 @@ export function useAlgoStream(): AlgoStream {
   const syncTradingState = useCallback(async () => {
     const state = await api.state();
     startedAtRef.current = Date.now() / 1000 - state.status.uptime_sec;
-    setStream((prev) => applyTradingState(prev, state, parentClosePendingRef.current));
+    lastHydrateRef.current = Date.now();
+    setStream((prev) =>
+      applyTradingState(
+        { ...prev, hydrated: true },
+        state,
+        parentClosePendingRef.current,
+      ),
+    );
   }, []);
 
   syncTradingStateRef.current = syncTradingState;
 
   const refresh = useCallback(async () => {
     try {
-      const [state, logs, settingsPayload, breakersDto] = await Promise.all([
-        api.state(),
+      const state = await api.state();
+      startedAtRef.current = Date.now() / 1000 - state.status.uptime_sec;
+      lastHydrateRef.current = Date.now();
+
+      startTransition(() => {
+        setStream((prev) => ({
+          ...applyTradingState(
+            { ...prev, hydrated: true },
+            state,
+            parentClosePendingRef.current,
+          ),
+          connected: prev.connected,
+        }));
+      });
+
+      const [logs, settingsPayload, breakersDto] = await Promise.all([
         api.logs(),
         api.getSettings(),
         api.listBreakers().catch(() => ({ active: [], history: [] })),
       ]);
       const settings = settingsPayload.settings;
-      startedAtRef.current = Date.now() / 1000 - state.status.uptime_sec;
-      setStream((prev) => ({
-        ...applyTradingState(prev, state, parentClosePendingRef.current),
-        logs,
-        maxRiskPct: numSetting(settings, "max_risk_pct", 0.35),
-        maxGrossNotional: numSetting(settings, "max_gross_notional", 100_000),
-        settingsSnapshot: settings,
-        breakers: toBreakerList(breakersDto),
-        connected: prev.connected,
-      }));
+
+      startTransition(() => {
+        setStream((prev) => ({
+          ...prev,
+          logs,
+          maxRiskPct: numSetting(settings, "max_risk_pct", 0.35),
+          maxGrossNotional: numSetting(settings, "max_gross_notional", 100_000),
+          settingsSnapshot: settings,
+          breakers: toBreakerList(breakersDto),
+        }));
+      });
     } catch (err) {
       setStream((prev) => applyBackendOffline(prev, (err as Error).message));
       throw err;
@@ -74,6 +112,9 @@ export function useAlgoStream(): AlgoStream {
     let equityPoll: number | null = null;
 
     const scheduleWsResync = () => {
+      if (Date.now() - lastHydrateRef.current < HYDRATE_RESYNC_GRACE_MS) {
+        return;
+      }
       if (wsResyncTimerRef.current !== null) {
         window.clearTimeout(wsResyncTimerRef.current);
       }
@@ -114,7 +155,7 @@ export function useAlgoStream(): AlgoStream {
     (async () => {
       try {
         await refresh();
-        startTradingStatePoll();
+        if (!cancelled) startTradingStatePoll();
       } catch {
         if (cancelled) return;
         try {
@@ -129,51 +170,67 @@ export function useAlgoStream(): AlgoStream {
 
     const ws = new WebSocket(getAlgoWsUrl());
     wsRef.current = ws;
+
     const syncEquityFromApi = async () => {
       if (cancelled) return;
       try {
         const eq = await api.equity();
         if (!eq.equity.length) return;
-        const curve = downsampleEquityCurve(eq.equity);
-        setStream((prev) => {
-          const prevLast = prev.equity[prev.equity.length - 1];
-          const nextLast = curve[curve.length - 1];
-          if (prev.equity.length === curve.length && prevLast === nextLast) {
-            return prev;
-          }
-          return { ...prev, equity: curve };
+        const curve = equityDtoToPoints(eq);
+        startTransition(() => {
+          setStream((prev) => {
+            const prevLast = prev.equityCurve[prev.equityCurve.length - 1];
+            const nextLast = curve[curve.length - 1];
+            if (
+              prev.equityCurve.length === curve.length &&
+              prevLast?.ts === nextLast?.ts &&
+              prevLast?.equity === nextLast?.equity
+            ) {
+              return prev;
+            }
+            return { ...prev, equityCurve: curve };
+          });
         });
       } catch {
         // keep WS-driven updates; poll is a safety net
       }
     };
 
+    const stopEquityPoll = () => {
+      if (equityPoll === null) return;
+      window.clearInterval(equityPoll);
+      equityPoll = null;
+    };
+
     const startEquityPoll = () => {
       if (equityPoll !== null) return;
-      equityPoll = window.setInterval(() => void syncEquityFromApi(), 2000);
+      equityPoll = window.setInterval(() => void syncEquityFromApi(), 5000);
     };
 
     const onVisibility = () => {
       if (document.visibilityState !== "visible" || cancelled) return;
       scheduleWsResync();
-      void syncEquityFromApi();
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        void syncEquityFromApi();
+      }
     };
     document.addEventListener("visibilitychange", onVisibility);
 
     ws.onopen = () => {
       setStream((prev) => ({ ...prev, connected: true, error: null, backendReachable: true }));
       scheduleWsResync();
-      void syncEquityFromApi();
-      startEquityPoll();
+      stopEquityPoll();
       startTradingStatePoll();
     };
     ws.onclose = () => {
       setStream((prev) => ({ ...prev, connected: false }));
       ensureFallbackPoll();
+      startEquityPoll();
     };
     ws.onerror = () => {
       setStream((prev) => ({ ...prev, connected: false, error: prev.error ?? "ws error" }));
       ensureFallbackPoll();
+      startEquityPoll();
     };
 
     const wsQueueRef: WsEvent[] = [];
@@ -253,22 +310,22 @@ export function useAlgoStream(): AlgoStream {
         window.clearInterval(tradingStatePoll);
         tradingStatePoll = null;
       }
-      if (equityPoll !== null) {
-        window.clearInterval(equityPoll);
-        equityPoll = null;
-      }
+      stopEquityPoll();
     };
   }, [refresh]);
 
-  useEffect(() => {
-    const id = setInterval(() => {
-      const startedAt = startedAtRef.current;
-      if (startedAt === null) return;
-      const upt = Math.max(0, Math.floor(Date.now() / 1000 - startedAt));
-      setStream((prev) => (prev.uptimeSec === upt ? prev : { ...prev, uptimeSec: upt }));
-    }, 1000);
-    return () => clearInterval(id);
-  }, []);
-
   return { ...stream, refresh, markBackendOffline };
+}
+
+export function AlgoStreamProvider({ children }: { children: ReactNode }) {
+  const stream = useAlgoStreamInternal();
+  return createElement(AlgoStreamContext.Provider, { value: stream }, children);
+}
+
+export function useAlgoStream(): AlgoStream {
+  const stream = useContext(AlgoStreamContext);
+  if (!stream) {
+    throw new Error("useAlgoStream must be used within AlgoStreamProvider");
+  }
+  return stream;
 }

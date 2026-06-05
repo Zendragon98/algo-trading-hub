@@ -25,7 +25,11 @@ def status(engine: Engine = Depends(get_engine)) -> StatusDTO:
 @router.get("/equity", response_model=EquityDTO)
 def equity(engine: Engine = Depends(get_engine)) -> EquityDTO:
     snap = engine.snapshot()
-    return EquityDTO(equity=snap.equity_curve, last_ts=snap.last_tick_ts)
+    return EquityDTO(
+        equity=snap.equity_curve,
+        timestamps=snap.equity_timestamps,
+        last_ts=snap.last_tick_ts,
+    )
 
 
 @router.get("/state", response_model=StateDTO)

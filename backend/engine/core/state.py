@@ -47,6 +47,9 @@ class EngineSnapshot:
         session_close_wins: int,
         session_close_losses: int,
         session_close_breakevens: int,
+        rolling_close_wins: int,
+        rolling_close_losses: int,
+        rolling_close_breakevens: int,
     ) -> None:
         self.status = state.status
         self.started_at = state.started_at
@@ -60,7 +63,9 @@ class EngineSnapshot:
         self.unrealized_pnl = portfolio_snap.unrealized_pnl
         self.gross_notional = portfolio_snap.gross_notional
         self.net_notional = portfolio_snap.net_notional
-        self.equity_curve = [pt.equity for pt in portfolio.equity_curve()]
+        curve = portfolio.equity_curve()
+        self.equity_curve = [pt.equity for pt in curve]
+        self.equity_timestamps = [pt.ts for pt in curve]
 
         self.positions = position_tracker.all()
         self.trades = trades
@@ -76,3 +81,6 @@ class EngineSnapshot:
         self.session_close_wins = session_close_wins
         self.session_close_losses = session_close_losses
         self.session_close_breakevens = session_close_breakevens
+        self.rolling_close_wins = rolling_close_wins
+        self.rolling_close_losses = rolling_close_losses
+        self.rolling_close_breakevens = rolling_close_breakevens

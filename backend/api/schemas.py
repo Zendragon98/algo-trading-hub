@@ -78,6 +78,7 @@ class StrategyInfoDTO(BaseModel):
 
 class EquityDTO(BaseModel):
     equity: list[float]
+    timestamps: list[float] = []
     last_ts: float
 
 
@@ -100,6 +101,9 @@ class KpiDTO(BaseModel):
     session_close_wins: int = 0
     session_close_losses: int = 0
     session_close_breakevens: int = 0
+    rolling_close_wins: int = 0
+    rolling_close_losses: int = 0
+    rolling_close_breakevens: int = 0
 
 
 class ChildOrderDTO(BaseModel):
@@ -251,6 +255,15 @@ class StrategyPnlDTO(BaseModel):
     open_legs: list[StrategyLegDTO] = Field(default_factory=list)
 
 
+class StrategyHubPortfolioDTO(BaseModel):
+    """Venue-aligned portfolio PnL — matches the live console equity card."""
+
+    realized_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
+    equity: float = 0.0
+    session_start_equity: float = 0.0
+
+
 class StrategyHubDTO(BaseModel):
     ts: float
     mode: Literal["single", "all"]
@@ -258,6 +271,7 @@ class StrategyHubDTO(BaseModel):
     analytics: dict[str, dict[str, str | float | int | bool | None]] = Field(
         default_factory=dict,
     )
+    portfolio: StrategyHubPortfolioDTO = Field(default_factory=StrategyHubPortfolioDTO)
     run_dir: str | None = None
     log_path: str | None = None
 

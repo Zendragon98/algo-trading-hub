@@ -30,6 +30,7 @@ from .schemas import (
     StateDTO,
     StatusDTO,
     StrategyHubDTO,
+    StrategyHubPortfolioDTO,
     StrategyInfoDTO,
     StrategyLegDTO,
     StrategyPnlDTO,
@@ -238,8 +239,15 @@ def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
             session_close_wins=snapshot.session_close_wins,
             session_close_losses=snapshot.session_close_losses,
             session_close_breakevens=snapshot.session_close_breakevens,
+            rolling_close_wins=snapshot.rolling_close_wins,
+            rolling_close_losses=snapshot.rolling_close_losses,
+            rolling_close_breakevens=snapshot.rolling_close_breakevens,
         ),
-        equity=EquityDTO(equity=snapshot.equity_curve, last_ts=snapshot.last_tick_ts),
+        equity=EquityDTO(
+            equity=snapshot.equity_curve,
+            timestamps=snapshot.equity_timestamps,
+            last_ts=snapshot.last_tick_ts,
+        ),
         positions=[position_to_dto(p) for p in snapshot.positions],
         trades=[trade_to_dto(t) for t in snapshot.trades],
         realized_trades=[trade_to_dto(t) for t in snapshot.realized_trades],
@@ -253,16 +261,28 @@ def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
     )
 
 
+def _strategy_hub_portfolio_dto(engine: Engine) -> StrategyHubPortfolioDTO:
+    port = engine.portfolio.snapshot()
+    return StrategyHubPortfolioDTO(
+        realized_pnl=port.realized_pnl,
+        unrealized_pnl=port.unrealized_pnl,
+        equity=port.equity,
+        session_start_equity=engine.portfolio.session_start_equity,
+    )
+
+
 def build_strategy_hub_dto(engine: Engine) -> StrategyHubDTO:
     snap = engine.strategy_hub_snapshot()
     run_dir = engine.event_archive_dir
     log_path = str(run_dir / "strategy_hub.jsonl") if run_dir is not None else None
+    portfolio = _strategy_hub_portfolio_dto(engine)
     if snap is None:
         return StrategyHubDTO(
             ts=0.0,
             mode="all" if engine.is_multi_strategy_mode() else "single",
             strategies=[],
             analytics=engine.strategy_analytics(),
+            portfolio=portfolio,
             run_dir=str(run_dir) if run_dir is not None else None,
             log_path=log_path,
         )
@@ -291,6 +311,7 @@ def build_strategy_hub_dto(engine: Engine) -> StrategyHubDTO:
             for row in snap.strategies
         ],
         analytics=snap.analytics,
+        portfolio=portfolio,
         run_dir=str(run_dir) if run_dir is not None else None,
         log_path=log_path,
     )

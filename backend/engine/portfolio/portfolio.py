@@ -93,14 +93,12 @@ class Portfolio:
         self,
         bus: EventBus,
         position_tracker: PositionTracker,
-        equity_curve_size: int = 256,
         base_currency: str = "USDT",
     ) -> None:
         self._bus = bus
         self._tracker = position_tracker
         self._cash_by_asset: dict[str, float] = {}
         self._equity_curve: list[EquityPoint] = []
-        self._curve_size = equity_curve_size
         self._session_start_equity: float = 0.0
         self._session_peak_equity: float = 0.0
         self._session_max_drawdown_abs: float = 0.0
@@ -177,6 +175,10 @@ class Portfolio:
         self._session_start_equity = eq
         self._reset_session_drawdown(eq)
         logger.info("session_start_equity re-anchored after drawdown rearm: %.2f", eq)
+
+    def begin_new_session(self) -> None:
+        """Clear session-scoped chart history before balances are re-seeded."""
+        self._equity_curve.clear()
 
     def _reset_session_drawdown(self, equity: float) -> None:
         self._session_peak_equity = equity
@@ -259,16 +261,6 @@ class Portfolio:
     def equity_curve(self) -> list[EquityPoint]:
         return list(self._equity_curve)
 
-    def _downsample_equity_curve(self) -> None:
-        """Keep the full session span in memory without unbounded growth."""
-        curve = self._equity_curve
-        n = self._curve_size
-        if len(curve) <= n:
-            return
-        equities = [point.equity for point in curve]
-        keep = _extrema_indices(equities, n)
-        self._equity_curve = [curve[i] for i in keep]
-
     # --- Periodic recompute ---
 
     async def mark_to_market(self, *, use_mark_pnl: bool = False) -> EquityPoint:
@@ -286,8 +278,6 @@ class Portfolio:
             point = EquityPoint(ts=time(), equity=snap.equity)
             self._update_session_drawdown(point.equity)
             self._equity_curve.append(point)
-            if len(self._equity_curve) > self._curve_size:
-                self._downsample_equity_curve()
 
         await self._bus.publish(
             Event(

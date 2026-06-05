@@ -207,6 +207,12 @@ class LossTracker:
         self._current_streak = 0
         logger.info("consecutive-loss streak cleared (breaker rearm)")
 
+    def reset_session(self) -> None:
+        """Clear consecutive-loss state for a new operator session."""
+        self._current_streak = 0
+        self._seen_trade_ids.clear()
+        logger.info("loss_tracker session reset (consecutive-loss streak cleared)")
+
     def reanchor_daily_baseline_after_rearm(self, now: float | None = None) -> None:
         """Reset today's daily-loss reference to current equity (operator rearm).
 

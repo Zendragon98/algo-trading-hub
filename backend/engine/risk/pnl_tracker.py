@@ -89,3 +89,8 @@ class PnLTracker:
             return
         self._hwm = equity
         logger.info("HWM re-anchored after rearm: %.2f", equity)
+
+    def reset_session(self) -> None:
+        """Clear high-water mark so the next session peaks from current equity."""
+        self._hwm = None
+        logger.info("pnl_tracker session reset (HWM cleared)")

@@ -884,6 +884,9 @@ class Engine:
             session_close_wins=self._performance.session_wins,
             session_close_losses=self._performance.session_losses,
             session_close_breakevens=self._performance.session_breakevens,
+            rolling_close_wins=self._performance.rolling_close_wins,
+            rolling_close_losses=self._performance.rolling_close_losses,
+            rolling_close_breakevens=self._performance.rolling_close_breakevens,
         )
 
     # --- Lifecycle ---
@@ -906,7 +909,17 @@ class Engine:
                 await self._abort_start()
                 raise
 
+    def _begin_new_session(self) -> None:
+        """Reset session-scoped KPIs when the operator starts after stop or E-Stop."""
+        logger.info("beginning new trading session")
+        self._state.started_at = time.time()
+        self._performance.reset_session()
+        self._loss_tracker.reset_session()
+        self._pnl.reset_session()
+        self._portfolio.begin_new_session()
+
     async def _start_impl(self) -> None:
+        self._begin_new_session()
         await self._gateway.connect()
         await self._set_startup("clock", "Syncing exchange clock…")
         await self._refresh_clock_skew()
@@ -3247,6 +3260,13 @@ class Engine:
 
         payload = _Hub._to_payload(snapshot)
         payload["ts"] = snapshot.ts
+        port = self._portfolio.snapshot()
+        payload["portfolio"] = {
+            "realized_pnl": port.realized_pnl,
+            "unrealized_pnl": port.unrealized_pnl,
+            "equity": port.equity,
+            "session_start_equity": self._portfolio.session_start_equity,
+        }
         await self._bus.publish(
             Event(type=EventType.STRATEGY_HUB, payload=payload),
         )

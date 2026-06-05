@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, TrendingDown, TrendingUp } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { EM_DASH, formatSignedRealizedPnl } from "@/lib/algo-format";
 import type { LogEntry, Position, StrategyInfo, Trade } from "@/components/algo/types";
 import { formatTradeStrategyLabel } from "@/lib/tradeStrategy";
-export function PositionsTable({
+export const PositionsTable = memo(function PositionsTable({
   positions,
   onOpen,
 }: {
@@ -86,9 +86,9 @@ export function PositionsTable({
       </table>
     </div>
   );
-}
+});
 
-export function TradesTable({
+export const TradesTable = memo(function TradesTable({
   trades,
   strategies = [],
 }: {
@@ -180,10 +180,37 @@ export function TradesTable({
       </table>
     </div>
   );
-}
+});
 
 /** Newest log lines sit at the top; follow keeps scroll pinned there. */
 const LOG_FOLLOW_TOP_PX = 16;
+/** Estimated row height for windowing (full session kept; only visible rows mount). */
+const LOG_ROW_HEIGHT = 28;
+const LOG_OVERSCAN = 12;
+
+function logVisibleRange(scrollTop: number, clientHeight: number, total: number) {
+  const start = Math.max(0, Math.floor(scrollTop / LOG_ROW_HEIGHT) - LOG_OVERSCAN);
+  const end = Math.min(
+    total,
+    start + Math.ceil(clientHeight / LOG_ROW_HEIGHT) + LOG_OVERSCAN * 2,
+  );
+  return { start, end };
+}
+
+const LOG_COLORS: Record<LogEntry["level"], string> = {
+  debug: "text-muted-foreground/60",
+  info: "text-muted-foreground",
+  warn: "text-warning",
+  error: "text-bear",
+  signal: "text-bull",
+};
+const LOG_TAGS: Record<LogEntry["level"], string> = {
+  debug: "DBG ",
+  info: "INFO",
+  warn: "WARN",
+  error: "ERR ",
+  signal: "SIG ",
+};
 
 export function logStrategyTag(msg: string): string | null {
   if (msg.startsWith("ALL strategies")) return "ALL";
@@ -199,49 +226,93 @@ export function logStrategyTag(msg: string): string | null {
   return null;
 }
 
-export function LogStream({ logs, className }: { logs: LogEntry[]; className?: string }) {
+const LogLine = memo(function LogLine({ log }: { log: LogEntry }) {
+  const stratTag = logStrategyTag(log.msg);
+  return (
+    <div className="flex min-h-[28px] gap-2 py-0.5">
+      <span className="shrink-0 text-muted-foreground/70 tabular-nums">{log.ts}</span>
+      <span className={cn("shrink-0 font-semibold", LOG_COLORS[log.level])}>{LOG_TAGS[log.level]}</span>
+      {stratTag ? (
+        <span className="shrink-0 rounded-sm border border-border/60 bg-muted/40 px-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {stratTag}
+        </span>
+      ) : null}
+      {log.logger ? (
+        <span className="shrink-0 max-w-[8rem] truncate text-[10px] text-muted-foreground/60">
+          {log.logger.split(".").slice(-1)[0]}
+        </span>
+      ) : null}
+      <span className="min-w-0 break-words text-foreground/90">{log.msg}</span>
+    </div>
+  );
+});
+
+export const LogStream = memo(function LogStream({
+  logs,
+  className,
+}: {
+  logs: LogEntry[];
+  className?: string;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
+  const scrollRafRef = useRef<number | null>(null);
   const [follow, setFollow] = useState(true);
+  const [range, setRange] = useState({ start: 0, end: 48 });
 
-  const setFollowEnabled = (enabled: boolean) => {
-    followRef.current = enabled;
-    setFollow(enabled);
-  };
-
-  const onScroll = () => {
+  const syncViewport = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    setFollowEnabled(el.scrollTop <= LOG_FOLLOW_TOP_PX);
+    const atTop = el.scrollTop <= LOG_FOLLOW_TOP_PX;
+    if (atTop !== followRef.current) {
+      followRef.current = atTop;
+      setFollow(atTop);
+    }
+    setRange(logVisibleRange(el.scrollTop, el.clientHeight, logs.length));
+  }, [logs.length]);
+
+  const onScroll = () => {
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      syncViewport();
+    });
   };
+
+  useEffect(() => {
+    syncViewport();
+  }, [syncViewport]);
+
+  useEffect(() => {
+    if (!followRef.current) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = 0;
+    setRange(logVisibleRange(0, el.clientHeight, logs.length));
+  }, [logs.length]);
+
+  useEffect(
+    () => () => {
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current);
+      }
+    },
+    [],
+  );
 
   const resumeFollow = () => {
     const el = scrollRef.current;
     if (!el) return;
-    setFollowEnabled(true);
+    followRef.current = true;
+    setFollow(true);
     el.scrollTop = 0;
+    setRange(logVisibleRange(0, el.clientHeight, logs.length));
   };
 
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el || !followRef.current) return;
-    el.scrollTop = 0;
-  }, [logs]);
+  const totalHeight = logs.length * LOG_ROW_HEIGHT;
+  const offsetY = range.start * LOG_ROW_HEIGHT;
+  const visible = logs.slice(range.start, range.end);
 
-  const color: Record<LogEntry["level"], string> = {
-    debug: "text-muted-foreground/60",
-    info: "text-muted-foreground",
-    warn: "text-warning",
-    error: "text-bear",
-    signal: "text-bull",
-  };
-  const tag: Record<LogEntry["level"], string> = {
-    debug: "DBG ",
-    info: "INFO",
-    warn: "WARN",
-    error: "ERR ",
-    signal: "SIG ",
-  };
   return (
     <div className="relative">
       {!follow ? (
@@ -267,29 +338,20 @@ export function LogStream({ logs, className }: { logs: LogEntry[]; className?: s
           className,
         )}
       >
-        <div className="space-y-1 px-3 py-2 font-mono text-[12px] leading-relaxed">
-          {logs.map((l, i) => {
-            const stratTag = logStrategyTag(l.msg);
-            return (
-              <div key={i} className="flex gap-2">
-                <span className="shrink-0 text-muted-foreground/70 tabular-nums">{l.ts}</span>
-                <span className={cn("shrink-0 font-semibold", color[l.level])}>{tag[l.level]}</span>
-                {stratTag ? (
-                  <span className="shrink-0 rounded-sm border border-border/60 bg-muted/40 px-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    {stratTag}
-                  </span>
-                ) : null}
-                {l.logger ? (
-                  <span className="shrink-0 max-w-[8rem] truncate text-[10px] text-muted-foreground/60">
-                    {l.logger.split(".").slice(-1)[0]}
-                  </span>
-                ) : null}
-                <span className="min-w-0 break-words text-foreground/90">{l.msg}</span>
-              </div>
-            );
-          })}
-        </div>
+        {logs.length === 0 ? (
+          <div className="px-3 py-6 text-center font-mono text-[12px] text-muted-foreground">
+            No log lines yet.
+          </div>
+        ) : (
+          <div className="relative px-3 py-2 font-mono text-[12px] leading-relaxed" style={{ height: totalHeight }}>
+            <div className="absolute inset-x-3" style={{ top: offsetY }}>
+              {visible.map((log, i) => (
+                <LogLine key={`${range.start + i}-${log.ts}-${log.msg.slice(0, 24)}`} log={log} />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
-}
+});
