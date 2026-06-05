@@ -9,7 +9,6 @@ import {
   Settings2,
   Square,
   Target,
-  Zap,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -19,10 +18,10 @@ import { Separator } from "@/components/ui/separator";
 import { EquityChart } from "@/components/algo/EquityChart";
 import { PositionChartDialog } from "@/components/algo/PositionChartDialog";
 import {
+  ActiveTripsPanel,
   BreakersPanel,
   ControlLimitsPanel,
   ExecutionQualityPanel,
-  KpiCard,
   LiveDot,
   PortfolioSnapshotCard,
   LogStream,
@@ -395,183 +394,98 @@ function Index() {
       />
 
       <main className="mx-auto max-w-[1500px] px-4 pb-6 pt-3 lg:px-8">
-        {/* KPI row */}
-        <section className="grid grid-cols-1 gap-2 md:grid-cols-3">
-          <PortfolioSnapshotCard
-            totalEquity={totalEquity}
-            pnlAbs={pnlAbs}
-            pnlPct={pnlPct}
-            openPnl={openPnl}
-            openPositionCount={positions.length}
-            sessionMaxDrawdownAbs={sessionMaxDrawdownAbs}
-            sessionMaxDrawdownPct={sessionMaxDrawdownPct}
-          />
-          <WinRateKpiCard
-            perf={closedTradePerf}
-            scope={kpiScope}
-            onScopeChange={setKpiScope}
-            tapeStats={winRateTapeStats}
-            openPositionCount={positions.length}
-            sessionTradePerf={sessionTradePerf}
-            rollingTradePerf={rollingTradePerf}
-          />
-          <KpiCard
-            icon={<Zap className="size-4" />}
-            label="STRATEGY"
-            value={strategy?.label ?? "—"}
-            sub={
-              strategy?.name === "all" && strategies.length > 0
-                ? strategies.map((s) => s.label).join(" · ")
-                : strategy?.description ??
-                  (backendReachable ? "Loading..." : "Backend offline — restart API")
-            }
-            tone="neutral"
-          />
-        </section>
-
-        {replaySummary ? (
-          <section className="mt-3">
-            <div className="rounded-md border border-bull/30 bg-bull/5 px-3 py-1.5 text-xs text-bull">
-              {replaySummary}
-            </div>
-          </section>
-        ) : null}
-
-        <section className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
-          {/* Equity chart */}
-          <Panel
-            className="lg:col-span-2"
-            title="EQUITY CURVE"
-            right={
-              <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-                <span className="flex items-center gap-1.5">
-                  <span className="size-1.5 rounded-full bg-bull" /> realized
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="size-1.5 rounded-full bg-muted-foreground" /> mark
-                </span>
-                <span>· {equityCurve.length.toLocaleString()} samples</span>
-              </div>
-            }
-          >
-            <div className="h-[160px] px-2 pb-1">
-              <EquityChart points={equityCurve} interactive />
-            </div>
-          </Panel>
-
-          {/* Controls */}
-          <Panel
-            title="CONTROL"
-            right={
-              <Badge variant="outline" className="border-border text-[10px] uppercase tracking-wider">
-                <Settings2 className="mr-1 size-3" /> live
-              </Badge>
-            }
-          >
-            <div className="space-y-3 p-3">
-              <div className="grid grid-cols-3 gap-1.5">
-                {status === "paused" ? (
-                  <Button
-                    onClick={onResume}
-                    disabled={!backendReachable || systemBusy}
-                    size="sm"
-                    className="col-span-2 bg-bull text-bull-foreground hover:bg-bull/90"
-                  >
-                    <Play className="size-4" /> RESUME
-                  </Button>
-                ) : (
-                  <>
-                    <Button
-                      onClick={onStart}
-                      disabled={startDisabled}
-                      size="sm"
-                      className="bg-bull text-bull-foreground hover:bg-bull/90 disabled:opacity-40"
-                    >
-                      {systemBusy ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <Play className="size-4" />
-                      )}{" "}
-                      {systemBusy ? "STARTING…" : "START"}
-                    </Button>
-                    <Button
-                      onClick={onPause}
-                      disabled={status !== "running" || systemBusy}
-                      size="sm"
-                      variant="secondary"
-                      className="border border-border"
-                    >
-                      <Pause className="size-4" /> PAUSE
-                    </Button>
-                  </>
-                )}
-                <Button
-                  onClick={onStop}
-                  disabled={status === "stopped" || systemBusy}
-                  size="sm"
-                  variant="destructive"
-                >
-                  <Square className="size-4" /> STOP
-                </Button>
-              </div>
-
-              <Separator />
-
-              <StrategyPicker
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px]">
+          <div className="order-2 flex min-w-0 flex-col gap-3 lg:order-1">
+            <section className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              <PortfolioSnapshotCard
+                totalEquity={totalEquity}
+                pnlAbs={pnlAbs}
+                pnlPct={pnlPct}
+                openPnl={openPnl}
+                openPositionCount={positions.length}
+                sessionMaxDrawdownAbs={sessionMaxDrawdownAbs}
+                sessionMaxDrawdownPct={sessionMaxDrawdownPct}
+                strategy={strategy}
                 strategies={strategies}
-                activeName={strategy?.name ?? null}
-                multiMode={strategy?.name === "all"}
                 backendReachable={backendReachable}
-                onSelect={onSelectStrategy}
               />
+              <WinRateKpiCard
+                perf={closedTradePerf}
+                scope={kpiScope}
+                onScopeChange={setKpiScope}
+                tapeStats={winRateTapeStats}
+                openPositionCount={positions.length}
+                sessionTradePerf={sessionTradePerf}
+                rollingTradePerf={rollingTradePerf}
+              />
+            </section>
 
-              <Separator />
+            {replaySummary ? (
+              <div className="rounded-md border border-bull/30 bg-bull/5 px-3 py-1.5 text-xs text-bull">
+                {replaySummary}
+              </div>
+            ) : null}
 
-              <div>
-                <div className="mb-2 flex items-center justify-between text-xs">
-                  <span className="uppercase tracking-wider text-muted-foreground">Risk per trade</span>
-                  <span className="tabular-nums text-bull">{risk[0]}%</span>
+            <section className="grid grid-cols-1 gap-3 lg:grid-cols-5">
+              <Panel
+                className="lg:col-span-3"
+                title="EQUITY CURVE"
+                right={
+                  <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      <span className="size-1.5 rounded-full bg-bull" /> realized
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="size-1.5 rounded-full bg-muted-foreground" /> mark
+                    </span>
+                    <span>· {equityCurve.length.toLocaleString()} samples</span>
+                  </div>
+                }
+              >
+                <div className="h-[200px] px-2 pb-1">
+                  <EquityChart points={equityCurve} interactive />
                 </div>
-                <Slider
-                  value={risk}
-                  onValueChange={setRisk}
-                  onValueCommit={onRiskCommit}
-                  min={5}
-                  max={100}
-                  step={5}
+              </Panel>
+
+              <div className="flex flex-col gap-3 lg:col-span-2">
+                <RiskPanel
+                  systemHealth={systemHealth}
+                  maxRiskPct={maxRiskPct}
+                  maxGrossNotional={maxGrossNotional}
+                  totalEquity={totalEquity}
+                />
+                <ActiveTripsPanel
+                  breakers={breakers}
+                  onRearmAll={onRearmAllBreakers}
+                  onRearmCode={onRearmBreakerCode}
+                  compact
                 />
               </div>
+            </section>
 
-              <ControlLimitsPanel
-                settings={settingsSnapshot}
-                backendReachable={backendReachable}
-                onPatchSettings={onPatchSettings}
-              />
+            <Panel
+              title="LIVE LOG"
+              right={
+                <span className="flex items-center gap-3">
+                  <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+                    {logs.length.toLocaleString()} lines
+                  </span>
+                  <LiveDot active={status === "running"} />
+                </span>
+              }
+            >
+              <LogStream logs={logs} className="h-[280px]" />
+            </Panel>
 
-              <Separator />
+            <Panel
+              title="OPEN POSITIONS"
+              right={
+                <span className="text-[11px] text-muted-foreground">{positions.length} active</span>
+              }
+            >
+              <PositionsTable positions={positions} onOpen={onOpenPosition} />
+            </Panel>
 
-              <Button
-                onClick={onFlatten}
-                disabled={!backendReachable || controlPending === "flatten"}
-                size="sm"
-                variant="outline"
-                className="w-full border-bear/40 text-bear hover:bg-bear/10 hover:text-bear"
-              >
-                <AlertTriangle className="size-4" />
-                {controlPending === "flatten" ? "Flattening…" : "Flatten all positions"}
-              </Button>
-
-              <Button variant="outline" className="w-full md:hidden" asChild>
-                <Link to="/settings">
-                  <Settings2 className="size-4" /> Engine settings
-                </Link>
-              </Button>
-            </div>
-          </Panel>
-        </section>
-
-        <section className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
-          <div className="flex flex-col gap-3">
             <BreakersPanel
               breakers={breakers}
               paperMode={paperMode}
@@ -580,98 +494,173 @@ function Index() {
               onRearmCode={onRearmBreakerCode}
               onPatchEnabled={onPatchBreakerEnabled}
             />
-            <RiskPanel
-              systemHealth={systemHealth}
-              maxRiskPct={maxRiskPct}
-              maxGrossNotional={maxGrossNotional}
-              totalEquity={totalEquity}
-            />
-          </div>
-          <Panel
-            className="lg:col-span-2"
-            title="LIVE LOG"
-            right={
-              <span className="flex items-center gap-3">
-                <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-                  {logs.length.toLocaleString()} lines
-                </span>
-                <LiveDot active={status === "running"} />
-              </span>
-            }
-          >
-            <LogStream logs={logs} className="h-[240px]" />
-          </Panel>
-        </section>
 
-        <section className="mt-3">
-          <Panel
-            title="OPEN POSITIONS"
-            right={
-              <span className="text-[11px] text-muted-foreground">{positions.length} active</span>
-            }
-          >
-            <PositionsTable positions={positions} onOpen={onOpenPosition} />
-          </Panel>
-        </section>
+            {systemHealth ? (
+              <SystemHealthPanel
+                health={systemHealth}
+                maxGrossNotional={maxGrossNotional}
+                status={status}
+                expanded={healthExpanded}
+                onExpandedChange={setHealthExpanded}
+                exportError={exportError}
+                onExportReport={onExportReport}
+              />
+            ) : null}
 
-        {systemHealth ? (
-          <section className="mt-3">
-            <SystemHealthPanel
-              health={systemHealth}
-              maxGrossNotional={maxGrossNotional}
-              status={status}
-              expanded={healthExpanded}
-              onExpandedChange={setHealthExpanded}
-              exportError={exportError}
-              onExportReport={onExportReport}
-            />
-          </section>
-        ) : null}
-
-        {/* OMS: working parent VWAPs + their child orders */}
-        <section className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
-          <Panel
-            className="lg:col-span-2"
-            title="ORDER MANAGEMENT"
-            right={
-              <span className="text-[11px] text-muted-foreground">
-                {workingParents.length} parent · {workingOrders.length} child
-              </span>
-            }
-          >
-            <OmsTable parents={workingParents} children={workingOrders} />
-          </Panel>
-
-          <Panel
-            title="EXECUTION QUALITY"
-            right={
-              <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                <Target className="mr-1 inline size-3" />
-                {executionAggregate.count} parents
-              </span>
-            }
-          >
-            <ExecutionQualityPanel aggregate={executionAggregate} history={executionHistory} />
-          </Panel>
-        </section>
-
-        <section className="mt-3">
-          <Panel
-            title="RECENT TRADES"
-            right={
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 gap-1 text-[11px]"
-                onClick={() => void live.refresh()}
+            <section className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+              <Panel
+                className="lg:col-span-2"
+                title="ORDER MANAGEMENT"
+                right={
+                  <span className="text-[11px] text-muted-foreground">
+                    {workingParents.length} parent · {workingOrders.length} child
+                  </span>
+                }
               >
-                <RefreshCcw className="size-3" /> refresh
-              </Button>
-            }
-          >
-            <TradesTable trades={trades} strategies={strategies} />
-          </Panel>
-        </section>
+                <OmsTable parents={workingParents} children={workingOrders} />
+              </Panel>
+
+              <Panel
+                title="EXECUTION QUALITY"
+                right={
+                  <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                    <Target className="mr-1 inline size-3" />
+                    {executionAggregate.count} parents
+                  </span>
+                }
+              >
+                <ExecutionQualityPanel aggregate={executionAggregate} history={executionHistory} />
+              </Panel>
+            </section>
+
+            <Panel
+              title="RECENT TRADES"
+              right={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1 text-[11px]"
+                  onClick={() => void live.refresh()}
+                >
+                  <RefreshCcw className="size-3" /> refresh
+                </Button>
+              }
+            >
+              <TradesTable trades={trades} strategies={strategies} />
+            </Panel>
+          </div>
+
+          <aside className="order-1 lg:sticky lg:top-[49px] lg:order-2 lg:self-start">
+            <Panel
+              title="CONTROL"
+              right={
+                <Badge variant="outline" className="border-border text-[10px] uppercase tracking-wider">
+                  <Settings2 className="mr-1 size-3" /> live
+                </Badge>
+              }
+            >
+              <div className="space-y-3 p-3">
+                <div className="grid grid-cols-3 gap-1.5">
+                  {status === "paused" ? (
+                    <Button
+                      onClick={onResume}
+                      disabled={!backendReachable || systemBusy}
+                      size="sm"
+                      className="col-span-2 bg-bull text-bull-foreground hover:bg-bull/90"
+                    >
+                      <Play className="size-4" /> RESUME
+                    </Button>
+                  ) : (
+                    <>
+                      <Button
+                        onClick={onStart}
+                        disabled={startDisabled}
+                        size="sm"
+                        className="bg-bull text-bull-foreground hover:bg-bull/90 disabled:opacity-40"
+                      >
+                        {systemBusy ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <Play className="size-4" />
+                        )}{" "}
+                        {systemBusy ? "STARTING…" : "START"}
+                      </Button>
+                      <Button
+                        onClick={onPause}
+                        disabled={status !== "running" || systemBusy}
+                        size="sm"
+                        variant="secondary"
+                        className="border border-border"
+                      >
+                        <Pause className="size-4" /> PAUSE
+                      </Button>
+                    </>
+                  )}
+                  <Button
+                    onClick={onStop}
+                    disabled={status === "stopped" || systemBusy}
+                    size="sm"
+                    variant="destructive"
+                  >
+                    <Square className="size-4" /> STOP
+                  </Button>
+                </div>
+
+                <Separator />
+
+                <StrategyPicker
+                  strategies={strategies}
+                  activeName={strategy?.name ?? null}
+                  multiMode={strategy?.name === "all"}
+                  backendReachable={backendReachable}
+                  onSelect={onSelectStrategy}
+                />
+
+                <Separator />
+
+                <div>
+                  <div className="mb-2 flex items-center justify-between text-xs">
+                    <span className="uppercase tracking-wider text-muted-foreground">Risk per trade</span>
+                    <span className="tabular-nums text-bull">{risk[0]}%</span>
+                  </div>
+                  <Slider
+                    value={risk}
+                    onValueChange={setRisk}
+                    onValueCommit={onRiskCommit}
+                    min={5}
+                    max={100}
+                    step={5}
+                  />
+                </div>
+
+                <ControlLimitsPanel
+                  settings={settingsSnapshot}
+                  backendReachable={backendReachable}
+                  onPatchSettings={onPatchSettings}
+                />
+
+                <Separator />
+
+                <Button
+                  onClick={onFlatten}
+                  disabled={!backendReachable || controlPending === "flatten"}
+                  size="sm"
+                  variant="outline"
+                  className="w-full border-bear/40 text-bear hover:bg-bear/10 hover:text-bear"
+                >
+                  <AlertTriangle className="size-4" />
+                  {controlPending === "flatten" ? "Flattening…" : "Flatten all positions"}
+                </Button>
+
+                <Button variant="outline" className="w-full lg:hidden" asChild>
+                  <Link to="/settings">
+                    <Settings2 className="size-4" /> Engine settings
+                  </Link>
+                </Button>
+              </div>
+            </Panel>
+          </aside>
+        </div>
       </main>
 
       <PositionChartDialog

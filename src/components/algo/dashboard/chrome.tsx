@@ -280,18 +280,23 @@ export function ConsoleHydratingShell() {
         </div>
       </header>
       <main className="mx-auto max-w-[1500px] px-4 pb-6 pt-3 lg:px-8">
-        <section className="grid grid-cols-1 gap-2 md:grid-cols-3">
-          <HydratePlaceholder className="h-28" />
-          <HydratePlaceholder className="h-28" />
-          <HydratePlaceholder className="h-28" />
-        </section>
-        <section className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
-          <HydratePlaceholder className="h-[160px] lg:col-span-2" />
-          <HydratePlaceholder className="h-[160px]" />
-        </section>
-        <section className="mt-3">
-          <HydratePlaceholder className="h-[280px]" />
-        </section>
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px]">
+          <div className="order-2 flex flex-col gap-3 lg:order-1">
+            <section className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              <HydratePlaceholder className="h-36" />
+              <HydratePlaceholder className="h-36" />
+            </section>
+            <section className="grid grid-cols-1 gap-3 lg:grid-cols-5">
+              <HydratePlaceholder className="h-[200px] lg:col-span-3" />
+              <div className="flex flex-col gap-3 lg:col-span-2">
+                <HydratePlaceholder className="h-[120px]" />
+                <HydratePlaceholder className="h-[80px]" />
+              </div>
+            </section>
+            <HydratePlaceholder className="h-[280px]" />
+          </div>
+          <HydratePlaceholder className="order-1 h-[320px] lg:order-2" />
+        </div>
       </main>
     </div>
   );

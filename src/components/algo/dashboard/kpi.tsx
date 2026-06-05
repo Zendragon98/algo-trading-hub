@@ -1,9 +1,11 @@
 import { memo } from "react";
-import { Activity, CircleDot, Gauge, TrendingDown, TrendingUp, Wallet } from "lucide-react";
+import { Activity, CircleDot, Gauge, TrendingDown, TrendingUp, Wallet, Zap } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
+import type { StrategyInfo } from "@/components/algo/types";
 import {
   type ClosedTradePerfVm,
   EM_DASH,
@@ -432,6 +434,9 @@ export const PortfolioSnapshotCard = memo(function PortfolioSnapshotCard({
   openPositionCount,
   sessionMaxDrawdownAbs,
   sessionMaxDrawdownPct,
+  strategy,
+  strategies,
+  backendReachable,
 }: {
   totalEquity: number;
   pnlAbs: number;
@@ -440,6 +445,9 @@ export const PortfolioSnapshotCard = memo(function PortfolioSnapshotCard({
   openPositionCount: number;
   sessionMaxDrawdownAbs: number;
   sessionMaxDrawdownPct: number;
+  strategy?: StrategyInfo | null;
+  strategies?: StrategyInfo[];
+  backendReachable?: boolean;
 }) {
   const equityTone = pnlAbs >= 0 ? "bull" : "bear";
   const openPnlTone = openPnl >= 0 ? "bull" : "bear";
@@ -483,6 +491,29 @@ export const PortfolioSnapshotCard = memo(function PortfolioSnapshotCard({
           tone={drawdownPctTone}
         />
       </div>
+
+      {strategy != null ? (
+        <>
+          <Separator className="my-2.5" />
+          <div className="flex items-start gap-2">
+            <Zap className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                Strategy
+              </div>
+              <div className="mt-0.5 font-mono text-sm font-semibold tabular-nums">
+                {strategy.label}
+              </div>
+              <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-muted-foreground">
+                {strategy.name === "all" && strategies && strategies.length > 0
+                  ? strategies.map((s) => s.label).join(" · ")
+                  : strategy.description ??
+                    (backendReachable ? "Loading…" : "Backend offline — restart API")}
+              </p>
+            </div>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 });

@@ -619,6 +619,60 @@ export function ControlLimitsPanel({
   );
 }
 
+export function ActiveTripsPanel({
+  breakers,
+  onRearmAll,
+  onRearmCode,
+  compact,
+}: {
+  breakers: BreakerList;
+  onRearmAll: () => void;
+  onRearmCode: (code: string) => void;
+  compact?: boolean;
+}) {
+  const hasTrips = breakers.active.length > 0;
+
+  return (
+    <Panel
+      title="ACTIVE TRIPS"
+      right={
+        hasTrips ? (
+          <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={onRearmAll}>
+            Rearm all
+          </Button>
+        ) : (
+          <Badge variant="outline" className="border-bull/40 text-[10px] text-bull">
+            Clear
+          </Badge>
+        )
+      }
+    >
+      <div className={cn("p-3", compact && "p-2.5")}>
+        {!hasTrips ? (
+          <p className="py-2 text-center text-xs text-muted-foreground">No active breakers.</p>
+        ) : (
+          <ScrollArea className={cn(compact ? "h-[120px]" : "h-[160px]")}>
+            <div className="space-y-2 pr-2">
+              {breakers.active.map((b) => (
+                <BreakerRow
+                  key={`${b.code}-${b.target ?? ""}`}
+                  breaker={b}
+                  onRearm={() => onRearmCode(b.code)}
+                />
+              ))}
+            </div>
+          </ScrollArea>
+        )}
+        {breakers.history.length > 0 ? (
+          <p className="mt-2 text-[10px] text-muted-foreground">
+            {breakers.history.length} recent event{breakers.history.length === 1 ? "" : "s"} in history
+          </p>
+        ) : null}
+      </div>
+    </Panel>
+  );
+}
+
 export function BreakerRow({ breaker, onRearm }: { breaker: BreakerStatus; onRearm: () => void }) {
   const latched = breaker.state === "latched" || breaker.state === "tripped";
   return (
