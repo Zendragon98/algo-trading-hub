@@ -24,12 +24,21 @@ from common.types import ChildOrder, ParentOrder
 from engine.orders.order_state_machine import TERMINAL_ORDER_STATUSES
 from gateways.gateway_interface import GatewayInterface, SymbolFilters
 
-from ..market_data.feature_store import FeatureStore
+from ..market_data.feature_store import FeatureStore, Features
 from ..orders.order_manager import OrderManager, new_client_order_id
 from ..risk.venue_sizing import clamp_limit_price, venue_cap_qty, venue_qty_in_bounds
 from .slicer import Slice, build_schedule
 
 logger = logging.getLogger(__name__)
+
+
+def _aggressive_touch_price(side: Side, feat: Features) -> float | None:
+    """Best ask for buys, best bid for sells — crosses the spread as taker."""
+    if side is Side.SELL and feat.best_bid is not None and feat.best_bid > 0:
+        return float(feat.best_bid)
+    if side is Side.BUY and feat.best_ask is not None and feat.best_ask > 0:
+        return float(feat.best_ask)
+    return None
 
 
 class _FlattenRecoverComplete(Exception):
@@ -120,10 +129,10 @@ class VwapExecutor:
                 slice_timeout_sec=min(6.0, self._cfg.slice_timeout_sec),
                 market_fallback=True,
             )
-        if parent.notes == "flow_exit_market":
+        if parent.notes == "flow_exit_market" or parent.cross_touch:
             return ExecutorConfig(
                 duration_sec=int(self._settings.urgent_duration_sec),
-                n_slices=max(1, int(self._settings.urgent_num_slices)),
+                n_slices=1,
                 slice_timeout_sec=min(2.0, self._cfg.slice_timeout_sec),
                 market_fallback=True,
             )
@@ -584,14 +593,11 @@ class VwapExecutor:
         if feat.mid is None or feat.spread_bps is None:
             return None
 
-        if parent.notes == "flow_exit_market" and bool(
-            getattr(self._settings, "flow_exit_cross_touch", True)
+        if parent.cross_touch or (
+            parent.notes == "flow_exit_market"
+            and bool(getattr(self._settings, "flow_exit_cross_touch", True))
         ):
-            touch: float | None = None
-            if parent.side is Side.SELL and feat.best_bid is not None and feat.best_bid > 0:
-                touch = feat.best_bid
-            elif parent.side is Side.BUY and feat.best_ask is not None and feat.best_ask > 0:
-                touch = feat.best_ask
+            touch = _aggressive_touch_price(parent.side, feat)
             if touch is not None:
                 mark = feat.mid
                 filters = self._gateway.get_symbol_filters(parent.symbol)

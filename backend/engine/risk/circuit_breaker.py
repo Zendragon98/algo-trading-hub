@@ -26,6 +26,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 
+from common.breaker_registry import breaker_applies_to_strategy
 from common.enums import EventType
 from common.events import Event, EventBus
 
@@ -60,6 +61,8 @@ class Breach:
     target: str | None = None
     cooldown_sec: float = 60.0
     detail: str = ""
+    # When set, the breach blocks only this strategy (empty = all strategies).
+    strategy_name: str = ""
 
 
 @dataclass(slots=True)
@@ -74,6 +77,7 @@ class BreakerStatus:
     tripped_at: float
     cooldown_until: float | None  # None for LATCHED
     detail: str = ""
+    strategy_name: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -85,6 +89,7 @@ class BreakerStatus:
             "tripped_at": self.tripped_at,
             "cooldown_until": self.cooldown_until,
             "detail": self.detail,
+            "strategy_name": self.strategy_name or None,
         }
 
 
@@ -125,7 +130,7 @@ class CircuitBreaker:
                 breach.target or "-",
             )
             return None
-        key = (breach.code, breach.target)
+        key = (breach.code, breach.target, breach.strategy_name or "")
         now = _time.time()
         existing = self._active.get(key)
         if existing is not None:
@@ -160,6 +165,7 @@ class CircuitBreaker:
             tripped_at=now,
             cooldown_until=cooldown_until,
             detail=breach.detail,
+            strategy_name=breach.strategy_name or "",
         )
         self._active[key] = status
         logger.warning(
@@ -238,6 +244,8 @@ class CircuitBreaker:
         self,
         scope: BreakerScope,
         target: str | None = None,
+        *,
+        strategy_name: str | None = None,
     ) -> bool:
         """True iff any active breach blocks the given scope/target.
 
@@ -246,11 +254,16 @@ class CircuitBreaker:
 
         ENGINE-scope *minor* breaches are excluded: they are telemetry /
         auto-cooling only and must not block symbol-level entry gates.
+
+        When ``strategy_name`` is set, MM-only breakers (``toxic_flow``,
+        ``price_jump``, ``book_depleted``) block only ``market_making_v2``.
         """
         for status in self._active.values():
             if status.scope is BreakerScope.ENGINE and status.severity is BreakerSeverity.MINOR:
                 continue
             if not _affects(status, scope, target):
+                continue
+            if strategy_name and not _blocks_strategy(status, strategy_name):
                 continue
             if status.state in (BreakerState.COOLDOWN, BreakerState.LATCHED, BreakerState.TRIPPED):
                 return True
@@ -285,6 +298,14 @@ class CircuitBreaker:
         self._bus.publish_nowait(Event(type=EventType.BREAKER, payload=payload))
 
 
+def _blocks_strategy(status: BreakerStatus, strategy_name: str) -> bool:
+    """True when ``status`` should veto ``strategy_name``."""
+    attributed = status.strategy_name or ""
+    if attributed:
+        return attributed == strategy_name
+    return breaker_applies_to_strategy(status.code, strategy_name)
+
+
 def _affects(status: BreakerStatus, scope: BreakerScope, target: str | None) -> bool:
     """Whether `status` blocks the requested (scope, target)."""
     if status.scope is BreakerScope.ENGINE:
@@ -300,6 +321,8 @@ def _affects(status: BreakerStatus, scope: BreakerScope, target: str | None) -> 
     return False
 
 
-def keys_for(breaches: Iterable[Breach]) -> list[tuple[str, str | None]]:
+def keys_for(
+    breaches: Iterable[Breach],
+) -> list[tuple[str, str | None, str]]:
     """Helper for tests: stable keying for active-breach lookup."""
-    return [(b.code, b.target) for b in breaches]
+    return [(b.code, b.target, b.strategy_name or "") for b in breaches]

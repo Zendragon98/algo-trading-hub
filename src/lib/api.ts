@@ -308,6 +308,7 @@ export type BreakerStatusDTO = {
   tripped_at: number;
   cooldown_until: number | null;
   detail: string;
+  strategy_name?: string | null;
 };
 
 export type BreakerDefinitionDTO = {
@@ -691,6 +692,7 @@ export function toBreakerStatus(d: BreakerStatusDTO): import("@/components/algo/
     trippedAt: d.tripped_at,
     cooldownUntil: d.cooldown_until,
     detail: d.detail,
+    strategyName: d.strategy_name ?? null,
   };
 }
 

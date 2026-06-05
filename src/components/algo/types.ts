@@ -192,6 +192,7 @@ export type BreakerStatus = {
   trippedAt: number;
   cooldownUntil: number | null;
   detail: string;
+  strategyName: string | null;
 };
 
 export type BreakerDefinition = {

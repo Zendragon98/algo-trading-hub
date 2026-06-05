@@ -5,8 +5,11 @@ from __future__ import annotations
 from common.config import Settings
 
 from ..market_data.feature_store import Features
+from ..strategies.market_making.ids import MM_STRATEGY_NAMES
 from ..strategies.mm_calibrated import mm_float
 from .circuit_breaker import Breach, BreakerScope, BreakerSeverity
+
+_MM = next(iter(MM_STRATEGY_NAMES))
 
 
 class MmFlowGuard:
@@ -29,6 +32,7 @@ class MmFlowGuard:
                 target=sym,
                 cooldown_sec=self._cooldown,
                 detail=f"return_1s={feat.mid_return_1s_bps:.1f}bps",
+                strategy_name=_MM,
             )
         if feat.is_toxic:
             return Breach(
@@ -38,6 +42,7 @@ class MmFlowGuard:
                 target=sym,
                 cooldown_sec=self._cooldown,
                 detail=f"score={feat.toxicity_score:.2f}",
+                strategy_name=_MM,
             )
         depletion_breaker = mm_float(
             sym,
@@ -54,6 +59,7 @@ class MmFlowGuard:
                     target=sym,
                     cooldown_sec=self._cooldown,
                     detail=f"bid_depth_ratio={feat.bid_depth_ratio:.2f}",
+                    strategy_name=_MM,
                 )
             if feat.ask_depth_ratio < depletion_breaker:
                 return Breach(
@@ -63,5 +69,6 @@ class MmFlowGuard:
                     target=sym,
                     cooldown_sec=self._cooldown,
                     detail=f"ask_depth_ratio={feat.ask_depth_ratio:.2f}",
+                    strategy_name=_MM,
                 )
         return None

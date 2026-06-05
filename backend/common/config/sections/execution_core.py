@@ -22,6 +22,9 @@ class ExecutionCoreMixin(BaseModel):
     # --- Execution ---
     vwap_duration_sec: int = 60
     vwap_num_slices: int = 6
+    # AGGRESSIVE alpha entries cross the touch when True (per-strategy overrides below).
+    urgent_cross_touch: bool = False
+    urgent_exit_cross_touch: bool = True
     imbalance_top_n: int = 10
     trade_tape_window_sec: int = 300
 

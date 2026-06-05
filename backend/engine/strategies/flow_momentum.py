@@ -25,6 +25,12 @@ from common.universe_bootstrap import is_auto_symbol_list
 from ..market_data.feature_store import Features
 from ..position.venue_pnl import qty_aligned_with_venue
 from .flow_entry_gates import entry_spread_ok, tape_rising
+from .flow_micro_confirm import (
+    micro_entry_blocked,
+    micro_exit_toxic_flip,
+    micro_score_boost,
+    micro_size_multiplier,
+)
 from .flow_pnl import (
     apply_attributed_fill_vwap,
     compute_flow_pnl,
@@ -274,6 +280,9 @@ class FlowMomentumStrategy(StrategyBase):
                 continue
             if bool(s.flow_skip_toxic) and feat.is_toxic:
                 continue
+            micro_block = micro_entry_blocked(feat, direction, s)
+            if micro_block is not None:
+                continue
             if not entry_spread_ok(feat, s):
                 continue
             if bool(s.flow_require_rising_tape) and not tape_rising(
@@ -282,14 +291,17 @@ class FlowMomentumStrategy(StrategyBase):
                 continue
 
             entry_qty = self._size_for(mid, tape=tape, tape_thr=tape_thr)
+            entry_qty *= micro_size_multiplier(feat, direction, s)
             if entry_qty <= 0:
                 continue
 
             score = min(
                 1.0,
                 float(s.flow_entry_score)
-                * (0.5 + 0.5 * min(abs(tape) / max(tape_thr, 1e-9), 2.0)),
+                * (0.5 + 0.5 * min(abs(tape) / max(tape_thr, 1e-9), 2.0))
+                + micro_score_boost(feat, direction, s),
             )
+            tox = float(feat.toxicity_score)
             sig = plan_directional_signal(
                 symbol=symbol,
                 target_side=direction,
@@ -297,7 +309,7 @@ class FlowMomentumStrategy(StrategyBase):
                 position_qty=pos_qty,
                 reason_open=(
                     f"flow_momentum_enter tape={tape:+.3f} imb={imb:+.3f} "
-                    f"dep={dep:+.3f} n={confirm_n}"
+                    f"dep={dep:+.3f} tox={tox:.2f} n={confirm_n}"
                 ),
                 reason_close="flow_momentum_flatten",
                 score=score,
@@ -425,7 +437,12 @@ class FlowMomentumStrategy(StrategyBase):
             state.peak_pnl_bps = pnl
 
         reason: str | None = None
-        if pnl_known and sl > 0 and pnl <= -sl:
+        if micro_exit_toxic_flip(feat, pos_side, s):
+            reason = (
+                f"flow_toxic_flip tox={float(feat.toxicity_score):.2f} "
+                f"flow={float(feat.toxicity_flow_direction):+.2f}"
+            )
+        elif pnl_known and sl > 0 and pnl <= -sl:
             reason = f"flow_stop_loss pnl_bps={pnl:.2f} entry={snap.entry_source}"
         elif (
             pnl_known

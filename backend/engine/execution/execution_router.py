@@ -24,6 +24,7 @@ from common.types import ParentOrder
 
 from ..market_data.feature_store import FeatureStore
 from .algo_wheel import AlgoWheel
+from .exec_style import resolve_cross_touch
 from .execution_metrics import ExecutionTracker
 from .vwap_executor import VwapExecutor
 
@@ -37,7 +38,9 @@ def _new_parent_id() -> str:
 class _ParentGate(Protocol):
     """Minimal SubmitGuard surface required by the router."""
 
-    def can_submit_parent(self, symbol: str) -> tuple[bool, str]: ...
+    def can_submit_parent(
+        self, symbol: str, *, strategy_name: str = ""
+    ) -> tuple[bool, str]: ...
 
 
 class ParentSubmissionRejected(RuntimeError):
@@ -87,7 +90,9 @@ class ExecutionRouter:
         if self._submit_guard is not None:
             # Reduce-only exits bypass the *symbol* gate so a paused symbol
             # can still close out — the engine breaker still catches it.
-            allowed, reason = self._submit_guard.can_submit_parent(symbol)
+            allowed, reason = self._submit_guard.can_submit_parent(
+                symbol, strategy_name=strategy_name
+            )
             if not allowed and not reduce_only:
                 logger.warning("router rejected %s submit: %s", symbol, reason)
                 raise ParentSubmissionRejected(reason)
@@ -101,6 +106,13 @@ class ExecutionRouter:
                 if resolved_urgency is Urgency.AGGRESSIVE
                 else 5.0
             )
+        cross_touch = resolve_cross_touch(
+            self._settings,
+            strategy_name=strategy_name,
+            urgency=resolved_urgency,
+            reduce_only=reduce_only,
+            notes=notes,
+        )
         parent = ParentOrder(
             id=_new_parent_id(),
             symbol=symbol,
@@ -113,6 +125,7 @@ class ExecutionRouter:
             signal_score=signal_score,
             group_id=group_id,
             strategy_name=strategy_name,
+            cross_touch=cross_touch,
         )
         feat = self._features.snapshot(symbol)
         parent.algo_mode = self._wheel.choose(parent, feat, self._settings)

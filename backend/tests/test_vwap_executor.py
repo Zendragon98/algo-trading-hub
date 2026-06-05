@@ -114,6 +114,40 @@ def test_flow_exit_cross_touch_pegs_at_bid_for_long_close() -> None:
     assert price == pytest.approx(99.5)
 
 
+def test_flow_entry_cross_touch_pegs_at_ask_for_long() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        flow_entry_cross_touch=True,
+        symbols=["BTCUSDT"],
+    )
+    bus = EventBus()
+    gw = _MockGateway()
+    om = OrderManager(gw, bus)
+    books = OrderBookStore(["BTCUSDT"])
+    books.get("BTCUSDT").apply_snapshot(
+        bids=[(99.5, 1.0)], asks=[(100.5, 1.0)], last_update_id=1,
+    )
+    features = FeatureStore(books, TradeTape(window_sec=10), settings)
+    ex = VwapExecutor(
+        order_manager=om,
+        gateway=gw,
+        features=features,
+        price_provider=lambda _s: 100.0,
+        settings=settings,
+    )
+    parent = ParentOrder(
+        id="P-flow-entry",
+        symbol="BTCUSDT",
+        side=Side.BUY,
+        qty=0.01,
+        algo_mode=AlgoMode.NORMAL,
+        cross_touch=True,
+    )
+    price = ex._passive_price(parent)
+    assert price == pytest.approx(100.5)
+
+
 def test_flow_exit_market_uses_fast_market_fallback_cfg() -> None:
     settings = Settings(
         binance_api_key="x",

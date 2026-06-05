@@ -87,7 +87,7 @@ class SubmitGuard:
         self._bucket = _TokenBucket(submit_rate_per_sec)
         self._symbol_buckets: dict[str, _TokenBucket] = {}
         self._symbol_rate = submit_rate_per_sec
-        self._reject_streak: dict[str, int] = defaultdict(int)
+        self._reject_streak: dict[tuple[str, str], int] = defaultdict(int)
         self._order_exposure = order_exposure
 
     def apply_settings(self, settings: Settings) -> None:
@@ -130,12 +130,16 @@ class SubmitGuard:
 
     # --- Pre-submit ---
 
-    def can_submit_parent(self, symbol: str) -> tuple[bool, str]:
+    def can_submit_parent(
+        self, symbol: str, *, strategy_name: str = ""
+    ) -> tuple[bool, str]:
         """Pre-router check used by ExecutionRouter.submit."""
         if self._breaker.is_engine_halted():
             logger.debug("submit blocked %s: engine_breaker", symbol)
             return False, "engine_breaker"
-        if self._breaker.is_blocked(BreakerScope.SYMBOL, symbol):
+        if self._breaker.is_blocked(
+            BreakerScope.SYMBOL, symbol, strategy_name=strategy_name
+        ):
             logger.debug("submit blocked %s: symbol_breaker", symbol)
             return False, "symbol_breaker"
         if (
@@ -158,6 +162,7 @@ class SubmitGuard:
         reduce_only: bool,
         qty: float = 0.0,
         price: float | None = None,
+        strategy_name: str = "",
     ) -> tuple[bool, str]:
         """Pre-OMS check + throttle wait used by OrderManager.submit_child.
 
@@ -172,7 +177,9 @@ class SubmitGuard:
             if self._breaker.is_engine_halted():
                 logger.debug("child gate blocked %s: engine_breaker", symbol)
                 return False, "engine_breaker"
-            if self._breaker.is_blocked(BreakerScope.SYMBOL, symbol):
+            if self._breaker.is_blocked(
+                BreakerScope.SYMBOL, symbol, strategy_name=strategy_name
+            ):
                 logger.debug("child gate blocked %s: symbol_breaker", symbol)
                 return False, "symbol_breaker"
             if self._order_exposure is not None:
@@ -191,20 +198,24 @@ class SubmitGuard:
 
     # --- Post-submit ---
 
-    def clear_reject_streak(self, symbol: str) -> None:
+    def clear_reject_streak(self, symbol: str, *, strategy_name: str = "") -> None:
         """Reset repeat_reject counter (e.g. benign -2022 on reduce-only)."""
-        self._reject_streak.pop(symbol, None)
+        self._reject_streak.pop((symbol, strategy_name), None)
 
-    def record_status(self, symbol: str, status: OrderStatus) -> None:
+    def record_status(
+        self, symbol: str, status: OrderStatus, *, strategy_name: str = ""
+    ) -> None:
         """Update the consecutive-reject counter from a venue response."""
+        key = (symbol, strategy_name)
         if status is OrderStatus.REJECTED:
-            self._reject_streak[symbol] += 1
-            if self._reject_streak[symbol] >= self._max_rejects:
-                streak = self._reject_streak[symbol]
+            self._reject_streak[key] += 1
+            if self._reject_streak[key] >= self._max_rejects:
+                streak = self._reject_streak[key]
                 logger.warning(
-                    "repeat_reject streak=%d on %s — tripping symbol breaker",
+                    "repeat_reject streak=%d on %s strategy=%s — tripping breaker",
                     streak,
                     symbol,
+                    strategy_name or "-",
                 )
                 self._breaker.trip(
                     Breach(
@@ -214,12 +225,13 @@ class SubmitGuard:
                         target=symbol,
                         cooldown_sec=self._reject_cooldown_sec,
                         detail=f"streak={streak}",
+                        strategy_name=strategy_name,
                     )
                 )
                 # Reset so a single trip per cooldown is enough; the
                 # breaker will block further submits until ARMED again.
-                self._reject_streak[symbol] = 0
+                self._reject_streak[key] = 0
             return
         if status in (OrderStatus.ACK, OrderStatus.PARTIAL, OrderStatus.FILLED):
             # A successful round-trip clears the streak.
-            self._reject_streak.pop(symbol, None)
+            self._reject_streak.pop(key, None)

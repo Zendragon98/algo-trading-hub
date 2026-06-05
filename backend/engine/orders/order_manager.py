@@ -48,7 +48,9 @@ class _SubmitGuardLike(Protocol):
         price: float | None = None,
     ) -> tuple[bool, str]: ...
 
-    def record_status(self, symbol: str, status: OrderStatus) -> None: ...
+    def record_status(
+        self, symbol: str, status: OrderStatus, *, strategy_name: str = ""
+    ) -> None: ...
 
 
 def new_client_order_id(
@@ -129,6 +131,10 @@ class OrderManager:
     def register_parent(self, parent: ParentOrder) -> None:
         self._parents[parent.id] = parent
 
+    def _strategy_for_child(self, child: ChildOrder) -> str:
+        parent = self._parents.get(child.parent_id)
+        return parent.strategy_name if parent is not None else ""
+
     async def submit_child(self, child: ChildOrder) -> ChildOrder:
         """Send a child to the venue and remember it locally.
 
@@ -141,11 +147,13 @@ class OrderManager:
         engine/symbol-scope breaker is latched.
         """
         if self._submit_guard is not None:
+            strategy_name = self._strategy_for_child(child)
             allowed, reason = await self._submit_guard.gate_child(
                 child.symbol,
                 reduce_only=child.reduce_only,
                 qty=child.qty,
                 price=child.price,
+                strategy_name=strategy_name,
             )
             if not allowed:
                 child.status = OrderStatus.REJECTED
@@ -206,10 +214,13 @@ class OrderManager:
                 )
             child.status = OrderStatus.REJECTED
             if self._submit_guard is not None:
+                strat = self._strategy_for_child(child)
                 if code == -2022 and child.reduce_only:
-                    self._submit_guard.clear_reject_streak(child.symbol)
+                    self._submit_guard.clear_reject_streak(child.symbol, strategy_name=strat)
                 elif not is_venue_throttle_error(exc):
-                    self._submit_guard.record_status(child.symbol, OrderStatus.REJECTED)
+                    self._submit_guard.record_status(
+                        child.symbol, OrderStatus.REJECTED, strategy_name=strat
+                    )
             await self._publish_order(child)
             raise
 
@@ -218,7 +229,9 @@ class OrderManager:
             self._children[child.id] = placed
 
         if self._submit_guard is not None:
-            self._submit_guard.record_status(placed.symbol, placed.status)
+            self._submit_guard.record_status(
+                placed.symbol, placed.status, strategy_name=self._strategy_for_child(placed)
+            )
         logger.info(
             "order placed %s %s %s qty=%.8f type=%s status=%s venue_id=%s",
             placed.id,
@@ -257,7 +270,9 @@ class OrderManager:
                 merged = existing
 
         if self._submit_guard is not None:
-            self._submit_guard.record_status(merged.symbol, merged.status)
+            self._submit_guard.record_status(
+                merged.symbol, merged.status, strategy_name=self._strategy_for_child(merged)
+            )
         await self._publish_order(merged)
 
     async def on_fill(self, fill: Fill) -> bool:
@@ -312,7 +327,9 @@ class OrderManager:
                 updates.append(child)
         for child in updates:
             if self._submit_guard is not None:
-                self._submit_guard.record_status(child.symbol, child.status)
+                self._submit_guard.record_status(
+                    child.symbol, child.status, strategy_name=self._strategy_for_child(child)
+                )
             await self._publish_order(child)
 
     # --- Read-only views ---

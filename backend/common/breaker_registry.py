@@ -189,11 +189,35 @@ BREAKER_CODES: frozenset[str] = frozenset(d.code for d in BREAKER_REGISTRY)
 BREAKER_CODES_DISABLEABLE: frozenset[str] = frozenset(
     d.code for d in BREAKER_REGISTRY if d.disableable
 )
+MM_ONLY_BREAKER_CODES: frozenset[str] = frozenset(
+    d.code for d in BREAKER_REGISTRY if d.group == "market_making"
+)
+MM_STRATEGY_NAMES: frozenset[str] = frozenset({"market_making_v2"})
+# Symbol-scope trips that should not block unrelated strategies.
+STRATEGY_SCOPED_BREAKER_CODES: frozenset[str] = MM_ONLY_BREAKER_CODES | frozenset({
+    "repeat_reject",
+    "group_unwind_failed",
+})
 MAJOR_BREAKER_CODES: frozenset[str] = frozenset(
     d.code for d in BREAKER_REGISTRY if d.severity == "major"
 )
 
 LIVE_DISABLE_CONFIRM_TOKEN = "DISABLE LIVE BREAKERS"
+
+
+def breaker_applies_to_strategy(code: str, strategy_name: str) -> bool:
+    """Return False when a strategy-scoped breaker should not gate ``strategy_name``.
+
+    Used as a fallback when an active breach has no ``strategy_name`` attribution
+    (e.g. legacy trips). Attributed breaches compare ``strategy_name`` directly.
+    """
+    if code in MM_ONLY_BREAKER_CODES:
+        return strategy_name in MM_STRATEGY_NAMES
+    if code == "repeat_reject":
+        return bool(strategy_name)
+    if code == "group_unwind_failed":
+        return strategy_name == "pairs_trading"
+    return True
 
 
 def default_breaker_enabled_map() -> dict[str, bool]:

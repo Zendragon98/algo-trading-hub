@@ -147,7 +147,10 @@ class RiskManager:
         if self._breaker.is_engine_halted():
             logger.warning("risk veto kill_switch %s", signal.symbol)
             return RiskDecision(False, reason="kill_switch active")
-        if self._breaker.is_blocked(BreakerScope.SYMBOL, signal.symbol):
+        strategy_name = signal.strategy_name or ""
+        if self._breaker.is_blocked(
+            BreakerScope.SYMBOL, signal.symbol, strategy_name=strategy_name
+        ):
             logger.warning("risk veto symbol_breaker %s", signal.symbol)
             return RiskDecision(False, reason="symbol breaker active")
 

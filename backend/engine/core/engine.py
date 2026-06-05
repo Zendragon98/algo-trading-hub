@@ -2902,7 +2902,10 @@ class Engine:
             return
 
         for leg in legs:
-            allowed, reason = self._submit_guard.can_submit_parent(leg.symbol)
+            allowed, reason = self._submit_guard.can_submit_parent(
+                leg.symbol,
+                strategy_name=leg.strategy_name or self._active_strategy_name,
+            )
             if not allowed:
                 group_signal_log(logger, group_id, f"aborted: {reason} for {leg.symbol}", legs)
                 return
@@ -3006,6 +3009,7 @@ class Engine:
                         severity=BreakerSeverity.MAJOR,
                         target=leg.symbol,
                         detail=f"group={group_id}",
+                        strategy_name=unwind_strategy,
                     )
                 )
 

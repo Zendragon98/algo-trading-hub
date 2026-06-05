@@ -158,6 +158,8 @@ class ParentOrder:
     urgency: Urgency = Urgency.PASSIVE
     signal_score: float = 0.0
     strategy_name: str = ""
+    # Peg limit at aggressive touch (buy→ask, sell→bid) instead of passive book side.
+    cross_touch: bool = False
 
 
 @dataclass(slots=True)

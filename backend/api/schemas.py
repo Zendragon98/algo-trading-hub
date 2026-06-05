@@ -320,6 +320,7 @@ class BreakerStatusDTO(BaseModel):
     tripped_at: float
     cooldown_until: float | None = None
     detail: str = ""
+    strategy_name: str | None = None
 
 
 class BreakerDefinitionDTO(BaseModel):

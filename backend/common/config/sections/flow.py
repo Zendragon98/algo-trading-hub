@@ -25,7 +25,20 @@ class FlowMixin(BaseModel):
     flow_require_rising_tape: bool = True
     # Min trades/sec in the rolling tape window; skips stale 5m tape with no active prints.
     flow_min_tape_velocity: float = 1.0
-    flow_skip_toxic: bool = True
+    flow_skip_toxic: bool = False
+    # Soft toxicity / informed-flow confirm (size + score boost; selective skips).
+    flow_micro_boost_enabled: bool = True
+    flow_jump_skip_entry: bool = True
+    flow_toxic_align_min: float = 0.12
+    flow_toxic_misalign_skip: bool = True
+    flow_toxic_misalign_min_score: float = 0.55
+    flow_toxic_exhaust_score: float = 0.92
+    flow_toxic_size_boost_max: float = 1.30
+    flow_toxic_score_boost_max: float = 0.10
+    flow_large_trade_boost_min: float = 0.15
+    flow_exit_toxic_flip: bool = True
+    flow_exit_toxic_flip_min: float = 0.20
+    flow_exit_toxic_flip_score_min: float = 0.40
     # Skip entry when spread consumes too much of the stop budget (0 = use frac × stop).
     flow_max_spread_entry_bps: float = 0.0
     flow_max_spread_entry_frac: float = 0.4
@@ -50,6 +63,8 @@ class FlowMixin(BaseModel):
     flow_max_entries_per_tick: int = 3
     flow_size_tape_scale: bool = True
     flow_scan_log_interval_sec: float = 60.0
+    # Entry: AGGRESSIVE flow parents peg at ask (buy) / bid (sell) when True.
+    flow_entry_cross_touch: bool = True
     # Exit execution: market-first schedule (like flatten) when True.
     flow_exit_market: bool = True
     flow_exit_cross_touch: bool = True
