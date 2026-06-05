@@ -89,6 +89,7 @@ def trade_to_dto(trade: TradeRecord) -> TradeDTO:
         exit_price=trade.exit_price,
         pnl=trade.pnl,
         strategy_name=trade.strategy_name,
+        strategy_contributions=dict(trade.strategy_contributions),
     )
 
 

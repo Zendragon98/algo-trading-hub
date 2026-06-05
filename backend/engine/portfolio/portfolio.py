@@ -73,6 +73,9 @@ class Portfolio:
         self._equity_curve: list[EquityPoint] = []
         self._curve_size = equity_curve_size
         self._session_start_equity: float = 0.0
+        self._session_peak_equity: float = 0.0
+        self._session_max_drawdown_abs: float = 0.0
+        self._session_max_drawdown_pct: float = 0.0
         self._base_currency = base_currency.upper()
         self._lock = asyncio.Lock()
 
@@ -87,6 +90,7 @@ class Portfolio:
         """
         self._cash_by_asset = {k.upper(): float(v) for k, v in balances.items()}
         self._session_start_equity = self.snapshot().equity
+        self._reset_session_drawdown(self._session_start_equity)
         logger.info(
             "portfolio seeded cash=%.2f equity=%.2f assets=%s",
             self.cash, self._session_start_equity,
@@ -142,7 +146,35 @@ class Portfolio:
         """
         eq = self.snapshot().equity
         self._session_start_equity = eq
+        self._reset_session_drawdown(eq)
         logger.info("session_start_equity re-anchored after drawdown rearm: %.2f", eq)
+
+    def _reset_session_drawdown(self, equity: float) -> None:
+        self._session_peak_equity = equity
+        self._session_max_drawdown_abs = 0.0
+        self._session_max_drawdown_pct = 0.0
+
+    def _update_session_drawdown(self, equity: float) -> None:
+        if self._session_peak_equity <= 0.0:
+            self._session_peak_equity = equity
+        self._session_peak_equity = max(self._session_peak_equity, equity)
+        dd_abs = self._session_peak_equity - equity
+        if dd_abs > self._session_max_drawdown_abs:
+            self._session_max_drawdown_abs = dd_abs
+            if self._session_peak_equity > 0.0:
+                self._session_max_drawdown_pct = dd_abs / self._session_peak_equity * 100.0
+
+    @property
+    def session_peak_equity(self) -> float:
+        return self._session_peak_equity
+
+    @property
+    def session_max_drawdown_abs(self) -> float:
+        return self._session_max_drawdown_abs
+
+    @property
+    def session_max_drawdown_pct(self) -> float:
+        return self._session_max_drawdown_pct
 
     @property
     def cash(self) -> float:
@@ -225,6 +257,7 @@ class Portfolio:
         async with self._lock:
             snap = self.snapshot(use_mark_pnl=use_mark_pnl)
             point = EquityPoint(ts=time(), equity=snap.equity)
+            self._update_session_drawdown(point.equity)
             self._equity_curve.append(point)
             if len(self._equity_curve) > self._curve_size:
                 self._downsample_equity_curve()
@@ -240,6 +273,9 @@ class Portfolio:
                     "unrealized_pnl": snap.unrealized_pnl,
                     "gross_notional": snap.gross_notional,
                     "net_notional": snap.net_notional,
+                    "session_peak_equity": self._session_peak_equity,
+                    "session_max_drawdown_abs": self._session_max_drawdown_abs,
+                    "session_max_drawdown_pct": self._session_max_drawdown_pct,
                 },
             )
         )

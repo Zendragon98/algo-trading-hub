@@ -31,6 +31,7 @@ class TradeRecord:
     exit_price: float | None
     pnl: float | None
     strategy_name: str = ""
+    strategy_contributions: dict[str, float] = field(default_factory=dict)
     exclude_from_streak: bool = False
 
 
@@ -98,6 +99,7 @@ class PerformanceTracker:
             exit_price=classification.exit_price,
             pnl=classification.pnl,
             strategy_name=strategy_name,
+            strategy_contributions=dict(strategy_contributions or {}),
             exclude_from_streak=exclude_from_streak,
         )
         self._fills.append(record)
@@ -144,6 +146,7 @@ class PerformanceTracker:
             exit_price=exit_vwap,
             pnl=acc.total_pnl,
             strategy_name=acc.strategy_name,
+            strategy_contributions=dict(acc.strategy_contributions),
             exclude_from_streak=acc.exclude_from_streak,
         )
         self._attribute_strategy_pnl(

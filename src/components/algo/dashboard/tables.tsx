@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { EM_DASH, formatSignedRealizedPnl } from "@/lib/algo-format";
 import type { LogEntry, Position, StrategyInfo, Trade } from "@/components/algo/types";
+import { formatTradeStrategyLabel } from "@/lib/tradeStrategy";
 export function PositionsTable({
   positions,
   onOpen,
@@ -87,15 +88,6 @@ export function PositionsTable({
   );
 }
 
-function tradeStrategyLabel(name: string, strategies: StrategyInfo[]): string {
-  if (!name) return EM_DASH;
-  if (name === "__netted__") return "Netted";
-  const hit = strategies.find((s) => s.name === name);
-  if (hit) return hit.label;
-  const tag = logStrategyTag(`${name} `);
-  return tag ?? name.replace(/_/g, " ");
-}
-
 export function TradesTable({
   trades,
   strategies = [],
@@ -140,9 +132,21 @@ export function TradesTable({
               </td>
               <td
                 className="max-w-[7rem] truncate px-2 py-2 text-[11px] text-muted-foreground"
-                title={t.strategyName || undefined}
+                title={
+                  t.strategyName
+                    ? formatTradeStrategyLabel(
+                        t.strategyName,
+                        t.strategyContributions,
+                        strategies,
+                      )
+                    : undefined
+                }
               >
-                {tradeStrategyLabel(t.strategyName, strategies)}
+                {formatTradeStrategyLabel(
+                  t.strategyName,
+                  t.strategyContributions,
+                  strategies,
+                )}
               </td>
               <td className="px-2 py-2">{t.symbol}</td>
               <td className="px-2 py-2">

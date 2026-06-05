@@ -64,6 +64,7 @@ from ..orders.order_manager import OrderManager, _fill_to_dict, new_client_order
 from ..orders.order_state_machine import TERMINAL_ORDER_STATUSES
 from ..performance.fill_classification import classify_fill, position_before_fill
 from ..performance.performance_tracker import PerformanceTracker
+from ..performance.strategy_attribution import FLATTEN_STRATEGY
 from ..performance.strategy_hub import StrategyHubService
 from ..persistence.journal import replay_wal_async
 from ..portfolio.portfolio import Portfolio
@@ -1594,6 +1595,7 @@ class Engine:
                     qty=qty,
                     notes=mode,
                     reduce_only=True,
+                    strategy_name=FLATTEN_STRATEGY,
                     urgency=(
                         Urgency.PASSIVE
                         if mode == "flatten_passive"
@@ -1638,6 +1640,17 @@ class Engine:
     ) -> None:
         """One-shot market reduce-only child; bypasses the VWAP router."""
         parent_id = f"P-flat-{symbol[:12]}"
+        self._oms.register_parent(
+            ParentOrder(
+                id=parent_id,
+                symbol=symbol,
+                side=side,
+                qty=qty,
+                notes="flatten",
+                reduce_only=True,
+                strategy_name=FLATTEN_STRATEGY,
+            )
+        )
         child = ChildOrder(
             id=new_client_order_id(parent_id, 0),
             parent_id=parent_id,
@@ -1669,6 +1682,17 @@ class Engine:
                 )
                 return
             logger.warning("flatten market failed %s: %s", symbol, exc)
+
+    @staticmethod
+    def _fill_strategy_name(fill: Fill, parent: ParentOrder | None) -> str:
+        if parent is not None and parent.strategy_name:
+            return parent.strategy_name
+        pid = fill.parent_id or ""
+        if pid.startswith("P-flat-"):
+            return FLATTEN_STRATEGY
+        if parent is not None and parent.notes in ("flatten", "flatten_passive"):
+            return FLATTEN_STRATEGY
+        return ""
 
     def _is_emergency_flatten_fill(self, fill: Fill) -> bool:
         """True for reduce-only unwind parents (auto-/operator-flatten path).
@@ -1954,7 +1978,7 @@ class Engine:
             )
         classification = classify_fill(pre_position, fill)
         parent = self._oms.parent(fill.parent_id) if fill.parent_id else None
-        strategy_name = parent.strategy_name if parent else ""
+        strategy_name = self._fill_strategy_name(fill, parent)
         exclude_from_streak = self._is_emergency_flatten_fill(fill)
         # Binance ACCOUNT_UPDATE already carries authoritative ``pa``; applying
         # the same ORDER_TRADE_UPDATE fill doubles qty when events arrive out
@@ -1987,6 +2011,7 @@ class Engine:
                     "exit_price": record.exit_price,
                     "pnl": record.pnl,
                     "strategy_name": record.strategy_name,
+                    "strategy_contributions": dict(record.strategy_contributions),
                 },
             )
         )
@@ -2408,7 +2433,7 @@ class Engine:
 
     async def _evaluate_exits(self) -> None:
         positions = self._positions.all()
-        for symbol, tick in list(self._latest_tick.items()):
+        for _symbol, tick in list(self._latest_tick.items()):
             intent = self._risk.monitor_tick(tick, positions)
             if intent is None:
                 continue
@@ -3068,6 +3093,9 @@ class Engine:
             "realized_pnl": snap.realized_pnl,
             "unrealized_pnl": snap.unrealized_pnl,
             "equity": snap.equity,
+            "session_peak_equity": self._portfolio.session_peak_equity,
+            "session_max_drawdown_abs": self._portfolio.session_max_drawdown_abs,
+            "session_max_drawdown_pct": self._portfolio.session_max_drawdown_pct,
         }
 
     async def _publish_ops_status(self) -> None:

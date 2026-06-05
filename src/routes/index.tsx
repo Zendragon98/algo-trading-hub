@@ -33,6 +33,7 @@ import {
   PositionsTable,
   RiskPanel,
   StartupProgressBanner,
+  StrategyAnalyticsPanel,
   StrategyPicker,
   SystemHealthPanel,
   TopBar,
@@ -52,7 +53,6 @@ import type {
   WorkingOrder,
 } from "@/components/algo/types";
 import { useAlgoStream } from "@/hooks/useAlgoStream";
-import { computeMaxDrawdown } from "@/lib/series";
 import { api } from "@/lib/api";
 import { LIVE_DISABLE_CONFIRM_TOKEN } from "@/lib/breaker-presets";
 import { notifyError, notifySuccess } from "@/lib/notify";
@@ -98,6 +98,9 @@ function Index() {
   const settingsSnapshot = live.settingsSnapshot;
   const replaySummary = live.replaySummary;
   const kpi = live.kpi;
+  const strategyAnalytics = live.strategyAnalytics;
+  const sessionMaxDrawdownAbs = systemHealth?.sessionMaxDrawdownAbs ?? 0;
+  const sessionMaxDrawdownPct = systemHealth?.sessionMaxDrawdownPct ?? 0;
   const backendReachable = live.backendReachable;
   const backendError = live.error;
   const streamConnected = live.connected;
@@ -144,8 +147,6 @@ function Index() {
   const startEquity = equity.length ? equity[0] : 0;
   const pnlAbs = totalEquity - startEquity;
   const pnlPct = startEquity > 0 ? (pnlAbs / startEquity) * 100 : 0;
-
-  const maxDrawdown = useMemo(() => computeMaxDrawdown(equity), [equity]);
 
   const openPnl = useMemo(() => {
     if (systemHealth != null) {
@@ -472,24 +473,28 @@ function Index() {
           />
         </section>
 
-        <section className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+        <section className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4">
           <KpiCard
             icon={<TrendingDown className="size-4" />}
             label="MAX DRAWDOWN"
-            value={maxDrawdown.abs > 0 ? `-${maxDrawdown.abs.toFixed(2)}` : "0.00"}
-            sub="session peak-to-trough"
-            tone={maxDrawdown.abs > 0 ? "bear" : "neutral"}
+            value={sessionMaxDrawdownAbs > 0 ? `-${sessionMaxDrawdownAbs.toFixed(2)}` : "0.00"}
+            sub="session peak-to-trough (venue)"
+            tone={sessionMaxDrawdownAbs > 0 ? "bear" : "neutral"}
           />
           <KpiCard
             icon={<TrendingDown className="size-4" />}
             label="MAX DRAWDOWN %"
             value={
-              maxDrawdown.pct > 0
-                ? `-${maxDrawdown.pct.toFixed(2)}%`
+              sessionMaxDrawdownPct > 0
+                ? `-${sessionMaxDrawdownPct.toFixed(2)}%`
                 : "0.00%"
             }
-            sub="from running equity peak"
-            tone={maxDrawdown.pct > 0 ? "bear" : "neutral"}
+            sub="authoritative session peak"
+            tone={sessionMaxDrawdownPct > 0 ? "bear" : "neutral"}
+          />
+          <StrategyAnalyticsPanel
+            analytics={strategyAnalytics}
+            className="md:col-span-2"
           />
         </section>
 

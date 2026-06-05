@@ -273,7 +273,7 @@ class OrderManager:
                     self._seen_trade_ids = set(
                         list(self._seen_trade_ids)[-self._max_seen_trades // 2 :]
                     )
-            fill.parent_id = self._child_to_parent.get(fill.child_id)
+            fill.parent_id = self._child_to_parent.get(fill.child_id) or fill.parent_id
 
         return True
 

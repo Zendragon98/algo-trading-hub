@@ -3,6 +3,7 @@ import { ArrowLeft, BarChart3 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { StrategyHubView } from "@/components/algo/strategy-hub/StrategyHubView";
+import { useAlgoStream } from "@/hooks/useAlgoStream";
 import { api, toStrategyHub } from "@/lib/api";
 import type { StrategyHubSnapshot } from "@/components/algo/types";
 
@@ -10,39 +11,58 @@ export const Route = createFileRoute("/strategy-hub")({
   component: StrategyHubPage,
 });
 
-const POLL_MS = 5_000;
+const LOG_POLL_MS = 5_000;
 
 function StrategyHubPage() {
-  const [hub, setHub] = useState<StrategyHubSnapshot | null>(null);
+  const live = useAlgoStream();
+  const [bootHub, setBootHub] = useState<StrategyHubSnapshot | null>(null);
+  const hub = live.strategyHub ?? bootHub;
   const [logLines, setLogLines] = useState<Array<Record<string, unknown>>>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    void api
+      .strategyHub()
+      .then((dto) => {
+        if (!cancelled) setBootHub(toStrategyHub(dto));
+      })
+      .catch(() => {
+        // WS + main-console stream may still populate hub
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-    const refresh = async () => {
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshLogs = async () => {
       try {
-        const [hubDto, logDto] = await Promise.all([
-          api.strategyHub(),
-          api.strategyHubLog(20),
-        ]);
+        const logDto = await api.strategyHubLog(20);
         if (cancelled) return;
-        setHub(toStrategyHub(hubDto));
         setLogLines(logDto.lines);
         setError(null);
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Failed to load strategy hub");
+        setError(err instanceof Error ? err.message : "Failed to load strategy hub log");
       }
     };
 
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), POLL_MS);
+    void refreshLogs();
+    const timer = window.setInterval(() => void refreshLogs(), LOG_POLL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
   }, []);
+
+  useEffect(() => {
+    if (live.backendReachable && live.error) {
+      setError(live.error);
+    }
+  }, [live.backendReachable, live.error]);
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">

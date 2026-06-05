@@ -8,6 +8,7 @@ import {
   toExecutionAggregate,
   toExecutionParent,
   toPosition,
+  toStrategyHubPayload,
   toStrategyInfo,
   toSystemHealth,
   toTrade,
@@ -39,6 +40,7 @@ import type {
   StrategyInfo,
   SystemHealth,
   StrategyAnalytics,
+  StrategyHubSnapshot,
   Trade,
   WorkingOrder,
 } from "@/components/algo/types";
@@ -88,6 +90,7 @@ export type AlgoStream = {
   markBackendOffline: (message?: string) => void;
   kpi: KpiDTO;
   strategyAnalytics: StrategyAnalytics;
+  strategyHub: StrategyHubSnapshot | null;
   eventArchiveRunDir: string | null;
 };
 
@@ -185,6 +188,7 @@ export function createEmptyAlgoStream(): AlgoStream {
     markBackendOffline: () => {},
     kpi: EMPTY_KPI,
     strategyAnalytics: {},
+    strategyHub: null,
     eventArchiveRunDir: null,
   };
 }
@@ -316,6 +320,9 @@ export function systemHealthFromStatus(
     realizedPnl: 0,
     unrealizedPnl: 0,
     equity: 0,
+    sessionPeakEquity: 0,
+    sessionMaxDrawdownAbs: 0,
+    sessionMaxDrawdownPct: 0,
   };
   return {
     latency: data.latency ? { ...base.latency, ...data.latency } : base.latency,
@@ -348,6 +355,13 @@ export function systemHealthFromStatus(
     realizedPnl: Number(data.realized_pnl ?? base.realizedPnl),
     unrealizedPnl: Number(data.unrealized_pnl ?? base.unrealizedPnl),
     equity: Number(data.equity ?? base.equity),
+    sessionPeakEquity: Number(data.session_peak_equity ?? base.sessionPeakEquity),
+    sessionMaxDrawdownAbs: Number(
+      data.session_max_drawdown_abs ?? base.sessionMaxDrawdownAbs,
+    ),
+    sessionMaxDrawdownPct: Number(
+      data.session_max_drawdown_pct ?? base.sessionMaxDrawdownPct,
+    ),
   };
 }
 
@@ -386,8 +400,13 @@ export function coalesceWsEventBatch(events: WsEvent[]): WsEvent[] {
   const out: WsEvent[] = [];
   let lastSystemHealth: WsEvent | null = null;
   let lastLatencyMetrics: WsEvent | null = null;
+  let lastStrategyHub: WsEvent | null = null;
 
   for (const event of events) {
+    if (event.type === "strategy_hub") {
+      lastStrategyHub = event;
+      continue;
+    }
     if (event.type === "status" && event.data.kind === "system_health") {
       lastSystemHealth = event;
       continue;
@@ -395,6 +414,10 @@ export function coalesceWsEventBatch(events: WsEvent[]): WsEvent[] {
     if (event.type === "status" && event.data.kind === "latency_metrics") {
       lastLatencyMetrics = event;
       continue;
+    }
+    if (lastStrategyHub) {
+      out.push(lastStrategyHub);
+      lastStrategyHub = null;
     }
     if (lastSystemHealth) {
       out.push(lastSystemHealth);
@@ -406,6 +429,7 @@ export function coalesceWsEventBatch(events: WsEvent[]): WsEvent[] {
     }
     out.push(event);
   }
+  if (lastStrategyHub) out.push(lastStrategyHub);
   if (lastSystemHealth) out.push(lastSystemHealth);
   if (lastLatencyMetrics) out.push(lastLatencyMetrics);
   return out;
@@ -515,20 +539,8 @@ export function applyWsEvent(
       const point = event.data.equity;
       const nextEquity = [...prev.equity, point];
       const trimmed = downsampleEquityCurve(nextEquity);
-      const d = event.data as {
-        gross_notional?: number;
-        net_notional?: number;
-        realized_pnl?: number;
-        unrealized_pnl?: number;
-        equity?: number;
-      };
-      if (
-        prev.systemHealth &&
-        (d.gross_notional !== undefined ||
-          d.net_notional !== undefined ||
-          d.realized_pnl !== undefined ||
-          d.unrealized_pnl !== undefined)
-      ) {
+      const d = event.data;
+      if (prev.systemHealth) {
         return {
           ...prev,
           equity: trimmed,
@@ -539,10 +551,28 @@ export function applyWsEvent(
             realizedPnl: Number(d.realized_pnl ?? prev.systemHealth.realizedPnl),
             unrealizedPnl: Number(d.unrealized_pnl ?? prev.systemHealth.unrealizedPnl),
             equity: Number(d.equity ?? point),
+            sessionPeakEquity: Number(
+              d.session_peak_equity ?? prev.systemHealth.sessionPeakEquity,
+            ),
+            sessionMaxDrawdownAbs: Number(
+              d.session_max_drawdown_abs ?? prev.systemHealth.sessionMaxDrawdownAbs,
+            ),
+            sessionMaxDrawdownPct: Number(
+              d.session_max_drawdown_pct ?? prev.systemHealth.sessionMaxDrawdownPct,
+            ),
           },
         };
       }
       return { ...prev, equity: trimmed };
+    }
+
+    case "strategy_hub": {
+      const hub = toStrategyHubPayload(event.data);
+      return {
+        ...prev,
+        strategyHub: hub,
+        strategyAnalytics: hub.analytics,
+      };
     }
 
     case "position": {
@@ -605,6 +635,7 @@ export function applyWsEvent(
         exit_price?: number | null;
         pnl?: number | null;
         strategy_name?: string;
+        strategy_contributions?: Record<string, number>;
       };
       const tradeId = String(d.id ?? d.trade_id ?? d.child_id ?? "");
       if (tradeId && prev.trades.some((t) => t.id === tradeId)) {
@@ -622,6 +653,7 @@ export function applyWsEvent(
         exit_price: d.exit_price,
         pnl: d.pnl,
         strategy_name: d.strategy_name,
+        strategy_contributions: d.strategy_contributions,
       });
       const isRealizedClose = trade.action === "close" && trade.pnl != null;
       const nextTrades = [trade, ...prev.trades].slice(0, PERFORMANCE_TRADE_HISTORY_CAP);

@@ -33,6 +33,7 @@ class TradeDTO(BaseModel):
     exit_price: float | None
     pnl: float | None
     strategy_name: str = ""
+    strategy_contributions: dict[str, float] = Field(default_factory=dict)
 
 
 class LogDTO(BaseModel):
@@ -217,6 +218,9 @@ class SystemHealthDTO(BaseModel):
     realized_pnl: float = 0.0
     unrealized_pnl: float = 0.0
     equity: float = 0.0
+    session_peak_equity: float = 0.0
+    session_max_drawdown_abs: float = 0.0
+    session_max_drawdown_pct: float = 0.0
 
 
 class DailyReportDTO(BaseModel):

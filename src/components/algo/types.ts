@@ -36,6 +36,8 @@ export type Trade = {
   pnl: number | null;
   /** Parent order strategy that produced this fill (entry on open, exit on close). */
   strategyName: string;
+  /** Per-strategy signed qty intent when ``strategyName`` is ``__netted__``. */
+  strategyContributions: Record<string, number>;
 };
 
 export type LogEntry = {
@@ -104,6 +106,9 @@ export type SystemHealth = {
   realizedPnl: number;
   unrealizedPnl: number;
   equity: number;
+  sessionPeakEquity: number;
+  sessionMaxDrawdownAbs: number;
+  sessionMaxDrawdownPct: number;
 };
 
 export type ExecutionAggregate = {

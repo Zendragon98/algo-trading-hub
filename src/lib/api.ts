@@ -184,6 +184,7 @@ export type TradeDTO = {
   exit_price?: number | null;
   pnl?: number | null;
   strategy_name?: string;
+  strategy_contributions?: Record<string, number>;
 };
 
 export type KlineDTO = {
@@ -231,6 +232,9 @@ export type SystemHealthDTO = {
   realized_pnl: number;
   unrealized_pnl: number;
   equity: number;
+  session_peak_equity?: number;
+  session_max_drawdown_abs?: number;
+  session_max_drawdown_pct?: number;
 };
 
 export type StateDTO = {
@@ -366,6 +370,9 @@ export type StatusEventData = {
   realized_pnl?: number;
   unrealized_pnl?: number;
   equity?: number;
+  session_peak_equity?: number;
+  session_max_drawdown_abs?: number;
+  session_max_drawdown_pct?: number;
   replay_summary?: {
     events_read?: number;
     fills_applied?: number;
@@ -541,7 +548,19 @@ export type WsEvent =
   | { type: "parent"; ts: number; data: ParentOrderDTO }
   | { type: "execution"; ts: number; data: ExecutionReportDTO }
   | { type: "position"; ts: number; data: Record<string, unknown> }
-  | { type: "equity"; ts: number; data: { equity: number; cash: number; ts: number } }
+  | {
+      type: "equity";
+      ts: number;
+      data: {
+        equity: number;
+        cash: number;
+        ts: number;
+        session_peak_equity?: number;
+        session_max_drawdown_abs?: number;
+        session_max_drawdown_pct?: number;
+      };
+    }
+  | { type: "strategy_hub"; ts: number; data: Record<string, unknown> }
   | { type: "log"; ts: number; data: { level: LogEntry["level"]; msg: string; logger?: string } }
   | { type: "status"; ts: number; data: StatusEventData }
   | { type: "breaker"; ts: number; data: BreakerStatusDTO & { action?: string } };
@@ -641,6 +660,7 @@ export function toTrade(d: TradeDTO): Trade {
     exitPrice: d.exit_price ?? null,
     pnl: d.pnl ?? null,
     strategyName: d.strategy_name ?? "",
+    strategyContributions: d.strategy_contributions ?? {},
   };
 }
 
@@ -745,6 +765,45 @@ export function toSystemHealth(d: SystemHealthDTO): import("@/components/algo/ty
     realizedPnl: d.realized_pnl,
     unrealizedPnl: d.unrealized_pnl,
     equity: d.equity,
+    sessionPeakEquity: Number(d.session_peak_equity ?? d.equity ?? 0),
+    sessionMaxDrawdownAbs: Number(d.session_max_drawdown_abs ?? 0),
+    sessionMaxDrawdownPct: Number(d.session_max_drawdown_pct ?? 0),
+  };
+}
+
+export function toStrategyHubPayload(
+  data: Record<string, unknown>,
+): import("@/components/algo/types").StrategyHubSnapshot {
+  const strategies = Array.isArray(data.strategies) ? data.strategies : [];
+  return {
+    ts: Number(data.ts ?? 0),
+    mode: data.mode === "all" ? "all" : "single",
+    strategies: strategies.map((row) => {
+      const r = row as Record<string, unknown>;
+      const legs = Array.isArray(r.open_legs) ? r.open_legs : [];
+      return {
+        name: String(r.name ?? ""),
+        label: String(r.label ?? r.name ?? ""),
+        realizedPnl: Number(r.realized_pnl ?? 0),
+        unrealizedPnl: Number(r.unrealized_pnl ?? 0),
+        totalPnl: Number(r.total_pnl ?? 0),
+        openLegs: legs.map((leg) => {
+          const l = leg as Record<string, unknown>;
+          return {
+            symbol: String(l.symbol ?? ""),
+            side: l.side === "short" ? "short" : "long",
+            size: Number(l.size ?? 0),
+            entry: Number(l.entry ?? 0),
+            mark: Number(l.mark ?? 0),
+            unrealizedPnl: Number(l.unrealized_pnl ?? 0),
+          };
+        }),
+      };
+    }),
+    analytics:
+      (data.analytics as import("@/components/algo/types").StrategyAnalytics) ?? {},
+    runDir: null,
+    logPath: null,
   };
 }
 

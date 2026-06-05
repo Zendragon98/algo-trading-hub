@@ -50,3 +50,20 @@ async def test_equity_curve_downsample_keeps_session_start() -> None:
     assert len(curve) == 8
     assert curve[0].equity == 10_000.0
     assert curve[-1].equity == 10_019.0
+
+
+@pytest.mark.asyncio
+async def test_session_max_drawdown_tracks_full_resolution_equity() -> None:
+    bus = EventBus()
+    tracker = PositionTracker(bus)
+    portfolio = Portfolio(bus=bus, position_tracker=tracker)
+    portfolio.seed_balances({"USDT": 10_000.0})
+
+    equities = [10_000.0, 10_200.0, 9_800.0, 10_050.0]
+    for eq in equities[1:]:
+        portfolio._cash_by_asset["USDT"] = eq
+        await portfolio.mark_to_market()
+
+    assert portfolio.session_peak_equity == pytest.approx(10_200.0)
+    assert portfolio.session_max_drawdown_abs == pytest.approx(400.0)
+    assert portfolio.session_max_drawdown_pct == pytest.approx(400.0 / 10_200.0 * 100.0)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 NETTED_STRATEGY = "__netted__"
+FLATTEN_STRATEGY = "__flatten__"
 
 
 def contribution_weights(contribs: dict[str, float]) -> dict[str, float]:
@@ -22,6 +23,8 @@ def split_pnl_by_strategy(
         weights = contribution_weights(strategy_contributions)
         if weights:
             return {strat: pnl * weight for strat, weight in weights.items()}
-    if strategy_name and strategy_name != NETTED_STRATEGY:
+    if strategy_name and strategy_name not in (NETTED_STRATEGY, FLATTEN_STRATEGY):
         return {strategy_name: pnl}
+    if strategy_name == FLATTEN_STRATEGY:
+        return {FLATTEN_STRATEGY: pnl}
     return {"unknown": pnl}

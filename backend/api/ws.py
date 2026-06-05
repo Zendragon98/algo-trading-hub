@@ -31,6 +31,7 @@ _WS_STREAM_TYPES: tuple[EventType, ...] = (
     EventType.LOG,
     EventType.STATUS,
     EventType.BREAKER,
+    EventType.STRATEGY_HUB,
 )
 
 logger = logging.getLogger(__name__)
