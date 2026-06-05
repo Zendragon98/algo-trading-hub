@@ -237,19 +237,17 @@ export function BreakersPanel({
   breakers,
   paperMode,
   backendReachable,
-  onRearmAll,
-  onRearmCode,
   onPatchEnabled,
+  embedded = false,
 }: {
   breakers: BreakerList;
   paperMode: boolean;
   backendReachable: boolean;
-  onRearmAll: () => void;
-  onRearmCode: (code: string) => void;
   onPatchEnabled: (
     patch: Record<string, boolean>,
     opts?: { confirmLiveDisable?: boolean; confirmToken?: string },
   ) => Promise<void>;
+  embedded?: boolean;
 }) {
   const [localEnabled, setLocalEnabled] = useState<Record<string, boolean>>(breakers.enabled);
   const [pending, setPending] = useState(false);
@@ -362,132 +360,117 @@ export function BreakersPanel({
     </Tooltip>
   );
 
+  const body = (
+    <div className={cn("space-y-3", embedded ? "p-3" : "p-4")}>
+      {!embedded ? (
+        <div className="flex items-center justify-end">
+          {pending ? (
+            <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Saving" />
+          ) : null}
+        </div>
+      ) : pending ? (
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+          <Loader2 className="size-3.5 animate-spin" aria-label="Saving" />
+          Saving breaker settings…
+        </div>
+      ) : null}
+
+      <p className="text-[11px] leading-snug text-muted-foreground">
+        <span className="font-medium text-foreground">On</span> = guard may pause entries or halt trading when
+        tripped. <span className="font-medium text-foreground">Off</span> = ignored so trading can continue.
+      </p>
+
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            className="h-8 w-full text-[11px]"
+            disabled={!backendReachable || pending}
+            onClick={() => onPreset(BREAKER_PRESET_DISABLE_MAJORS)}
+          >
+            Disable major kills (GCP non-stop)
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-[280px] text-xs">
+          {PRESET_TOOLTIPS.disableMajors}
+        </TooltipContent>
+      </Tooltip>
+
+      <div className="flex flex-wrap gap-1.5">
+        {presetButton("Full protection", PRESET_TOOLTIPS.full, BREAKER_PRESET_FULL)}
+        {presetButton("Non-stop MM", PRESET_TOOLTIPS.nonStopMm, BREAKER_PRESET_NON_STOP_MM)}
+        {presetButton("Connectivity only", PRESET_TOOLTIPS.connectivity, BREAKER_PRESET_CONNECTIVITY)}
+      </div>
+
+      <ScrollArea className={cn(embedded ? "max-h-none" : "h-[200px]", "pr-2")}>
+        {BREAKER_GROUP_ORDER.map((group) => {
+          const items = registry.filter((d) => d.group === group && d.code !== "operator_halt");
+          const operatorDef = registry.find((d) => d.code === "operator_halt");
+          if (!items.length && group !== "operator") return null;
+          return (
+            <div key={group} className="mb-3">
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {BREAKER_GROUP_LABEL[group]}
+              </div>
+              <div className="space-y-1">
+                {items.map((def) => (
+                  <div
+                    key={def.code}
+                    className="flex items-center justify-between gap-2 rounded-sm border border-border/50 bg-card/30 px-2 py-1.5"
+                    title={def.description || undefined}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-[11px] font-medium">{def.label}</span>
+                        <Badge variant="outline" className="text-[8px] uppercase">
+                          {def.severity}
+                        </Badge>
+                      </div>
+                      {def.description ? (
+                        <p className="line-clamp-2 text-[10px] text-muted-foreground">{def.description}</p>
+                      ) : null}
+                    </div>
+                    <Switch
+                      checked={localEnabled[def.code] ?? true}
+                      disabled={!def.disableable || !backendReachable || pending}
+                      onCheckedChange={(c) => onToggle(def.code, c)}
+                      aria-label={`${def.label} enabled`}
+                    />
+                  </div>
+                ))}
+                {group === "operator" && operatorDef ? (
+                  <div className="rounded-sm border border-dashed border-border/60 bg-muted/20 px-2 py-1.5 text-[10px] text-muted-foreground">
+                    <span className="font-medium text-foreground">{operatorDef.label}</span>
+                    {" — always available via "}
+                    <span className="font-medium text-foreground">Halt</span> /{" "}
+                    <span className="font-medium text-foreground">E-Stop</span>; not disableable.
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+      </ScrollArea>
+    </div>
+  );
+
   return (
     <>
       <TooltipProvider delayDuration={300}>
-        <Panel
-          title="CIRCUIT BREAKERS"
-          right={
-            <div className="flex items-center gap-2">
-              {pending ? (
+        {embedded ? body : (
+          <Panel
+            title="CIRCUIT BREAKERS"
+            right={
+              pending ? (
                 <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label="Saving" />
-              ) : null}
-              {breakers.active.length > 0 ? (
-                <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={onRearmAll}>
-                  Rearm all
-                </Button>
-              ) : null}
-            </div>
-          }
-        >
-          <div className="space-y-3 p-4">
-            <p className="text-[11px] leading-snug text-muted-foreground">
-              <span className="font-medium text-foreground">On</span> = guard may pause entries or halt
-              trading when tripped. <span className="font-medium text-foreground">Off</span> = ignored so
-              trading can continue.
-            </p>
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  className="h-8 w-full text-[11px]"
-                  disabled={!backendReachable || pending}
-                  onClick={() => onPreset(BREAKER_PRESET_DISABLE_MAJORS)}
-                >
-                  Disable major kills (GCP non-stop)
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="max-w-[280px] text-xs">
-                {PRESET_TOOLTIPS.disableMajors}
-              </TooltipContent>
-            </Tooltip>
-
-            <div className="flex flex-wrap gap-1.5">
-              {presetButton("Full protection", PRESET_TOOLTIPS.full, BREAKER_PRESET_FULL)}
-              {presetButton("Non-stop MM", PRESET_TOOLTIPS.nonStopMm, BREAKER_PRESET_NON_STOP_MM)}
-              {presetButton("Connectivity only", PRESET_TOOLTIPS.connectivity, BREAKER_PRESET_CONNECTIVITY)}
-            </div>
-
-            <ScrollArea className="h-[200px] pr-2">
-              {BREAKER_GROUP_ORDER.map((group) => {
-                const items = registry.filter((d) => d.group === group && d.code !== "operator_halt");
-                const operatorDef = registry.find((d) => d.code === "operator_halt");
-                if (!items.length && group !== "operator") return null;
-                return (
-                  <div key={group} className="mb-3">
-                    <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                      {BREAKER_GROUP_LABEL[group]}
-                    </div>
-                    <div className="space-y-1">
-                      {items.map((def) => (
-                        <div
-                          key={def.code}
-                          className="flex items-center justify-between gap-2 rounded-sm border border-border/50 bg-card/30 px-2 py-1.5"
-                          title={def.description || undefined}
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5">
-                              <span className="truncate text-[11px] font-medium">{def.label}</span>
-                              <Badge variant="outline" className="text-[8px] uppercase">
-                                {def.severity}
-                              </Badge>
-                            </div>
-                            {def.description ? (
-                              <p className="line-clamp-2 text-[10px] text-muted-foreground">{def.description}</p>
-                            ) : null}
-                          </div>
-                          <Switch
-                            checked={localEnabled[def.code] ?? true}
-                            disabled={!def.disableable || !backendReachable || pending}
-                            onCheckedChange={(c) => onToggle(def.code, c)}
-                            aria-label={`${def.label} enabled`}
-                          />
-                        </div>
-                      ))}
-                      {group === "operator" && operatorDef ? (
-                        <div className="rounded-sm border border-dashed border-border/60 bg-muted/20 px-2 py-1.5 text-[10px] text-muted-foreground">
-                          <span className="font-medium text-foreground">{operatorDef.label}</span>
-                          {" — always available via "}
-                          <span className="font-medium text-foreground">Halt</span> /{" "}
-                          <span className="font-medium text-foreground">E-Stop</span>; not disableable.
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
-            </ScrollArea>
-
-          <Separator />
-
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Active trips
-          </div>
-          {breakers.active.length === 0 ? (
-            <p className="text-center text-xs text-muted-foreground">No active breakers.</p>
-          ) : (
-            <ScrollArea className="h-[100px]">
-              <div className="space-y-2">
-                {breakers.active.map((b) => (
-                  <BreakerRow
-                    key={`${b.code}-${b.target ?? ""}`}
-                    breaker={b}
-                    onRearm={() => onRearmCode(b.code)}
-                  />
-                ))}
-              </div>
-            </ScrollArea>
-          )}
-          {breakers.history.length > 0 ? (
-            <p className="text-[10px] text-muted-foreground">
-              {breakers.history.length} recent event(s) in history
-            </p>
-          ) : null}
-        </div>
-      </Panel>
+              ) : null
+            }
+          >
+            {body}
+          </Panel>
+        )}
       </TooltipProvider>
 
       <BreakerLiveConfirmDialog

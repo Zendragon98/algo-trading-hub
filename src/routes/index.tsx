@@ -1,26 +1,14 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  AlertTriangle,
-  Loader2,
-  Pause,
-  Play,
-  RefreshCcw,
-  Settings2,
-  Square,
-  Target,
-} from "lucide-react";
+import { RefreshCcw, Target } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Slider } from "@/components/ui/slider";
-import { Separator } from "@/components/ui/separator";
 import { EquityChart } from "@/components/algo/EquityChart";
 import { PositionChartDialog } from "@/components/algo/PositionChartDialog";
 import {
   ActiveTripsPanel,
-  BreakersPanel,
-  ControlLimitsPanel,
+  ConfigSidebar,
+  ControlHoverRail,
   ExecutionQualityPanel,
   LiveDot,
   PortfolioSnapshotCard,
@@ -31,7 +19,6 @@ import {
   RiskPanel,
   ConsoleHydratingShell,
   StartupProgressBanner,
-  StrategyHoverRail,
   SystemHealthPanel,
   TopBar,
   TradesTable,
@@ -389,8 +376,7 @@ function Index() {
       />
 
       <main className="mx-auto max-w-[1500px] px-4 pb-6 pt-3 lg:px-8">
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_300px]">
-          <div className="order-2 flex min-w-0 flex-col gap-3 lg:order-1">
+        <div className="flex min-w-0 flex-col gap-3">
             <section className="grid grid-cols-1 items-start gap-2 md:grid-cols-2 xl:grid-cols-3">
               <PortfolioSnapshotCard
                 totalEquity={totalEquity}
@@ -450,7 +436,7 @@ function Index() {
                   </div>
                 }
               >
-                <div className="h-[220px] px-2 pb-1">
+                <div className="h-[280px] px-2 pb-1">
                   <EquityChart points={equityCurve} interactive />
                 </div>
               </Panel>
@@ -466,7 +452,7 @@ function Index() {
                   </span>
                 }
               >
-                <LogStream logs={logs} className="h-[220px]" />
+                <LogStream logs={logs} className="h-[280px]" />
               </Panel>
             </section>
 
@@ -478,15 +464,6 @@ function Index() {
             >
               <PositionsTable positions={positions} onOpen={onOpenPosition} />
             </Panel>
-
-            <BreakersPanel
-              breakers={breakers}
-              paperMode={paperMode}
-              backendReachable={backendReachable}
-              onRearmAll={onRearmAllBreakers}
-              onRearmCode={onRearmBreakerCode}
-              onPatchEnabled={onPatchBreakerEnabled}
-            />
 
             {systemHealth ? (
               <SystemHealthPanel
@@ -541,115 +518,36 @@ function Index() {
             >
               <TradesTable trades={trades} strategies={strategies} />
             </Panel>
-          </div>
-
-          <aside className="order-1 lg:sticky lg:top-[49px] lg:order-2 lg:self-start">
-            <Panel
-              title="CONTROL"
-              right={
-                <Badge variant="outline" className="border-border text-[10px] uppercase tracking-wider">
-                  <Settings2 className="mr-1 size-3" /> live
-                </Badge>
-              }
-            >
-              <div className="space-y-3 p-3">
-                <div className="grid grid-cols-3 gap-1.5">
-                  {status === "paused" ? (
-                    <Button
-                      onClick={onResume}
-                      disabled={!backendReachable || systemBusy}
-                      size="sm"
-                      className="col-span-2 bg-bull text-bull-foreground hover:bg-bull/90"
-                    >
-                      <Play className="size-4" /> RESUME
-                    </Button>
-                  ) : (
-                    <>
-                      <Button
-                        onClick={onStart}
-                        disabled={startDisabled}
-                        size="sm"
-                        className="bg-bull text-bull-foreground hover:bg-bull/90 disabled:opacity-40"
-                      >
-                        {systemBusy ? (
-                          <Loader2 className="size-4 animate-spin" />
-                        ) : (
-                          <Play className="size-4" />
-                        )}{" "}
-                        {systemBusy ? "STARTING…" : "START"}
-                      </Button>
-                      <Button
-                        onClick={onPause}
-                        disabled={status !== "running" || systemBusy}
-                        size="sm"
-                        variant="secondary"
-                        className="border border-border"
-                      >
-                        <Pause className="size-4" /> PAUSE
-                      </Button>
-                    </>
-                  )}
-                  <Button
-                    onClick={onStop}
-                    disabled={status === "stopped" || systemBusy}
-                    size="sm"
-                    variant="destructive"
-                  >
-                    <Square className="size-4" /> STOP
-                  </Button>
-                </div>
-
-                <Button
-                  onClick={onFlatten}
-                  disabled={!backendReachable || controlPending === "flatten"}
-                  size="sm"
-                  variant="outline"
-                  className="w-full border-bear/40 text-bear hover:bg-bear/10 hover:text-bear"
-                >
-                  <AlertTriangle className="size-4" />
-                  {controlPending === "flatten" ? "Flattening…" : "Flatten all positions"}
-                </Button>
-
-                <Separator />
-
-                <div>
-                  <div className="mb-2 flex items-center justify-between text-xs">
-                    <span className="uppercase tracking-wider text-muted-foreground">Risk per trade</span>
-                    <span className="tabular-nums text-bull">{risk[0]}%</span>
-                  </div>
-                  <Slider
-                    value={risk}
-                    onValueChange={setRisk}
-                    onValueCommit={onRiskCommit}
-                    min={5}
-                    max={100}
-                    step={5}
-                  />
-                </div>
-
-                <ControlLimitsPanel
-                  settings={settingsSnapshot}
-                  backendReachable={backendReachable}
-                  onPatchSettings={onPatchSettings}
-                />
-
-                <Button variant="outline" className="w-full lg:hidden" asChild>
-                  <Link to="/settings">
-                    <Settings2 className="size-4" /> Engine settings
-                  </Link>
-                </Button>
-              </div>
-            </Panel>
-          </aside>
         </div>
       </main>
 
-      <StrategyHoverRail
+      <ControlHoverRail
+        status={status}
+        backendReachable={backendReachable}
+        systemBusy={systemBusy}
+        startDisabled={startDisabled}
+        controlPending={controlPending}
+        risk={risk}
+        settingsSnapshot={settingsSnapshot}
+        onStart={onStart}
+        onResume={onResume}
+        onPause={onPause}
+        onStop={onStop}
+        onFlatten={onFlatten}
+        onRiskChange={setRisk}
+        onRiskCommit={onRiskCommit}
+        onPatchSettings={onPatchSettings}
+      />
+
+      <ConfigSidebar
         strategies={strategies}
         activeName={strategy?.name ?? null}
         multiMode={strategy?.name === "all"}
         backendReachable={backendReachable}
-        onSelect={onSelectStrategy}
+        onSelectStrategy={onSelectStrategy}
+        breakers={breakers}
+        paperMode={paperMode}
+        onPatchBreakerEnabled={onPatchBreakerEnabled}
       />
 
       <PositionChartDialog
