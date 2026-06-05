@@ -64,6 +64,7 @@ from ..orders.order_manager import OrderManager, _fill_to_dict, new_client_order
 from ..orders.order_state_machine import TERMINAL_ORDER_STATUSES
 from ..performance.fill_classification import classify_fill, position_before_fill
 from ..performance.performance_tracker import PerformanceTracker
+from ..performance.strategy_hub import StrategyHubService
 from ..persistence.journal import replay_wal_async
 from ..portfolio.portfolio import Portfolio
 from ..position.position_tracker import PositionTracker
@@ -242,6 +243,11 @@ class Engine:
         # callback, slice-rejected parents would leak into the OMS panel.
         self._wheel = AlgoWheel(WheelConfig.from_settings(settings))
         self._performance = PerformanceTracker(self._portfolio)
+        self._strategy_hub = StrategyHubService(
+            ledger=self._strategy_ledger,
+            positions=self._positions,
+            performance=self._performance,
+        )
         self._exec_tracker = ExecutionTracker(
             bus=bus,
             on_parent_complete=self._performance.finalize_parent_close,
@@ -619,6 +625,7 @@ class Engine:
                 sym_n,
             )
         self._record_strategy_swap()
+        self._strategy_hub.mark_strategy_swap()
         return True
 
     def _enforce_strategy_swap_cooldown(self) -> None:
@@ -1956,10 +1963,16 @@ class Engine:
             await self._positions.on_fill(fill)
         position = self._positions.get(fill.symbol) or Position(symbol=fill.symbol)
         self._risk.on_fill(fill, position)
+        strategy_contributions: dict[str, float] | None = None
+        if fill.parent_id:
+            report = self._exec_tracker.report_for_parent(fill.parent_id)
+            if report is not None and report.strategy_name == "__netted__":
+                strategy_contributions = dict(report.strategy_contributions or {})
         record = self._performance.record_fill(
             fill,
             classification,
             strategy_name=strategy_name,
+            strategy_contributions=strategy_contributions,
             exclude_from_streak=exclude_from_streak,
         )
         if classification.action == "close":
@@ -2336,6 +2349,7 @@ class Engine:
         # Ops metrics (tick age, md_health, breakers) must update even when paused
         # so the console stays live while the operator inspects a halt.
         await self._publish_ops_status()
+        await self._maybe_publish_strategy_hub()
         if self._state.status is not EngineStatus.RUNNING:
             return
 
@@ -3126,6 +3140,45 @@ class Engine:
             f"order reconcile mismatch venue_only={result.get('venue_only')} "
             f"local_only={result.get('local_only')}",
             extra=result,
+        )
+
+    def _hub_strategy_targets(self) -> list:
+        if self.is_multi_strategy_mode():
+            return list(self._strategies)
+        active = self._strategies_by_name.get(self._active_strategy_name)
+        return [active] if active is not None else []
+
+    async def _maybe_publish_strategy_hub(self) -> None:
+        targets = self._hub_strategy_targets()
+        if not targets:
+            return
+        analytics = self.strategy_analytics()
+        snapshot, changed = self._strategy_hub.refresh(
+            ts=time.time(),
+            strategies=targets,
+            multi_mode=self.is_multi_strategy_mode(),
+            analytics=analytics,
+        )
+        if not changed:
+            return
+        from ..performance.strategy_hub import StrategyHubService as _Hub
+
+        payload = _Hub._to_payload(snapshot)
+        payload["ts"] = snapshot.ts
+        await self._bus.publish(
+            Event(type=EventType.STRATEGY_HUB, payload=payload),
+        )
+
+    def strategy_hub_snapshot(self):
+        """Latest hub snapshot for API reads (does not advance persistence gate)."""
+        targets = self._hub_strategy_targets()
+        if not targets:
+            return None
+        return self._strategy_hub.peek_snapshot(
+            ts=time.time(),
+            strategies=targets,
+            multi_mode=self.is_multi_strategy_mode(),
+            analytics=self.strategy_analytics(),
         )
 
     def strategy_analytics(self) -> dict[str, dict[str, object]]:

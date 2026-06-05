@@ -29,7 +29,10 @@ from .schemas import (
     StartupProgressDTO,
     StateDTO,
     StatusDTO,
+    StrategyHubDTO,
     StrategyInfoDTO,
+    StrategyLegDTO,
+    StrategyPnlDTO,
     SystemHealthDTO,
     TradeDTO,
 )
@@ -246,6 +249,49 @@ def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
         event_archive_run_dir=str(engine.event_archive_dir.resolve())
         if engine.event_archive_dir is not None
         else None,
+    )
+
+
+def build_strategy_hub_dto(engine: Engine) -> StrategyHubDTO:
+    snap = engine.strategy_hub_snapshot()
+    run_dir = engine.event_archive_dir
+    log_path = str(run_dir / "strategy_hub.jsonl") if run_dir is not None else None
+    if snap is None:
+        return StrategyHubDTO(
+            ts=0.0,
+            mode="all" if engine.is_multi_strategy_mode() else "single",
+            strategies=[],
+            analytics=engine.strategy_analytics(),
+            run_dir=str(run_dir) if run_dir is not None else None,
+            log_path=log_path,
+        )
+    return StrategyHubDTO(
+        ts=snap.ts,
+        mode=snap.mode,
+        strategies=[
+            StrategyPnlDTO(
+                name=row.name,
+                label=row.label,
+                realized_pnl=row.realized_pnl,
+                unrealized_pnl=row.unrealized_pnl,
+                total_pnl=row.total_pnl,
+                open_legs=[
+                    StrategyLegDTO(
+                        symbol=leg.symbol,
+                        side=leg.side,
+                        size=leg.size,
+                        entry=leg.entry,
+                        mark=leg.mark,
+                        unrealized_pnl=leg.unrealized_pnl,
+                    )
+                    for leg in row.open_legs
+                ],
+            )
+            for row in snap.strategies
+        ],
+        analytics=snap.analytics,
+        run_dir=str(run_dir) if run_dir is not None else None,
+        log_path=log_path,
     )
 
 

@@ -181,6 +181,15 @@ class ExecutionTracker:
     def open_reports(self) -> list[ExecutionReport]:
         return list(self._open.values())
 
+    def report_for_parent(self, parent_id: str) -> ExecutionReport | None:
+        report = self._open.get(parent_id)
+        if report is not None:
+            return report
+        for item in self._history:
+            if item.parent_id == parent_id:
+                return item
+        return None
+
     def history(self) -> list[ExecutionReport]:
         # Newest first; matches the dashboard's expectation.
         return list(reversed(self._history))

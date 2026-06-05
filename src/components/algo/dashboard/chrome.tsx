@@ -151,6 +151,9 @@ export function TopBar(props: {
 
         <div className="hidden items-center gap-2 md:flex">
           <Button size="sm" variant="outline" className="border-border" asChild>
+            <Link to="/strategy-hub">Strategy hub</Link>
+          </Button>
+          <Button size="sm" variant="outline" className="border-border" asChild>
             <Link to="/backtesting">Backtest</Link>
           </Button>
           <Button size="sm" variant="outline" className="border-border" asChild>

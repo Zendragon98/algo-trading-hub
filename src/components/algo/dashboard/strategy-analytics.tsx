@@ -19,7 +19,7 @@ function signalTone(signal: string | undefined): string {
   return "text-foreground";
 }
 
-function AnalyticsRows({ rows }: { rows: Record<string, string | number | boolean | null> }) {
+export function AnalyticsRows({ rows }: { rows: Record<string, string | number | boolean | null> }) {
   const entries = Object.entries(rows).filter(([key]) => key !== "STRATEGY");
   if (!entries.length) {
     return (

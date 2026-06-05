@@ -130,6 +130,33 @@ export type StrategyAnalytics = Record<
   Record<string, string | number | boolean | null>
 >;
 
+export type StrategyLeg = {
+  symbol: string;
+  side: "long" | "short";
+  size: number;
+  entry: number;
+  mark: number;
+  unrealizedPnl: number;
+};
+
+export type StrategyPnlRow = {
+  name: string;
+  label: string;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  totalPnl: number;
+  openLegs: StrategyLeg[];
+};
+
+export type StrategyHubSnapshot = {
+  ts: number;
+  mode: "single" | "all";
+  strategies: StrategyPnlRow[];
+  analytics: StrategyAnalytics;
+  runDir: string | null;
+  logPath: string | null;
+};
+
 // One historical OHLCV bar used by the position chart.
 export type Kline = {
   openTime: number;

@@ -50,9 +50,13 @@ function SettingsPage() {
               <span className="text-sm font-semibold tracking-wide">Engine settings</span>
             </div>
           </div>
-          <p className="hidden text-xs text-muted-foreground md:block">
-            Runtime parameters · applies immediately on save
-          </p>
+          <div className="hidden items-center gap-2 text-xs md:flex">
+            <Link to="/strategy-hub" className="text-muted-foreground hover:text-foreground">
+              Strategy hub
+            </Link>
+            <span className="text-border">·</span>
+            <span className="text-muted-foreground">Runtime parameters · applies immediately on save</span>
+          </div>
         </div>
       </header>
 

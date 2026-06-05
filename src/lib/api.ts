@@ -252,6 +252,38 @@ export type StateDTO = {
   event_archive_run_dir?: string | null;
 };
 
+export type StrategyLegDTO = {
+  symbol: string;
+  side: "long" | "short";
+  size: number;
+  entry: number;
+  mark: number;
+  unrealized_pnl: number;
+};
+
+export type StrategyPnlDTO = {
+  name: string;
+  label: string;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+  open_legs: StrategyLegDTO[];
+};
+
+export type StrategyHubDTO = {
+  ts: number;
+  mode: "single" | "all";
+  strategies: StrategyPnlDTO[];
+  analytics: Record<string, Record<string, string | number | boolean | null>>;
+  run_dir: string | null;
+  log_path: string | null;
+};
+
+export type StrategyHubLogDTO = {
+  lines: Array<Record<string, unknown>>;
+  log_path: string | null;
+};
+
 export type BreakerStatusDTO = {
   code: string;
   scope: "engine" | "symbol" | "parent";
@@ -399,6 +431,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   state: () => request<StateDTO>("/api/state"),
+  strategyHub: () => request<StrategyHubDTO>("/api/strategy-hub"),
+  strategyHubLog: (tail = 20) =>
+    request<StrategyHubLogDTO>(`/api/strategy-hub/log?tail=${tail}`),
   status: () => request<StatusDTO>("/api/status"),
   equity: () => request<EquityDTO>("/api/equity"),
   positions: () => request<PositionDTO[]>("/api/positions").then((rows) => rows.map(toPosition)),
@@ -643,6 +678,31 @@ export function toBreakerList(d: BreakerListDTO): import("@/components/algo/type
     history: d.history.map(toBreakerStatus),
     registry: (d.registry ?? []).map(toBreakerDefinition),
     enabled: d.enabled ?? {},
+  };
+}
+
+export function toStrategyHub(d: StrategyHubDTO): import("@/components/algo/types").StrategyHubSnapshot {
+  return {
+    ts: d.ts,
+    mode: d.mode,
+    strategies: d.strategies.map((row) => ({
+      name: row.name,
+      label: row.label,
+      realizedPnl: row.realized_pnl,
+      unrealizedPnl: row.unrealized_pnl,
+      totalPnl: row.total_pnl,
+      openLegs: row.open_legs.map((leg) => ({
+        symbol: leg.symbol,
+        side: leg.side,
+        size: leg.size,
+        entry: leg.entry,
+        mark: leg.mark,
+        unrealizedPnl: leg.unrealized_pnl,
+      })),
+    })),
+    analytics: d.analytics ?? {},
+    runDir: d.run_dir,
+    logPath: d.log_path,
   };
 }
 

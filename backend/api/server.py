@@ -35,6 +35,7 @@ from .routes import (
     reports,
     settings,
     status,
+    strategy_hub,
     trades,
 )
 from .schemas import LogDTO
@@ -136,6 +137,7 @@ def create_app(
     app.include_router(logs.router)
     app.include_router(control.router)
     app.include_router(settings.router)
+    app.include_router(strategy_hub.router)
     app.include_router(ws_router)
 
     return app

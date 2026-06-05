@@ -9,10 +9,16 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as StrategyHubRouteImport } from './routes/strategy-hub'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as BacktestingRouteImport } from './routes/backtesting'
 import { Route as IndexRouteImport } from './routes/index'
 
+const StrategyHubRoute = StrategyHubRouteImport.update({
+  id: '/strategy-hub',
+  path: '/strategy-hub',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -33,34 +39,45 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/backtesting': typeof BacktestingRoute
   '/settings': typeof SettingsRoute
+  '/strategy-hub': typeof StrategyHubRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/backtesting': typeof BacktestingRoute
   '/settings': typeof SettingsRoute
+  '/strategy-hub': typeof StrategyHubRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/backtesting': typeof BacktestingRoute
   '/settings': typeof SettingsRoute
+  '/strategy-hub': typeof StrategyHubRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/backtesting' | '/settings'
+  fullPaths: '/' | '/backtesting' | '/settings' | '/strategy-hub'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/backtesting' | '/settings'
-  id: '__root__' | '/' | '/backtesting' | '/settings'
+  to: '/' | '/backtesting' | '/settings' | '/strategy-hub'
+  id: '__root__' | '/' | '/backtesting' | '/settings' | '/strategy-hub'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   BacktestingRoute: typeof BacktestingRoute
   SettingsRoute: typeof SettingsRoute
+  StrategyHubRoute: typeof StrategyHubRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/strategy-hub': {
+      id: '/strategy-hub'
+      path: '/strategy-hub'
+      fullPath: '/strategy-hub'
+      preLoaderRoute: typeof StrategyHubRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -89,6 +106,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   BacktestingRoute: BacktestingRoute,
   SettingsRoute: SettingsRoute,
+  StrategyHubRoute: StrategyHubRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

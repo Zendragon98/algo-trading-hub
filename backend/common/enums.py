@@ -142,3 +142,4 @@ class EventType(str, Enum):
     STATUS = "status"               # engine status changed
     BREAKER = "breaker"             # circuit breaker tripped / cleared
     MARKOUT = "markout"             # post-fill horizon markout (MM audit)
+    STRATEGY_HUB = "strategy_hub"   # per-strategy analytics + attributed PnL snapshot

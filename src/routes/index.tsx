@@ -33,7 +33,6 @@ import {
   PositionsTable,
   RiskPanel,
   StartupProgressBanner,
-  StrategyAnalyticsPanel,
   StrategyPicker,
   SystemHealthPanel,
   TopBar,
@@ -99,7 +98,6 @@ function Index() {
   const settingsSnapshot = live.settingsSnapshot;
   const replaySummary = live.replaySummary;
   const kpi = live.kpi;
-  const strategyAnalytics = live.strategyAnalytics;
   const backendReachable = live.backendReachable;
   const backendError = live.error;
   const streamConnected = live.connected;
@@ -474,7 +472,7 @@ function Index() {
           />
         </section>
 
-        <section className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4">
+        <section className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
           <KpiCard
             icon={<TrendingDown className="size-4" />}
             label="MAX DRAWDOWN"
@@ -492,10 +490,6 @@ function Index() {
             }
             sub="from running equity peak"
             tone={maxDrawdown.pct > 0 ? "bear" : "neutral"}
-          />
-          <StrategyAnalyticsPanel
-            analytics={strategyAnalytics}
-            className="md:col-span-2"
           />
         </section>
 

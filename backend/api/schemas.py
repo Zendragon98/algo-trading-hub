@@ -229,6 +229,40 @@ class DailyReportDTO(BaseModel):
     notes: list[str] = []
 
 
+class StrategyLegDTO(BaseModel):
+    symbol: str
+    side: Literal["long", "short"]
+    size: float
+    entry: float
+    mark: float
+    unrealized_pnl: float
+
+
+class StrategyPnlDTO(BaseModel):
+    name: str
+    label: str
+    realized_pnl: float
+    unrealized_pnl: float
+    total_pnl: float
+    open_legs: list[StrategyLegDTO] = Field(default_factory=list)
+
+
+class StrategyHubDTO(BaseModel):
+    ts: float
+    mode: Literal["single", "all"]
+    strategies: list[StrategyPnlDTO]
+    analytics: dict[str, dict[str, str | float | int | bool | None]] = Field(
+        default_factory=dict,
+    )
+    run_dir: str | None = None
+    log_path: str | None = None
+
+
+class StrategyHubLogDTO(BaseModel):
+    lines: list[dict[str, object]] = Field(default_factory=list)
+    log_path: str | None = None
+
+
 class StateDTO(BaseModel):
     """Full snapshot used for the initial dashboard hydrate."""
 

@@ -6,13 +6,14 @@ on-demand so we don't store derived data we can recompute cheaply.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from common.types import Fill
 
 from ..portfolio.portfolio import Portfolio
 from .fill_classification import FillClassification
+from .strategy_attribution import split_pnl_by_strategy
 
 
 @dataclass(slots=True)
@@ -44,6 +45,7 @@ class _PendingParentClose:
     ts_first: float = 0.0
     ts_last: float = 0.0
     strategy_name: str = ""
+    strategy_contributions: dict[str, float] = field(default_factory=dict)
     exclude_from_streak: bool = False
 
 
@@ -73,6 +75,7 @@ class PerformanceTracker:
         self._session_breakevens = 0
         self._session_gross_win = 0.0
         self._session_gross_loss = 0.0
+        self._strategy_realized: dict[str, float] = {}
 
     def record_fill(
         self,
@@ -80,6 +83,7 @@ class PerformanceTracker:
         classification: FillClassification,
         *,
         strategy_name: str = "",
+        strategy_contributions: dict[str, float] | None = None,
         exclude_from_streak: bool = False,
     ) -> TradeRecord:
         record = TradeRecord(
@@ -108,9 +112,15 @@ class PerformanceTracker:
                     parent_id,
                     record,
                     classification.pnl,
+                    strategy_contributions=strategy_contributions,
                     exclude_from_streak=exclude_from_streak,
                 )
             else:
+                self._attribute_strategy_pnl(
+                    classification.pnl,
+                    strategy_name,
+                    strategy_contributions,
+                )
                 self._append_realized(record)
 
         return record
@@ -136,6 +146,11 @@ class PerformanceTracker:
             strategy_name=acc.strategy_name,
             exclude_from_streak=acc.exclude_from_streak,
         )
+        self._attribute_strategy_pnl(
+            acc.total_pnl,
+            acc.strategy_name,
+            acc.strategy_contributions or None,
+        )
         self._append_realized(record)
         return record
 
@@ -145,6 +160,7 @@ class PerformanceTracker:
         record: TradeRecord,
         pnl: float,
         *,
+        strategy_contributions: dict[str, float] | None,
         exclude_from_streak: bool,
     ) -> None:
         acc = self._pending_parent_closes.get(parent_id)
@@ -163,9 +179,27 @@ class PerformanceTracker:
             acc.entry_price = record.entry_price
         if not acc.strategy_name and record.strategy_name:
             acc.strategy_name = record.strategy_name
+        if strategy_contributions and not acc.strategy_contributions:
+            acc.strategy_contributions = dict(strategy_contributions)
         acc.ts_last = record.ts
         if exclude_from_streak:
             acc.exclude_from_streak = True
+
+    def _attribute_strategy_pnl(
+        self,
+        pnl: float,
+        strategy_name: str,
+        strategy_contributions: dict[str, float] | None,
+    ) -> None:
+        for strat, amount in split_pnl_by_strategy(
+            pnl,
+            strategy_name,
+            strategy_contributions,
+        ).items():
+            self._strategy_realized[strat] = self._strategy_realized.get(strat, 0.0) + amount
+
+    def realized_pnl_by_strategy(self) -> dict[str, float]:
+        return dict(self._strategy_realized)
 
     def _append_realized(self, record: TradeRecord) -> None:
         self._realized.append(record)
