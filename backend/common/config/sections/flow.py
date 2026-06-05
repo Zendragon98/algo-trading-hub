@@ -39,6 +39,16 @@ class FlowMixin(BaseModel):
     flow_exit_toxic_flip: bool = True
     flow_exit_toxic_flip_min: float = 0.20
     flow_exit_toxic_flip_score_min: float = 0.40
+    # Book depth ratio vs EWMA baseline (same signal as MM book_depleted, flow-native use).
+    flow_depth_ratio_enabled: bool = True
+    # Long: ask_depth_ratio below this means offers are being lifted; short: bid side.
+    flow_depth_depleted_max: float = 0.35
+    flow_depth_exhaust_skip: bool = True
+    # Aggressor side refilled — skip late chase / exit momentum fade.
+    flow_depth_exhaust_min: float = 0.85
+    flow_depth_size_boost: float = 1.10
+    flow_depth_score_boost: float = 0.04
+    flow_exit_depth_replenish: bool = True
     # Skip entry when spread consumes too much of the stop budget (0 = use frac × stop).
     flow_max_spread_entry_bps: float = 0.0
     flow_max_spread_entry_frac: float = 0.4

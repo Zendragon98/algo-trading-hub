@@ -26,7 +26,9 @@ from ..market_data.feature_store import Features
 from ..position.venue_pnl import qty_aligned_with_venue
 from .flow_entry_gates import entry_spread_ok, tape_rising
 from .flow_micro_confirm import (
+    aggressor_depth_ratio,
     micro_entry_blocked,
+    micro_exit_depth_replenish,
     micro_exit_toxic_flip,
     micro_score_boost,
     micro_size_multiplier,
@@ -302,6 +304,8 @@ class FlowMomentumStrategy(StrategyBase):
                 + micro_score_boost(feat, direction, s),
             )
             tox = float(feat.toxicity_score)
+            dep_ratio = aggressor_depth_ratio(feat, direction)
+            dep_ratio_s = f"{dep_ratio:.2f}" if dep_ratio is not None else "na"
             sig = plan_directional_signal(
                 symbol=symbol,
                 target_side=direction,
@@ -309,7 +313,7 @@ class FlowMomentumStrategy(StrategyBase):
                 position_qty=pos_qty,
                 reason_open=(
                     f"flow_momentum_enter tape={tape:+.3f} imb={imb:+.3f} "
-                    f"dep={dep:+.3f} tox={tox:.2f} n={confirm_n}"
+                    f"dep={dep:+.3f} tox={tox:.2f} depth={dep_ratio_s} n={confirm_n}"
                 ),
                 reason_close="flow_momentum_flatten",
                 score=score,
@@ -442,6 +446,18 @@ class FlowMomentumStrategy(StrategyBase):
                 f"flow_toxic_flip tox={float(feat.toxicity_score):.2f} "
                 f"flow={float(feat.toxicity_flow_direction):+.2f}"
             )
+        elif micro_exit_depth_replenish(
+            feat,
+            pos_side,
+            s,
+            tape=tape,
+            tape_thr=tape_thr,
+            exit_tape_frac=float(s.flow_exit_tape_frac),
+        ):
+            side_ratio = (
+                float(feat.ask_depth_ratio) if pos_side > 0 else float(feat.bid_depth_ratio)
+            )
+            reason = f"flow_depth_replenish ratio={side_ratio:.2f}"
         elif pnl_known and sl > 0 and pnl <= -sl:
             reason = f"flow_stop_loss pnl_bps={pnl:.2f} entry={snap.entry_source}"
         elif (

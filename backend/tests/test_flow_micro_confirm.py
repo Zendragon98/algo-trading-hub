@@ -6,7 +6,10 @@ from common.config import Settings
 from common.enums import Side
 from engine.market_data.feature_store import Features
 from engine.strategies.flow_micro_confirm import (
+    depth_confirms_direction,
+    depth_replenished,
     micro_entry_blocked,
+    micro_exit_depth_replenish,
     micro_exit_toxic_flip,
     micro_score_boost,
     micro_size_multiplier,
@@ -67,6 +70,46 @@ def test_toxic_aligned_long() -> None:
         toxicity_flow_direction=0.25,
     )
     assert toxic_flow_aligned(feat, 1, min_align=0.12)
+
+
+def test_depth_confirms_long_when_ask_depleted() -> None:
+    feat = Features(symbol="BTCUSDT", mid=100.0, ask_depth_ratio=0.20, bid_depth_ratio=0.90)
+    s = _settings_micro()
+    assert depth_confirms_direction(feat, 1, s)
+
+
+def test_depth_replenished_detects_refill_after_sweep() -> None:
+    feat = Features(symbol="BTCUSDT", mid=100.0, ask_depth_ratio=0.90)
+    s = _settings_micro()
+    assert depth_replenished(feat, 1, s)
+    assert depth_replenished(Features(symbol="BTCUSDT", mid=100.0, ask_depth_ratio=1.0), 1, s) is False
+
+
+def test_depth_boost_increases_size_when_confirmed() -> None:
+    base = Features(
+        symbol="BTCUSDT",
+        mid=100.0,
+        toxicity_score=0.0,
+        toxicity_flow_direction=0.0,
+        ask_depth_ratio=0.90,
+    )
+    depleted = Features(
+        symbol="BTCUSDT",
+        mid=100.0,
+        toxicity_score=0.0,
+        toxicity_flow_direction=0.0,
+        ask_depth_ratio=0.20,
+    )
+    s = _settings_micro()
+    assert micro_size_multiplier(depleted, 1, s) > micro_size_multiplier(base, 1, s)
+
+
+def test_depth_replenish_exits_long_when_tape_faded() -> None:
+    feat = Features(symbol="BTCUSDT", mid=100.0, ask_depth_ratio=0.90)
+    s = _settings_micro(flow_exit_tape_frac=0.45, flow_tape_threshold=0.10)
+    assert micro_exit_depth_replenish(
+        feat, 1, s, tape=0.02, tape_thr=0.10, exit_tape_frac=0.45
+    )
 
 
 def test_micro_blocks_jump() -> None:
