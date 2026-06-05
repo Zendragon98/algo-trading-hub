@@ -18,6 +18,7 @@ from common.enums import TradingMode
 from common.events import EventBus
 from common.logging import configure_logging, resolve_log_level
 from common.universe_bootstrap import resolve_binance_auto_universe
+from common.multi_strategy_universe import partition_multi_strategy_universe
 from gateways.factory import create_gateway
 
 from .core.engine import ALL_STRATEGIES_MODE, Engine
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 async def run() -> None:
     settings = await resolve_binance_auto_universe(get_settings())
+    settings = partition_multi_strategy_universe(settings)
     bus = EventBus()
 
     backend_root = Path(__file__).resolve().parent.parent

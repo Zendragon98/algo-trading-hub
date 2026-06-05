@@ -14,10 +14,10 @@ class SmaMixin(BaseModel):
         default_factory=lambda: ["BTCUSDT", "ETHUSDT"],
     )
     sma_symbol: str = "BTCUSDT"
-    sma_fast_window: int = 10
-    sma_slow_window: int = 30
+    sma_fast_window: int = 20
+    sma_slow_window: int = 50
     # Closed-bar sampling (seconds). 900 = 15m bars; windows count bars, not ticks.
-    sma_bar_interval_sec: float = Field(default=900.0)
+    sma_bar_interval_sec: float = Field(default=300.0)
     # Skip symbols below this mid (stops cannot resolve on sub-tick alts).
     sma_min_mid_price: float = 0.01
     # Portfolio risk budget per round-trip (split evenly across ``sma_symbols``).
@@ -26,7 +26,7 @@ class SmaMixin(BaseModel):
     sma_risk_per_trade_pct: float = 0.12
     sma_qty: float = 0.001
     sma_cooldown_sec: int = 45
-    sma_max_entries_per_tick: int = 2
+    sma_max_entries_per_tick: int = 3
     # INFO heartbeat while the SMA scanner is active (0 = off).
     sma_scan_log_interval_sec: float = 60.0
     # Cap SMA_SYMBOLS=AUTO to the top-N USDT perps by 24h quote volume (0 = full universe).

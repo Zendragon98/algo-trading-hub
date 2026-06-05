@@ -120,6 +120,13 @@ class VwapExecutor:
                 slice_timeout_sec=min(6.0, self._cfg.slice_timeout_sec),
                 market_fallback=True,
             )
+        if parent.notes == "flow_exit_market":
+            return ExecutorConfig(
+                duration_sec=int(self._settings.urgent_duration_sec),
+                n_slices=max(1, int(self._settings.urgent_num_slices)),
+                slice_timeout_sec=min(2.0, self._cfg.slice_timeout_sec),
+                market_fallback=True,
+            )
         if parent.urgency is Urgency.AGGRESSIVE:
             return ExecutorConfig(
                 duration_sec=int(self._settings.urgent_duration_sec),
@@ -576,6 +583,20 @@ class VwapExecutor:
         feat = self._features.snapshot(parent.symbol)
         if feat.mid is None or feat.spread_bps is None:
             return None
+
+        if parent.notes == "flow_exit_market" and bool(
+            getattr(self._settings, "flow_exit_cross_touch", True)
+        ):
+            touch: float | None = None
+            if parent.side is Side.SELL and feat.best_bid is not None and feat.best_bid > 0:
+                touch = feat.best_bid
+            elif parent.side is Side.BUY and feat.best_ask is not None and feat.best_ask > 0:
+                touch = feat.best_ask
+            if touch is not None:
+                mark = feat.mid
+                filters = self._gateway.get_symbol_filters(parent.symbol)
+                return clamp_limit_price(touch, parent.side, mark, filters)
+
         if parent.side.value == "buy":
             price = feat.best_bid
         else:

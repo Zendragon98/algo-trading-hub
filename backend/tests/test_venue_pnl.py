@@ -21,6 +21,21 @@ def test_entry_hierarchy_fill_vwap_beats_venue() -> None:
     assert entry == 98.0
 
 
+def test_executable_bps_uses_bid_for_long() -> None:
+    snap = compute_venue_pnl(
+        pos_side=1,
+        pos_qty=1.0,
+        mid=100.0,
+        fill_vwap=100.0,
+        venue=None,
+        best_bid=99.5,
+        best_ask=100.5,
+    )
+    assert snap.internal_bps == pytest.approx(0.0)
+    assert snap.executable_bps == pytest.approx(-50.0, rel=1e-3)
+    assert snap.exit_bps == pytest.approx(-50.0, rel=1e-3)
+
+
 def test_venue_upnl_requires_qty_alignment() -> None:
     venue = VenuePosition(
         qty=10.0,

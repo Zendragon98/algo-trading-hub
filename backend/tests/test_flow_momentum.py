@@ -49,12 +49,14 @@ def _feat(
     mid: float = 100.0,
     dep: float = 0.0,
     tape_velocity: float = 2.0,
+    spread_bps: float = 3.0,
 ) -> Features:
     ask = 0.5 + tape / 2.0
     bid = 1.0 - ask
     return Features(
         symbol="BTCUSDT",
         mid=mid,
+        spread_bps=spread_bps,
         imbalance_topn=imb,
         bid_hit_ratio=bid,
         ask_hit_ratio=ask,
@@ -100,6 +102,31 @@ def test_entry_blocked_without_depletion_when_required() -> None:
     assert len(signals) == 1
 
 
+def test_flow_stop_uses_executable_bid() -> None:
+    strat = FlowMomentumStrategy(_settings(flow_stop_loss_bps=5.0))
+    state = strat._state_for("BTCUSDT", 3)
+    state.fill_vwap = 100.0
+    state.entry_ts = time.time() - 1.0
+    state.open_side = 1
+    strat.attach_position_provider(lambda _s: 0.01)
+
+    feat = _feat(tape=0.20, imb=0.12, mid=99.97)
+    feat.best_bid = 99.94
+    feat.best_ask = 100.0
+    signals = list(strat.on_tick({"BTCUSDT": feat}))
+    assert len(signals) == 1
+    assert "flow_stop_loss" in signals[0].reason
+
+
+def test_position_qty_prefers_venue_when_diverged() -> None:
+    strat = FlowMomentumStrategy(_settings())
+    strat.attach_position_provider(lambda _s: 0.05)
+    strat.attach_venue_position_provider(
+        lambda _s: VenuePosition(qty=0.01, avg_entry_price=100.0, mark_price=100.0)
+    )
+    assert strat._position_qty("BTCUSDT") == pytest.approx(0.01)
+
+
 def test_stop_loss_exit() -> None:
     strat = FlowMomentumStrategy(_settings(flow_stop_loss_bps=5.0))
     state = strat._state_for("BTCUSDT", 3)
@@ -117,7 +144,9 @@ def test_stop_loss_exit() -> None:
 
 
 def test_max_hold_exit_after_configured_seconds() -> None:
-    strat = FlowMomentumStrategy(_settings(flow_max_hold_sec=90.0))
+    strat = FlowMomentumStrategy(
+        _settings(flow_max_hold_sec=90.0, flow_max_hold_loss_only=False)
+    )
     strat.attach_position_provider(lambda _s: 0.01)
     state = strat._state_for("BTCUSDT", 3)
     state.fill_vwap = 100.0
@@ -130,13 +159,52 @@ def test_max_hold_exit_after_configured_seconds() -> None:
     assert "flow_max_hold" in signals[0].reason
 
 
+def test_max_hold_skipped_when_profitable_and_tape_strong() -> None:
+    strat = FlowMomentumStrategy(_settings(flow_max_hold_sec=60.0, flow_max_hold_loss_only=True))
+    strat.attach_position_provider(lambda _s: 0.01)
+    state = strat._state_for("BTCUSDT", 3)
+    state.fill_vwap = 100.0
+    state.entry_ts = time.time() - 65.0
+    state.open_side = 1
+
+    feats = {"BTCUSDT": _feat(tape=0.25, imb=0.15, mid=100.05)}
+    assert list(strat.on_tick(feats)) == []
+
+
+def test_entry_blocked_on_wide_spread() -> None:
+    strat = FlowMomentumStrategy(
+        _settings(
+            flow_confirm_ticks=3,
+            flow_require_depletion=False,
+            flow_max_spread_entry_frac=0.4,
+            flow_stop_loss_bps=10.0,
+        )
+    )
+    strat.attach_position_provider(lambda _s: 0.0)
+    feats = {"BTCUSDT": _feat(tape=0.20, imb=0.12, spread_bps=8.0)}
+    for _ in range(5):
+        assert list(strat.on_tick(feats)) == []
+
+
+def test_entry_blocked_when_tape_not_rising() -> None:
+    strat = FlowMomentumStrategy(
+        _settings(flow_confirm_ticks=3, flow_require_depletion=False, flow_require_rising_tape=True)
+    )
+    strat.attach_position_provider(lambda _s: 0.0)
+    # Tape weakens over the confirm window.
+    for tape in (0.25, 0.22, 0.18):
+        assert list(strat.on_tick({"BTCUSDT": _feat(tape=tape, imb=0.12)})) == []
+
+
 def test_sync_does_not_reset_hold_clock_on_flat_flicker() -> None:
     qty = {"v": 0.01}
 
     def provider(_s: str) -> float:
         return float(qty["v"])
 
-    strat = FlowMomentumStrategy(_settings(flow_max_hold_sec=90.0))
+    strat = FlowMomentumStrategy(
+        _settings(flow_max_hold_sec=90.0, flow_max_hold_loss_only=False)
+    )
     strat.attach_position_provider(provider)
     state = strat._state_for("BTCUSDT", 3)
     state.fill_vwap = 100.0

@@ -24,7 +24,7 @@ class Mm2Mixin(BaseModel):
     mm2_min_skew_bps: float = 1.0
     mm2_tape_confirm: float = 0.08  # require tape + imbalance to align before quoting a side
     # Classic MM: always rest bid+ask when flat; skew/tape tilt prices only (no entry gates).
-    mm2_two_sided_always: bool = False
+    mm2_two_sided_always: bool = True
     mm2_taker_fee_bps: float = 4.5
     # Per-leg maker fee (bps); negative = rebate received per fill.
     mm2_maker_fee_bps: float = 2.0
@@ -36,7 +36,7 @@ class Mm2Mixin(BaseModel):
     mm2_min_edge_bps: float = 0.0
     # calibrated = per-symbol min_spread_bps (+ fee floor); standard = max(cal, 2×half);
     # fee_floor = fees+buffer only; off = any positive spread (not for production)
-    mm2_spread_gate_mode: str = "calibrated"
+    mm2_spread_gate_mode: str = "standard"
     mm2_min_exit_profit_bps: float = 4.0
     mm2_max_hold_sec: float = 60.0
     mm2_market_exit_loss_bps: float = 12.0
@@ -49,12 +49,12 @@ class Mm2Mixin(BaseModel):
     mm2_exit_cross_touch: bool = True
     mm2_early_loss_hold_frac: float = 0.0
     mm2_min_samples: int = 60
-    mm2_quote_during_warmup: bool = False
+    mm2_quote_during_warmup: bool = True
     mm2_risk_per_trade_pct: float = 0.008
     mm2_max_inventory_notional: float = 300.0
     # Sum of |position| notionals across MM2 symbols; blocks new flat entries when exceeded.
     mm2_max_inventory_notional_total: float = 600.0
-    mm2_max_concurrent_positions: int = 3
+    mm2_max_concurrent_positions: int = 6
     # On moderate risk (elevated toxicity/markout/depletion): widen half-spread and damp size.
     mm2_risk_widen_multiplier: float = 2.0
     mm2_risk_size_damp: float = 0.5

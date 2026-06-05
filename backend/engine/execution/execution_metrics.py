@@ -50,6 +50,8 @@ class ExecutionReport:
     notes: str = ""
     signal_score: float = 0.0
     strategy_name: str = ""
+    # Per-strategy signed qty intent when strategy_name == "__netted__".
+    strategy_contributions: dict[str, float] = field(default_factory=dict)
     started_at: float = field(default_factory=time)
     completed_at: float | None = None
 
@@ -78,7 +80,13 @@ class ExecutionTracker:
 
     # --- Lifecycle ---
 
-    def on_parent_submit(self, parent: ParentOrder, arrival_price: float) -> ExecutionReport:
+    def on_parent_submit(
+        self,
+        parent: ParentOrder,
+        arrival_price: float,
+        *,
+        strategy_contributions: dict[str, float] | None = None,
+    ) -> ExecutionReport:
         report = ExecutionReport(
             parent_id=parent.id,
             symbol=parent.symbol,
@@ -89,6 +97,7 @@ class ExecutionTracker:
             notes=parent.notes,
             signal_score=parent.signal_score,
             strategy_name=parent.strategy_name,
+            strategy_contributions=dict(strategy_contributions or {}),
         )
         self._open[parent.id] = report
         return report

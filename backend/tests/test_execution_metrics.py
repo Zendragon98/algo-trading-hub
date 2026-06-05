@@ -84,6 +84,28 @@ async def test_close_parent_force_completes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_netted_contributions_persisted_on_submit() -> None:
+    bus = EventBus()
+    tracker = ExecutionTracker(bus=bus)
+    parent = ParentOrder(
+        id="P-net",
+        symbol="ETHUSDT",
+        side=Side.BUY,
+        qty=0.01,
+        algo_mode=AlgoMode.NORMAL,
+        strategy_name="__netted__",
+    )
+    contribs = {"flow_momentum": 0.01, "sma_crossover": -0.005}
+    report = tracker.on_parent_submit(
+        parent,
+        arrival_price=3000.0,
+        strategy_contributions=contribs,
+    )
+    assert report.strategy_contributions == contribs
+    assert tracker.open_reports()[0].strategy_contributions == contribs
+
+
+@pytest.mark.asyncio
 async def test_aggregate_summarises_history() -> None:
     bus = EventBus()
     tracker = ExecutionTracker(bus=bus)

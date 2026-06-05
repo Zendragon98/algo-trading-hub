@@ -19,6 +19,7 @@ from .sections.flow import FlowMixin
 from .sections.mm2 import Mm2Mixin
 from .sections.mm_institutional import MmInstitutionalMixin
 from .sections.mm_legacy import MmLegacyMixin
+from .sections.multi_strategy import MultiStrategyMixin
 from .sections.pairs import PairsMixin
 from .sections.risk import RiskMixin
 from .sections.sma import SmaMixin
@@ -35,6 +36,7 @@ class Settings(
     SmaMixin,
     BlendMixin,
     FlowMixin,
+    MultiStrategyMixin,
     MmLegacyMixin,
     Mm2Mixin,
     MmInstitutionalMixin,
@@ -106,6 +108,7 @@ class Settings(
         "mm2_symbols",
         "mm_auto_pin_symbols",
         "mm_universe_regime_symbols",
+        "multi_strategy_pair_bases",
         "cors_origins",
         mode="before",
     )

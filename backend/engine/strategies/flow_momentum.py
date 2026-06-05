@@ -23,6 +23,8 @@ from common.types import Signal
 from common.universe_bootstrap import is_auto_symbol_list
 
 from ..market_data.feature_store import Features
+from ..position.venue_pnl import qty_aligned_with_venue
+from .flow_entry_gates import entry_spread_ok, tape_rising
 from .flow_pnl import (
     apply_attributed_fill_vwap,
     compute_flow_pnl,
@@ -45,6 +47,7 @@ EquityProvider = Callable[[], float]
 @dataclass(slots=True)
 class _SymbolState:
     confirm: deque[int] = field(default_factory=deque)
+    recent_tape: deque[float] = field(default_factory=deque)
     exit_confirm: deque[int] = field(default_factory=deque)
     signal_mid: float = 0.0
     fill_vwap: float = 0.0
@@ -124,6 +127,20 @@ class FlowMomentumStrategy(StrategyBase):
             return provider(symbol)
         except Exception:  # noqa: BLE001
             return None
+
+    def _position_qty(self, symbol: str) -> float:
+        ledger_q = super()._position_qty(symbol)
+        venue = self._venue_position(symbol)
+        if venue is None:
+            return ledger_q
+        vq = float(venue.qty)
+        if abs(vq) <= 1e-12 and abs(ledger_q) > 1e-12:
+            return vq
+        if side_from_qty(vq) != side_from_qty(ledger_q):
+            return vq
+        if not qty_aligned_with_venue(pos_qty=ledger_q, venue_qty=vq):
+            return vq
+        return ledger_q
 
     def symbols(self) -> list[str]:
         return list(self._symbols)
@@ -207,6 +224,9 @@ class FlowMomentumStrategy(StrategyBase):
             state.confirm.append(direction)
             while len(state.confirm) > confirm_n:
                 state.confirm.popleft()
+            state.recent_tape.append(tape)
+            while len(state.recent_tape) > confirm_n:
+                state.recent_tape.popleft()
 
             pos_qty = self._position_qty(symbol)
             pos_side = side_from_qty(pos_qty)
@@ -216,6 +236,7 @@ class FlowMomentumStrategy(StrategyBase):
                 state=state,
                 pos_side=pos_side,
                 pos_qty=pos_qty,
+                feat=feat,
                 mid=mid,
                 tape=tape,
                 imb=imb,
@@ -246,8 +267,14 @@ class FlowMomentumStrategy(StrategyBase):
                 continue
             if bool(s.flow_skip_toxic) and feat.is_toxic:
                 continue
+            if not entry_spread_ok(feat, s):
+                continue
+            if bool(s.flow_require_rising_tape) and not tape_rising(
+                state.recent_tape, direction
+            ):
+                continue
 
-            entry_qty = self._size_for(mid)
+            entry_qty = self._size_for(mid, tape=tape, tape_thr=tape_thr)
             if entry_qty <= 0:
                 continue
 
@@ -333,6 +360,7 @@ class FlowMomentumStrategy(StrategyBase):
         state: _SymbolState,
         pos_side: int,
         pos_qty: float,
+        feat: Features,
         mid: float,
         tape: float,
         imb: float,
@@ -350,6 +378,8 @@ class FlowMomentumStrategy(StrategyBase):
             mid=mid,
             fill_vwap=state.fill_vwap,
             venue=venue,
+            best_bid=feat.best_bid,
+            best_ask=feat.best_ask,
         )
         state.last_pnl_verify_ts = maybe_log_pnl_verification(
             symbol=symbol,
@@ -393,10 +423,20 @@ class FlowMomentumStrategy(StrategyBase):
         elif pnl_known and trail_stop <= 0 and tp > 0 and pnl >= tp:
             reason = f"flow_take_profit pnl_bps={pnl:.2f} entry={snap.entry_source}"
         elif max_hold > 0 and hold >= max_hold:
-            reason = (
-                f"flow_max_hold pnl_bps={pnl:.2f} hold_sec={hold:.1f} "
-                f"entry={snap.entry_source}"
+            loss_only = bool(getattr(s, "flow_max_hold_loss_only", True))
+            faded = self._tape_momentum_faded(
+                pos_side=pos_side,
+                tape=tape,
+                imb=imb,
+                tape_thr=tape_thr,
+                exit_tape=exit_tape,
             )
+            underwater = pnl_known and pnl < 0
+            if not loss_only or underwater or faded:
+                reason = (
+                    f"flow_max_hold pnl_bps={pnl:.2f} hold_sec={hold:.1f} "
+                    f"entry={snap.entry_source}"
+                )
         else:
             fade_frac = float(s.flow_exit_tape_frac)
             imb_min = float(s.flow_imbalance_min)
@@ -439,7 +479,7 @@ class FlowMomentumStrategy(StrategyBase):
             position_qty=pos_qty,
             reason_open="",
             reason_close=reason,
-            score=float(s.flow_entry_score),
+            score=float(getattr(s, "flow_exit_urgent_score", 1.0) or s.flow_entry_score),
         )
         if sig is None:
             return None
@@ -451,8 +491,44 @@ class FlowMomentumStrategy(StrategyBase):
         )
         return sig
 
+    def _tape_momentum_faded(
+        self,
+        *,
+        pos_side: int,
+        tape: float,
+        imb: float,
+        tape_thr: float,
+        exit_tape: float,
+    ) -> bool:
+        fade_frac = float(self._settings.flow_exit_tape_frac)
+        imb_min = float(self._settings.flow_imbalance_min)
+        return (
+            self._tape_exit_pressure(
+                pos_side=pos_side,
+                tape=tape,
+                imb=imb,
+                tape_thr=tape_thr,
+                exit_tape=exit_tape,
+                fade_frac=fade_frac,
+                imb_min=imb_min,
+            )
+            != 0
+        )
+
     def _sync_state(self, state: _SymbolState, symbol: str, mid: float, now: float) -> None:
-        """Mirror live position side; do not reset hold clock on ledger flicker."""
+        """Mirror live position; reset entry state when venue is flat but ledger flickered."""
+        venue = self._venue_position(symbol)
+        if venue is not None and abs(float(venue.qty)) <= 1e-12:
+            if state.open_side != 0 or state.entry_ts > 0:
+                state.open_side = 0
+                state.signal_mid = 0.0
+                state.fill_vwap = 0.0
+                state.fill_qty_abs = 0.0
+                state.entry_ts = 0.0
+                state.peak_pnl_bps = 0.0
+                state.exit_confirm.clear()
+            return
+
         pos_side = side_from_qty(self._position_qty(symbol))
         if pos_side != state.open_side and pos_side != 0:
             state.peak_pnl_bps = 0.0
@@ -467,24 +543,33 @@ class FlowMomentumStrategy(StrategyBase):
             state.confirm = deque(state.confirm, maxlen=max(confirm_n, 1))
         return state
 
-    def _size_for(self, mid: float) -> float:
+    def _size_for(self, mid: float, *, tape: float = 0.0, tape_thr: float = 0.0) -> float:
         provider = self._equity_provider
         if provider is None:
-            return float(self._settings.flow_qty)
-        try:
-            equity = float(provider())
-        except Exception:  # noqa: BLE001
-            return float(self._settings.flow_qty)
-        if equity <= 0:
-            return float(self._settings.flow_qty)
-        universe_n = max(1, len(self._symbols))
-        risk_pct = float(self._settings.flow_risk_per_trade_pct) / universe_n
-        stop_bps = float(self._settings.flow_stop_loss_bps)
-        if risk_pct <= 0 or stop_bps <= 0 or mid <= 0:
-            return float(self._settings.flow_qty)
-        stop_pct = stop_bps / 10_000.0
-        notional = (equity * risk_pct) / stop_pct
-        return max(0.0, notional / mid)
+            base = float(self._settings.flow_qty)
+        else:
+            try:
+                equity = float(provider())
+            except Exception:  # noqa: BLE001
+                equity = 0.0
+            if equity <= 0:
+                base = float(self._settings.flow_qty)
+            else:
+                universe_n = max(1, len(self._symbols))
+                risk_pct = float(self._settings.flow_risk_per_trade_pct) / universe_n
+                stop_bps = float(self._settings.flow_stop_loss_bps)
+                if risk_pct <= 0 or stop_bps <= 0 or mid <= 0:
+                    base = float(self._settings.flow_qty)
+                else:
+                    stop_pct = stop_bps / 10_000.0
+                    notional = (equity * risk_pct) / stop_pct
+                    base = max(0.0, notional / mid)
+        if not bool(getattr(self._settings, "flow_size_tape_scale", True)):
+            return base
+        if tape_thr <= 0:
+            return base
+        mult = min(2.0, max(0.5, abs(tape) / tape_thr))
+        return base * mult
 
     def _cap_entries(self, signals: list[Signal]) -> list[Signal]:
         max_n = int(getattr(self._settings, "flow_max_entries_per_tick", 0) or 0)

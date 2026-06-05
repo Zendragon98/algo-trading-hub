@@ -266,6 +266,7 @@ class Engine:
             portfolio=self._portfolio,
             positions=self._positions,
             venue_qty_for=self._positions.venue_qty,
+            on_ledger_venue_flat_heal=self._heal_strategy_ledger_venue_flat,
         )
         self._executor.set_limit_collar_check(self._pretrade.check_limit_collar)
         self._latency = LatencyTracker(bus=bus)
@@ -1508,6 +1509,22 @@ class Engine:
             self._stop_monitor.disarm(symbol)
             logger.info("healed flat local book for %s after venue -2022", symbol)
 
+    def _heal_strategy_ledger_venue_flat(self, strategy_name: str, symbol: str) -> None:
+        """Clear per-strategy ledger when venue is flat but ledger still shows size."""
+        if not self.is_multi_strategy_mode():
+            return
+        sym = symbol.upper()
+        qty = self._strategy_ledger.qty(strategy_name, sym)
+        if abs(qty) <= 1e-12:
+            return
+        self._strategy_ledger.apply_delta(strategy_name, sym, -qty)
+        logger.info(
+            "healed strategy ledger flat %s %s qty=%.8f (venue flat on reduce_only)",
+            strategy_name,
+            sym,
+            qty,
+        )
+
     def _flatten_close_mode(self, position: Position, *, retry: bool) -> str:
         """Pick market vs passive/aggressive VWAP for a flatten leg.
 
@@ -2568,7 +2585,11 @@ class Engine:
     async def _dispatch_netted_single(self, netted: NettedSignal) -> None:
         """Submit a cross-strategy net order and record fill attribution."""
         signal = netted.signal
-        parent = await self._dispatch_single(signal, return_parent=True)
+        parent = await self._dispatch_single(
+            signal,
+            return_parent=True,
+            strategy_contributions=netted.contributions,
+        )
         if parent is None:
             return
         sym = signal.symbol.upper()
@@ -2576,11 +2597,39 @@ class Engine:
             strat: {sym: delta} for strat, delta in netted.contributions.items()
         }
 
+    def _is_flow_exit_signal(self, signal: Signal) -> bool:
+        sn = signal.strategy_name or self._active_strategy_name
+        if sn == "flow_momentum":
+            return True
+        prefixes = (
+            "flow_stop_loss",
+            "flow_take_profit",
+            "flow_trail_stop",
+            "flow_max_hold",
+            "flow_reversal",
+            "flow_fade",
+            "flow_momentum_flatten",
+        )
+        return any(signal.reason.startswith(p) for p in prefixes)
+
+    def _parent_notes_for_signal(self, signal: Signal) -> str:
+        if signal.reduce_only and self._is_flow_exit_signal(signal):
+            if bool(getattr(self._settings, "flow_exit_market", True)):
+                return "flow_exit_market"
+        return signal.reason
+
+    def _signal_score_for_dispatch(self, signal: Signal) -> float:
+        if signal.reduce_only and self._is_flow_exit_signal(signal):
+            urgent = float(getattr(self._settings, "flow_exit_urgent_score", 1.0))
+            return max(float(signal.score), urgent)
+        return float(signal.score)
+
     async def _dispatch_single(
         self,
         signal: Signal,
         *,
         return_parent: bool = False,
+        strategy_contributions: dict[str, float] | None = None,
     ) -> ParentOrder | None:
         """Pre-trade validate + submit one ungrouped signal."""
         sn = signal.strategy_name or self._active_strategy_name
@@ -2617,10 +2666,11 @@ class Engine:
                 symbol=signal.symbol,
                 side=signal.side,
                 qty=result.qty,
-                notes=signal.reason,
-                signal_score=signal.score,
+                notes=self._parent_notes_for_signal(signal),
+                signal_score=self._signal_score_for_dispatch(signal),
                 reduce_only=signal.reduce_only,
                 strategy_name=signal.strategy_name,
+                strategy_contributions=strategy_contributions,
             )
             self._latency.on_child_submitted(signal.symbol)
             signal_log_emit(

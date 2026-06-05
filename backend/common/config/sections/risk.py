@@ -18,7 +18,7 @@ class RiskMixin(BaseModel):
     max_risk_pct: float = 1.0
     risk_per_trade_pct: float = 0.003
     max_gross_notional: float = 500_000.0
-    max_drawdown_pct: float = 0.10
+    max_drawdown_pct: float = 0.12
     default_stop_loss_pct: float = 0.02
     default_take_profit_pct: float = 0.06
 
@@ -60,7 +60,7 @@ class RiskMixin(BaseModel):
     reject_cooldown_sec: float = 30.0       # symbol pause after K rejects
     max_consecutive_rejects: int = 3
     # Portfolio guards
-    daily_loss_kill_pct: float = 0.05       # MAJOR: daily-loss kill
+    daily_loss_kill_pct: float = 0.08       # MAJOR: daily-loss kill
     max_consecutive_losses: int = 15        # MAJOR: losing-trade streak before latch
     consecutive_loss_min_abs_usd: float = Field(
         default=1.0,

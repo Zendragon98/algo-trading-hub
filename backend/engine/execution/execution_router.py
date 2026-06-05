@@ -82,6 +82,7 @@ class ExecutionRouter:
         signal_score: float = 0.0,
         group_id: str | None = None,
         strategy_name: str = "",
+        strategy_contributions: dict[str, float] | None = None,
     ) -> ParentOrder:
         if self._submit_guard is not None:
             # Reduce-only exits bypass the *symbol* gate so a paused symbol
@@ -119,7 +120,11 @@ class ExecutionRouter:
         # if the book hasn't warmed up; the tracker treats 0 as "unknown"
         # and emits a 0 slippage rather than a divide-by-zero spike.
         arrival = feat.mid or 0.0
-        self._tracker.on_parent_submit(parent, arrival_price=arrival)
+        self._tracker.on_parent_submit(
+            parent,
+            arrival_price=arrival,
+            strategy_contributions=strategy_contributions,
+        )
         await self._executor.execute(parent)
         return parent
 

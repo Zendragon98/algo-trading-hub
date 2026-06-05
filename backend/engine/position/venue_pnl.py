@@ -46,6 +46,22 @@ class VenuePnlSnapshot:
     qty_aligned: bool
     verified: bool
     exit_bps: float
+    executable_bps: float
+
+
+def executable_price(
+    *,
+    pos_side: int,
+    best_bid: float | None,
+    best_ask: float | None,
+    mark: float,
+) -> float:
+    """Price at which a reduce-only order would execute (bid for long, ask for short)."""
+    if pos_side > 0 and best_bid is not None and best_bid > 0:
+        return best_bid
+    if pos_side < 0 and best_ask is not None and best_ask > 0:
+        return best_ask
+    return mark
 
 
 def venue_position_from(position: Position | None) -> VenuePosition | None:
@@ -120,6 +136,8 @@ def compute_venue_pnl(
     mid: float,
     fill_vwap: float,
     venue: VenuePosition | None,
+    best_bid: float | None = None,
+    best_ask: float | None = None,
 ) -> VenuePnlSnapshot:
     entry_price, entry_source = resolve_entry_price(
         venue=venue,
@@ -132,6 +150,15 @@ def compute_venue_pnl(
         mark = venue.mark_price
 
     internal_bps = price_pnl_bps(entry_price, mark, pos_side) if entry_price > 0 else 0.0
+    exec_price = executable_price(
+        pos_side=pos_side,
+        best_bid=best_bid,
+        best_ask=best_ask,
+        mark=mark,
+    )
+    executable_bps = (
+        price_pnl_bps(entry_price, exec_price, pos_side) if entry_price > 0 else 0.0
+    )
 
     aligned = (
         venue is not None
@@ -154,7 +181,7 @@ def compute_venue_pnl(
         exit_bps = venue_bps
         effective_source: EntrySource = "venue_upnl"
     elif entry_price > 0:
-        exit_bps = internal_bps
+        exit_bps = executable_bps
         effective_source = entry_source
     else:
         exit_bps = 0.0
@@ -171,6 +198,7 @@ def compute_venue_pnl(
         qty_aligned=aligned,
         verified=verified,
         exit_bps=exit_bps,
+        executable_bps=executable_bps,
     )
 
 

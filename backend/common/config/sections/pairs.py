@@ -18,7 +18,7 @@ class PairsMixin(BaseModel):
     # `engine.risk.stop_loss.StopLossMonitor` and
     # `engine.strategies.strategy_base.StrategyBase.manages_own_risk`.
     pair_calibration_path: str = ""  # optional JSON from analytics.pair_analyzer
-    pair_entry_z: float = 2.5
+    pair_entry_z: float = 2.0
     pair_exit_z: float = 0.4
     pair_stop_z: float = 3.5
     # Rolling window for z-score history. With ``pair_bar_sec > 0`` this is
@@ -48,10 +48,10 @@ class PairsMixin(BaseModel):
     # Per-leg absolute loss cap in USD while open (0 = disabled).
     pair_max_leg_loss_usd: float = 25.0
     # Cap new pair opens per tick (exits/partials are not capped). 0 = unlimited.
-    pair_max_new_entries_per_tick: int = 2
+    pair_max_new_entries_per_tick: int = 3
     # Minimum deviation samples before z-score is trusted. With 60s bars,
     # 30 samples ≈ 30 minutes warmup.
-    pair_min_z_samples: int = 30
+    pair_min_z_samples: int = 20
     # Skip pairs where either leg mid is below this (avoids sub-$0.001 memes
     # that often trip MIN_NOTIONAL / tick-size quirks on testnet).
     pair_min_mid_price: float = 0.01

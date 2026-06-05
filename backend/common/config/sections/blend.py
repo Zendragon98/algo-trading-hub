@@ -11,7 +11,7 @@ class BlendMixin(BaseModel):
     )
     blend_max_symbols: int = 10
     blend_symbol: str = "BTCUSDT"
-    blend_bar_interval_sec: float = 900.0
+    blend_bar_interval_sec: float = 300.0
     blend_adx_period: int = 14
     blend_adx_trend_threshold: float = 20.0
     blend_adx_strong_threshold: float = 30.0
@@ -32,7 +32,7 @@ class BlendMixin(BaseModel):
     blend_bb_upper_threshold: float = 0.95
     blend_micro_threshold: float = 0.15
     blend_micro_window_sec: float = 120.0
-    blend_entry_threshold: float = 0.50
+    blend_entry_threshold: float = 0.40
     blend_exit_threshold: float = 0.15
     blend_min_confirming_votes: int = 2
     blend_regime_flip_exit: bool = True
@@ -41,6 +41,6 @@ class BlendMixin(BaseModel):
     blend_risk_per_trade_pct: float = 0.12
     blend_qty: float = 0.001
     blend_cooldown_sec: float = 60.0
-    blend_max_entries_per_tick: int = 2
+    blend_max_entries_per_tick: int = 3
     blend_scan_log_interval_sec: float = 60.0
 

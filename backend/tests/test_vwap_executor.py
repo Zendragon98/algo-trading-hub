@@ -79,6 +79,76 @@ class _Flatten2022OnceGateway(_MockGateway):
         return await super().place_order(order)
 
 
+def test_flow_exit_cross_touch_pegs_at_bid_for_long_close() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        flow_exit_cross_touch=True,
+        symbols=["BTCUSDT"],
+    )
+    bus = EventBus()
+    gw = _MockGateway()
+    om = OrderManager(gw, bus)
+    books = OrderBookStore(["BTCUSDT"])
+    books.get("BTCUSDT").apply_snapshot(
+        bids=[(99.5, 1.0)], asks=[(100.5, 1.0)], last_update_id=1,
+    )
+    features = FeatureStore(books, TradeTape(window_sec=10), settings)
+    ex = VwapExecutor(
+        order_manager=om,
+        gateway=gw,
+        features=features,
+        price_provider=lambda _s: 100.0,
+        settings=settings,
+    )
+    parent = ParentOrder(
+        id="P-flow-exit",
+        symbol="BTCUSDT",
+        side=Side.SELL,
+        qty=0.01,
+        algo_mode=AlgoMode.NORMAL,
+        notes="flow_exit_market",
+        reduce_only=True,
+    )
+    price = ex._passive_price(parent)
+    assert price == pytest.approx(99.5)
+
+
+def test_flow_exit_market_uses_fast_market_fallback_cfg() -> None:
+    settings = Settings(
+        binance_api_key="x",
+        binance_api_secret="y",
+        urgent_duration_sec=12,
+        urgent_num_slices=3,
+        vwap_slice_timeout_sec=6.0,
+        symbols=["BTCUSDT"],
+    )
+    bus = EventBus()
+    gw = _MockGateway()
+    om = OrderManager(gw, bus)
+    books = OrderBookStore(["BTCUSDT"])
+    features = FeatureStore(books, TradeTape(window_sec=10), settings)
+    ex = VwapExecutor(
+        order_manager=om,
+        gateway=gw,
+        features=features,
+        price_provider=lambda _s: 100.0,
+        settings=settings,
+    )
+    parent = ParentOrder(
+        id="P-flow-exit",
+        symbol="BTCUSDT",
+        side=Side.SELL,
+        qty=0.01,
+        algo_mode=AlgoMode.NORMAL,
+        notes="flow_exit_market",
+        reduce_only=True,
+    )
+    cfg = ex._cfg_for_parent(parent)
+    assert cfg.market_fallback is True
+    assert cfg.slice_timeout_sec <= 2.0
+
+
 @pytest.mark.asyncio
 async def test_flatten_minus_2022_recover_breaks_remaining_slices_when_venue_flat() -> None:
     bus = EventBus()

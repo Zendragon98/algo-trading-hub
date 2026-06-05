@@ -22,7 +22,7 @@ class MmInstitutionalMixin(BaseModel):
     mm_inventory_exit_ratio: float = 0.7
     mm_inventory_size_damp: float = 0.5
     mm_inventory_include_working: bool = False
-    mm_jump_return_bps: float = 25.0
+    mm_jump_return_bps: float = 40.0
     mm_jump_vol_mult: float = 3.0
     mm_jump_vol_ewma_alpha: float = 0.08
     mm_jump_pause_sec: float = 30.0
@@ -104,7 +104,7 @@ class MmInstitutionalMixin(BaseModel):
     mm_quote_refresh_bps: float = 1.0
     mm_quote_min_rest_sec: float = 0.5
     mm_quote_size_pct: float = 0.002
-    mm_quote_max_refresh_per_tick: int = 8
+    mm_quote_max_refresh_per_tick: int = 16
     mm_quote_toxic_widen_bps: float = 6.0
     # Execution zones (slide: place/cancel ranges in bps; 0 = disabled).
     mm_place_range_bps: float = 0.0

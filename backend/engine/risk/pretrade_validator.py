@@ -46,6 +46,7 @@ class PreTradeValidator:
         positions: PositionTracker,
         *,
         venue_qty_for: Callable[[str], float | None] | None = None,
+        on_ledger_venue_flat_heal: Callable[[str, str], None] | None = None,
     ) -> None:
         self._settings = settings
         self._risk = risk
@@ -53,6 +54,7 @@ class PreTradeValidator:
         self._portfolio = portfolio
         self._positions = positions
         self._venue_qty_for = venue_qty_for
+        self._on_ledger_venue_flat_heal = on_ledger_venue_flat_heal
         self._dedup: dict[tuple[str, ...], _DedupEntry] = {}
 
     def apply_settings(self, settings: Settings) -> None:
@@ -247,6 +249,9 @@ class PreTradeValidator:
         venue_q = self._venue_qty_for(signal.symbol) if self._venue_qty_for else None
         if venue_q is not None:
             if abs(venue_q) <= tol:
+                sn = (signal.strategy_name or "").strip()
+                if self._on_ledger_venue_flat_heal and sn and sn != "__netted__":
+                    self._on_ledger_venue_flat_heal(sn, signal.symbol)
                 signal_log_emit(
                     logger,
                     f"pretrade veto {signal.symbol}: reduce_only_venue_flat",

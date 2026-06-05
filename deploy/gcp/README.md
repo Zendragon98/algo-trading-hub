@@ -177,6 +177,33 @@ Schedule with cron on the VM. Terraform can create the bucket (`create_runs_buck
 
 ---
 
+## STRATEGY=all soak and analytics
+
+After deploying with [`env.gcp.example`](env.gcp.example) (`STRATEGY=all` wide paper profile):
+
+1. **Re-calibrate MM spreads** for the expanded universe (do not rely on stale cal files):
+
+   ```bash
+   cd /opt/algo-trading-hub/deploy/gcp
+   sudo docker compose exec backend python -m analytics.mm_spread_pipeline \
+     --from-mm-symbols --minutes 30 --interval-sec 1
+   ```
+
+2. **Start the engine** from the dashboard (or set `ENGINE_AUTOSTART=true` after keys are verified).
+
+3. **After a soak**, per-strategy realized PnL from run archives:
+
+   ```bash
+   sudo docker compose exec backend python -m analytics.strategy_pnl_report \
+     --runs-dir data/runs
+   ```
+
+   Netted parents split PnL via persisted `strategy_contributions` on execution reports.
+
+4. **Breadth checks** (logs): boot partition table (`STRATEGY=all partition:`), non-zero `Q-` fills for MM, and scan lines with `entries=` for each alpha strategy.
+
+---
+
 ## Health checks for load balancers
 
 | Path | Use |
