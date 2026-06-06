@@ -29,6 +29,7 @@ def _engine_stub(
     eng._oms.working_children.return_value = iter([MagicMock()]) if working_orders else iter(())
     eng._settings = MagicMock(
         ws_stale_pause_sec=30.0,
+        user_data_stale_sec=180.0,
         reconcile_user_data_fresh_sec=120.0,
     )
     snap = MagicMock(gross_notional=gross_notional)
@@ -40,14 +41,28 @@ def test_user_data_stale_only_when_monitored_and_ws_old() -> None:
     now = time.time()
     eng = _engine_stub(
         running=True,
+        last_ws_user_activity_ts=now - 200.0,
+        last_venue_truth_ts=now - 200.0,
+        working_orders=True,
+    )
+    health = eng._user_data_health(now)
+    assert health["user_data_monitored"] is True
+    assert health["user_data_stale"] is True
+    assert health["user_ws_event_age_sec"] > 190.0
+
+
+def test_user_data_not_stale_for_brief_ws_quiet() -> None:
+    """WS silence between fills (under user_data_stale_sec) is normal, not stale."""
+    now = time.time()
+    eng = _engine_stub(
+        running=True,
         last_ws_user_activity_ts=now - 45.0,
         last_venue_truth_ts=now - 45.0,
         working_orders=True,
     )
     health = eng._user_data_health(now)
     assert health["user_data_monitored"] is True
-    assert health["user_data_stale"] is True
-    assert health["user_ws_event_age_sec"] > 40.0
+    assert health["user_data_stale"] is False
 
 
 def test_idle_account_not_stale_despite_high_ws_age() -> None:

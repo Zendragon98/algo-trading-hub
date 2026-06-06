@@ -266,9 +266,14 @@ class RiskManager:
         # Two MAJOR engine-scope guards take precedence over per-position
         # SL/TP: session-start drawdown (legacy) and high-water-mark
         # drawdown. Either trip latches the breaker; the engine flattens
-        # and stays paused until operator re-arm.
+        # and stays paused until operator re-arm. Skipped entirely when the
+        # operator disables the matching breaker so these portfolio-kill
+        # exits (attributed to __flatten__) cannot fire behind the toggle.
         dd = self._pnl.drawdown_pct()
-        if dd >= self._limits.max_drawdown_pct:
+        if (
+            self._settings.is_breaker_enabled("max_drawdown")
+            and dd >= self._limits.max_drawdown_pct
+        ):
             self._maybe_trip_drawdown("max_drawdown", dd)
             position = next((p for p in positions if p.symbol == tick.symbol), None)
             if position is not None and position.qty != 0:
@@ -277,7 +282,11 @@ class RiskManager:
 
         hwm_dd = self._pnl.hwm_drawdown_pct()
         hwm_kill = getattr(self._settings, "hwm_drawdown_kill_pct", 0.0)
-        if hwm_kill > 0 and hwm_dd >= hwm_kill:
+        if (
+            self._settings.is_breaker_enabled("hwm_drawdown")
+            and hwm_kill > 0
+            and hwm_dd >= hwm_kill
+        ):
             self._maybe_trip_drawdown("hwm_drawdown", hwm_dd)
             position = next((p for p in positions if p.symbol == tick.symbol), None)
             if position is not None and position.qty != 0:

@@ -684,7 +684,7 @@ Pre-submit guards (`SubmitGuard`) enforce three additional ceilings without trip
 
 Engine `stop()` market-outs residuals before disconnect when `FLATTEN_ON_STOP=true` (default) via the same flatten path and waits up to `FLATTEN_TIMEOUT_SEC` for the venue to report flat.
 
-**Per-breaker enable flags:** `Settings.breaker_enabled` (`dict[str, bool]`, defaults in `common/breaker_registry.py`) gates whether each code may trip. Disabled codes are suppressed in `CircuitBreaker.trip()` and any active breach for that code is cleared on patch. `operator_halt` is always enabled (manual halt only). Legacy `MD_CROSSED_BOOK_BREAKER` maps to `breaker_enabled["md_crossed_book"]`.
+**Per-breaker enable flags:** `Settings.breaker_enabled` (`dict[str, bool]`, defaults in `common/breaker_registry.py`) gates whether each code may trip. Disabled codes are suppressed in `CircuitBreaker.trip()` and any active breach for that code is cleared on patch. For `max_drawdown` / `hwm_drawdown`, disabling the code also suppresses the reduce-only portfolio-kill exit in `RiskManager.monitor_tick` (attributed to `__flatten__`) — otherwise that exit would keep firing on every tick that breaches the limit even though the breaker never latches. `operator_halt` is always enabled (manual halt only). Legacy `MD_CROSSED_BOOK_BREAKER` maps to `breaker_enabled["md_crossed_book"]`.
 
 Operator endpoints:
 

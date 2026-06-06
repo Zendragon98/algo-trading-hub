@@ -95,6 +95,56 @@ class StrategyPositionLedger:
         delta = qty if side is Side.BUY else -qty
         self.apply_delta(strategy, symbol, delta, price=price)
 
+    def reconcile_symbol_to_venue(
+        self,
+        symbol: str,
+        venue_qty: float,
+        *,
+        tol: float = 1e-9,
+    ) -> dict[str, float]:
+        """Align per-strategy legs for ``symbol`` to the venue net qty.
+
+        The venue holds one net position per symbol; this ledger can drift when
+        positions close outside the attributed-fill path (manual/liquidation/
+        flatten/risk exits). Two safe corrections:
+
+        - **Venue flat:** zero every strategy leg for ``symbol``.
+        - **Venue same-sign but smaller than ledger net:** scale each leg down
+          proportionally so the ledger net matches the venue.
+
+        Opposite-sign or larger-than-ledger venue qty is left untouched (that is
+        a different drift the reconcile breaker surfaces). Returns the applied
+        per-strategy delta for legs that changed.
+        """
+        sym = symbol.upper()
+        legs = [
+            (strat, book[sym].qty)
+            for strat, book in self._legs.items()
+            if sym in book and abs(book[sym].qty) > _QTY_EPS
+        ]
+        if not legs:
+            return {}
+        ledger_net = sum(qty for _, qty in legs)
+        flat = abs(venue_qty) <= tol
+        scale = (
+            not flat
+            and _sign(venue_qty) == _sign(ledger_net)
+            and abs(venue_qty) < abs(ledger_net) - tol
+        )
+        if not (flat or scale):
+            return {}
+        factor = 0.0 if flat else abs(venue_qty) / abs(ledger_net)
+        changed: dict[str, float] = {}
+        for strat, qty in legs:
+            delta = qty * factor - qty
+            if abs(delta) > _QTY_EPS:
+                self.apply_delta(strat, sym, delta)
+                changed[strat] = delta
+        return changed
+
+    def symbols(self) -> set[str]:
+        return {sym for syms in self._legs.values() for sym in syms}
+
     def snapshot(self) -> dict[str, dict[str, float]]:
         return {
             strat: {sym: leg.qty for sym, leg in syms.items()}

@@ -662,6 +662,8 @@ class QuoteExecutor:
             logger.debug("MM quote skipped %s %s: below min notional", symbol, side.value)
         elif code == -2022:
             logger.warning("MM quote reduce_only rejected %s %s: %s", symbol, side.value, exc)
+            if self._on_reject is not None:
+                self._on_reject(symbol, side, code)
         elif code in (-4116, -1003) or status in (0, 418):
             logger.warning("MM quote place failed %s %s: %s", symbol, side.value, exc)
             if self._on_reject is not None:

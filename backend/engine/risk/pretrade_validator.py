@@ -261,7 +261,7 @@ class PreTradeValidator:
         if venue_q is not None:
             if abs(venue_q) <= tol:
                 sn = (signal.strategy_name or "").strip()
-                if self._on_ledger_venue_flat_heal and sn and sn != "__netted__":
+                if self._on_ledger_venue_flat_heal:
                     self._on_ledger_venue_flat_heal(sn, signal.symbol)
                 signal_log_emit(
                     logger,

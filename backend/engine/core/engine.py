@@ -384,7 +384,7 @@ class Engine:
             portfolio=self._portfolio,
             breaker=self._breaker,
             skip_rest_poll=self._reconcile_should_skip_rest,
-            on_authoritative_snap=self._oms.touch_venue_truth_from_rest,
+            on_authoritative_snap=self._on_authoritative_venue_snap,
         )
         self._clock = Clock(interval_sec=1.0, tick=self._on_clock_tick)
         self._market_capturer = None
@@ -1537,23 +1537,53 @@ class Engine:
         if local is None or abs(local.qty) <= tol:
             self._risk.note_venue_rejected_exit(symbol)
             self._stop_monitor.disarm(symbol)
+            self._heal_strategy_ledger_venue_flat("", symbol)
             logger.info("healed flat local book for %s after venue -2022", symbol)
 
     def _heal_strategy_ledger_venue_flat(self, strategy_name: str, symbol: str) -> None:
-        """Clear per-strategy ledger when venue is flat but ledger still shows size."""
+        """Clear all per-strategy ledger legs for a symbol the venue reports flat.
+
+        Venue-flat is authoritative: the venue holds one net position per
+        symbol, so a flat venue means every strategy leg is phantom. Zeroing
+        all legs (not just ``strategy_name``'s) also heals netted closes
+        (``__netted__``) and MM reduce-only rejects, which carry no own leg
+        and would otherwise re-emit the same close every tick.
+        """
         if not self.is_multi_strategy_mode():
             return
         sym = symbol.upper()
-        qty = self._strategy_ledger.qty(strategy_name, sym)
-        if abs(qty) <= 1e-12:
-            return
-        self._strategy_ledger.apply_delta(strategy_name, sym, -qty)
-        logger.info(
-            "healed strategy ledger flat %s %s qty=%.8f (venue flat on reduce_only)",
-            strategy_name,
-            sym,
-            qty,
-        )
+        changed = self._strategy_ledger.reconcile_symbol_to_venue(sym, 0.0)
+        if changed:
+            logger.info(
+                "healed strategy ledger flat %s legs=%s (venue flat on reduce_only, via %s)",
+                sym,
+                {k: round(v, 8) for k, v in changed.items()},
+                strategy_name or "-",
+            )
+
+    def _on_authoritative_venue_snap(self) -> None:
+        """Run after a REST venue snapshot heals ``PositionTracker``."""
+        self._oms.touch_venue_truth_from_rest()
+        self._reconcile_strategy_ledger_against_venue()
+
+    def _reconcile_strategy_ledger_against_venue(self) -> None:
+        """Drop/scale per-strategy ledger legs that no longer match venue truth.
+
+        Reconciliation heals the venue-truth ``PositionTracker`` but not this
+        virtual ledger, so closes outside the attributed-fill path leave phantom
+        legs. Align each ledger symbol to the freshly-snapshotted venue qty.
+        """
+        for sym in self._strategy_ledger.symbols():
+            pos = self._positions.get(sym)
+            venue_qty = pos.qty if pos is not None else 0.0
+            changed = self._strategy_ledger.reconcile_symbol_to_venue(sym, venue_qty)
+            if changed:
+                logger.info(
+                    "healed strategy ledger %s to venue qty=%.8f (legs %s)",
+                    sym,
+                    venue_qty,
+                    {k: round(v, 8) for k, v in changed.items()},
+                )
 
     def _flatten_close_mode(self, position: Position, *, retry: bool) -> str:
         """Pick market vs passive/aggressive VWAP for a flatten leg.
@@ -2090,6 +2120,13 @@ class Engine:
         )
 
     def _on_mm_quote_reject(self, symbol: str, side: Side, code: int | None) -> None:
+        if code == -2022:
+            # Venue flat on a reduce-only MM exit: clear phantom ledger legs so
+            # the strategy stops re-emitting the same close (hold_sec climbing)
+            # every tick. This is a flat-venue condition, not a placement
+            # failure, so it skips the quote backoff path.
+            self._heal_strategy_ledger_venue_flat("", symbol)
+            return
         own = self._own_book.state(symbol)
         mm_core.note_mm_venue_reject(
             own, mm_settings_for(self._settings), side=side, code=code
@@ -3139,11 +3176,13 @@ class Engine:
             self._state.status is EngineStatus.RUNNING
             and any(True for _ in self._oms.working_children())
         )
-        stale = (
-            monitored
-            and ws_ts > 0
-            and ws_age > float(self._settings.ws_stale_pause_sec)
+        # Match ConnectionMonitor: user-data goes quiet for minutes between
+        # fills, so use the longer user_data_stale_sec (fall back to the WS
+        # threshold only when it is unset) instead of ws_stale_pause_sec.
+        user_limit = float(self._settings.user_data_stale_sec) or float(
+            self._settings.ws_stale_pause_sec
         )
+        stale = monitored and ws_ts > 0 and ws_age > user_limit
         has_exposure = self.snapshot().gross_notional > 1e-6
         reconcile_stale = (
             self._state.status is EngineStatus.RUNNING

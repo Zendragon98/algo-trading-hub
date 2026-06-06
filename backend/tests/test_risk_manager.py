@@ -90,6 +90,26 @@ def test_monitor_tick_trips_max_drawdown() -> None:
     assert "max_drawdown" in codes
 
 
+def test_monitor_tick_skips_drawdown_exit_when_breaker_disabled() -> None:
+    """Disabling the breaker must suppress the __flatten__ drawdown exit."""
+    settings = Settings(
+        binance_api_key="x", binance_api_secret="y",
+        max_risk_pct=0.10, max_gross_notional=1000.0, max_drawdown_pct=0.05,
+        symbols=["BTCUSDT"],
+        breaker_enabled={"max_drawdown": False},
+    )
+    rm, portfolio = _build(settings)
+    portfolio.seed_cash(1000.0)
+    # 6% drawdown with a 5% cap, but the breaker is off.
+    portfolio.update_cash(940.0)
+    rm._pnl.update()
+    tick = Tick(symbol="BTCUSDT", bid=99.5, ask=100.5)
+    intent = rm.monitor_tick(tick, positions=[Position(symbol="BTCUSDT", qty=1.0)])
+    assert intent is None
+    assert rm.kill_switch is False
+    assert "max_drawdown" not in {s.code for s in rm.breaker.active()}
+
+
 def test_rearm_max_drawdown_reanchors_session_start() -> None:
     """Re-arm alone re-trips; portfolio re-anchor matches operator side effect."""
     settings = _settings()

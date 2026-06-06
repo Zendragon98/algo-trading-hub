@@ -188,6 +188,10 @@ class StrategyHubService:
             if abs(qty) < _QTY_EPS:
                 continue
             pos = self._positions.get(sym)
+            if pos is None or abs(pos.qty) < _QTY_EPS:
+                # Phantom leg: ledger drifted past venue truth (close outside the
+                # attributed-fill path). Hidden here; reconcile heals the ledger.
+                continue
             mark = pos.mark_price if pos is not None and pos.mark_price > 0 else 0.0
             entry = self._ledger.fill_vwap(strategy, sym)
             u = _leg_unrealized_venue_aligned(qty, entry, pos)
