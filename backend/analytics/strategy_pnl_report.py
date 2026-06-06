@@ -11,6 +11,7 @@ from analytics.netting_analysis import load_jsonl
 
 MM2_STRATEGY = "market_making_v2"
 RISK_EXIT = "risk_exit"
+FLATTEN = "__flatten__"
 
 
 @dataclass(slots=True)
@@ -89,11 +90,22 @@ def _parent_meta(run_dir: Path) -> dict[str, dict]:
     return meta
 
 
-def _resolve_strategy(parent_id: str, meta: dict[str, dict], notes: str) -> str:
+def _resolve_strategy(
+    parent_id: str,
+    meta: dict[str, dict],
+    notes: str,
+    fill_strategy_name: str = "",
+) -> str:
     if parent_id.startswith("Q-"):
         return MM2_STRATEGY
+    # Operator / portfolio flatten parents carry no notes; the id prefix is
+    # the only reliable tag for older archives (fix 2).
+    if parent_id.startswith("P-flat-"):
+        return FLATTEN
+    # Prefer the strategy tag persisted on the fill row itself, then fall back
+    # to the parent/execution join (fix 1). Live attribution writes both.
     info = meta.get(parent_id) or {}
-    sn = str(info.get("strategy_name") or "")
+    sn = str(fill_strategy_name or info.get("strategy_name") or "")
     if sn and sn != "__netted__":
         return sn
     text = notes or str(info.get("notes") or "")
@@ -138,7 +150,8 @@ def analyze_run(run_dir: Path) -> RunStrategyReport | None:
 
         parent_id = str(data.get("parent_id") or "")
         notes = str(data.get("notes") or data.get("reason") or "")
-        strategy = _resolve_strategy(parent_id, meta, notes)
+        fill_sn = str(data.get("strategy_name") or "")
+        strategy = _resolve_strategy(parent_id, meta, notes, fill_sn)
 
         if pnl is None:
             if is_close:
@@ -150,7 +163,12 @@ def analyze_run(run_dir: Path) -> RunStrategyReport | None:
             report.close_pnl_sum += pnl
 
         info = meta.get(parent_id) or {}
-        contribs = info.get("strategy_contributions") or {}
+        fill_contribs = data.get("strategy_contributions")
+        contribs = (
+            fill_contribs
+            if isinstance(fill_contribs, dict) and fill_contribs
+            else info.get("strategy_contributions") or {}
+        )
         if strategy == "__netted__" and contribs:
             weights = _contribution_weights(contribs)
             if weights:

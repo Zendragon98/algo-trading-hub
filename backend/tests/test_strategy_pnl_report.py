@@ -61,6 +61,85 @@ def test_strategy_pnl_splits_netted_contributions(tmp_path: Path) -> None:
     assert sma.realized_pnl_usd == pytest.approx(-33.333333, rel=1e-4)
 
 
+def test_strategy_pnl_prefers_fill_strategy_name(tmp_path: Path) -> None:
+    """Fill-level strategy_name attributes even when parent join is missing."""
+    run_dir = tmp_path / "fill-tag-run"
+    run_dir.mkdir()
+    _write_jsonl(
+        run_dir / "fills.jsonl",
+        [
+            {
+                "ts": 1.0,
+                "type": "fill",
+                "data": {
+                    "parent_id": "P-orphan",
+                    "action": "close",
+                    "pnl": 4.0,
+                    "strategy_name": "pairs_trading_usdt_usdc",
+                },
+            },
+        ],
+    )
+    report = analyze_run(run_dir)
+    assert report is not None
+    assert "unknown" not in report.strategies
+    assert report.strategies["pairs_trading_usdt_usdc"].realized_pnl_usd == pytest.approx(4.0)
+
+
+def test_strategy_pnl_tags_flatten_parents(tmp_path: Path) -> None:
+    """``P-flat-*`` unwinds attribute to the flatten bucket, not unknown."""
+    run_dir = tmp_path / "flatten-run"
+    run_dir.mkdir()
+    _write_jsonl(
+        run_dir / "fills.jsonl",
+        [
+            {
+                "ts": 1.0,
+                "type": "fill",
+                "data": {
+                    "parent_id": "P-flat-BNBUSDT",
+                    "action": "close",
+                    "pnl": -1.5,
+                    "strategy_name": "__flatten__",
+                },
+            },
+        ],
+    )
+    report = analyze_run(run_dir)
+    assert report is not None
+    assert "unknown" not in report.strategies
+    assert report.strategies["__flatten__"].realized_pnl_usd == pytest.approx(-1.5)
+
+
+def test_strategy_pnl_splits_fill_level_contributions(tmp_path: Path) -> None:
+    """Netted split works from fill-row contributions without parent join."""
+    run_dir = tmp_path / "fill-contrib-run"
+    run_dir.mkdir()
+    _write_jsonl(
+        run_dir / "fills.jsonl",
+        [
+            {
+                "ts": 1.0,
+                "type": "fill",
+                "data": {
+                    "parent_id": "P-net",
+                    "action": "close",
+                    "pnl": -90.0,
+                    "strategy_name": "__netted__",
+                    "strategy_contributions": {
+                        "flow_momentum": 0.02,
+                        "sma_crossover": 0.01,
+                    },
+                },
+            },
+        ],
+    )
+    report = analyze_run(run_dir)
+    assert report is not None
+    assert report.strategies["flow_momentum"].realized_pnl_usd == pytest.approx(-60.0, rel=1e-4)
+    assert report.strategies["sma_crossover"].realized_pnl_usd == pytest.approx(-30.0, rel=1e-4)
+
+
 def test_strategy_pnl_tags_mm_quotes(tmp_path: Path) -> None:
     run_dir = tmp_path / "mm-run"
     run_dir.mkdir()
