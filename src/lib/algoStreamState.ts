@@ -78,8 +78,6 @@ export type AlgoStream = {
   bookResyncProgress: StartupProgress | null;
   paperMode: boolean;
   uptimeSec: number;
-  /** Epoch seconds when the current uptime window began (for local TopBar ticking). */
-  sessionStartedAt: number | null;
   strategy: StrategyInfo | null;
   strategies: StrategyInfo[];
   equityCurve: EquityCurvePoint[];
@@ -182,7 +180,6 @@ export function createEmptyAlgoStream(): AlgoStream {
     bookResyncProgress: null,
     paperMode: false,
     uptimeSec: 0,
-    sessionStartedAt: null,
     strategy: null,
     strategies: [],
     equityCurve: [],
@@ -367,7 +364,6 @@ export function applyTradingState(
     nextStatus === "starting" ? null : prev.bookResyncProgress;
   const nextPaperMode = state.status.paper_mode;
   const nextUptimeSec = Math.floor(state.status.uptime_sec);
-  const nextSessionStartedAt = Date.now() / 1000 - state.status.uptime_sec;
   const nextStrategy = state.strategy ? toStrategyInfo(state.strategy) : null;
   const nextStrategies = state.strategies.map(toStrategyInfo);
   const nextEquityCurve = equityDtoToPoints(state.equity);
@@ -400,7 +396,6 @@ export function applyTradingState(
 
   const heartbeatUnchanged =
     prev.uptimeSec === nextUptimeSec &&
-    prev.sessionStartedAt === nextSessionStartedAt &&
     healthTouch.systemHealthAsOf === prev.systemHealthAsOf;
 
   const portfolioUnchanged =
@@ -424,7 +419,6 @@ export function applyTradingState(
     return {
       ...prev,
       uptimeSec: nextUptimeSec,
-      sessionStartedAt: nextSessionStartedAt,
       equityCurve: nextEquityCurve,
       positions: nextPositions,
       trades: nextTrades,
@@ -447,7 +441,6 @@ export function applyTradingState(
     bookResyncProgress: nextBookResyncProgress,
     paperMode: nextPaperMode,
     uptimeSec: nextUptimeSec,
-    sessionStartedAt: nextSessionStartedAt,
     strategy: nextStrategy,
     strategies: nextStrategies,
     equityCurve: nextEquityCurve,
@@ -704,10 +697,6 @@ export function applyWsEvent(
           ...prev,
           status: data.status,
           uptimeSec: Math.floor(data.uptime_sec ?? prev.uptimeSec),
-          sessionStartedAt:
-            data.uptime_sec !== undefined
-              ? Date.now() / 1000 - data.uptime_sec
-              : prev.sessionStartedAt,
           startupProgress:
             data.status === "starting" && data.startup
               ? toStartupProgress(data.startup)

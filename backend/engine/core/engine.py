@@ -909,17 +909,7 @@ class Engine:
                 await self._abort_start()
                 raise
 
-    def _begin_new_session(self) -> None:
-        """Reset session-scoped KPIs when the operator starts after stop or E-Stop."""
-        logger.info("beginning new trading session")
-        self._state.started_at = time.time()
-        self._performance.reset_session()
-        self._loss_tracker.reset_session()
-        self._pnl.reset_session()
-        self._portfolio.begin_new_session()
-
     async def _start_impl(self) -> None:
-        self._begin_new_session()
         await self._gateway.connect()
         await self._set_startup("clock", "Syncing exchange clock…")
         await self._refresh_clock_skew()
@@ -1259,6 +1249,13 @@ class Engine:
         await self._router.shutdown()
         await self._mass_cancel_venue_orders()
         await self._gateway.disconnect()
+        for strat in self._strategies:
+            persist = getattr(strat, "persist_warmup_state", None)
+            if callable(persist):
+                try:
+                    persist()
+                except Exception:  # noqa: BLE001
+                    logger.debug("strategy warmup persist failed for %s", strat.name, exc_info=True)
         self._state.status = EngineStatus.STOPPED
         await self._publish_status()
         logger.info("engine stopped")
@@ -2417,18 +2414,21 @@ class Engine:
         # so the console stays live while the operator inspects a halt.
         await self._publish_ops_status()
         await self._maybe_publish_strategy_hub()
-        if self._state.status is not EngineStatus.RUNNING:
+        if self._state.status not in (EngineStatus.RUNNING, EngineStatus.PAUSED):
             return
 
-        await self._maybe_refresh_mm_universe_adverse()
-        await self._maybe_poll_funding()
+        is_trading = self._state.status is EngineStatus.RUNNING
 
-        # Risk-driven exits first; an exit can't be vetoed by risk again
-        # because it's already a closing trade.
-        await self._latency.maybe_emit(self._settings.latency_metrics_interval_sec)
-        stale = self._md_quality.tick_staleness(now=time.time())
-        for sym in stale[:_MAX_MD_RESNAPSHOTS_PER_TICK]:
-            await self._snapshot_book(sym)
+        if is_trading:
+            await self._maybe_refresh_mm_universe_adverse()
+            await self._maybe_poll_funding()
+
+            # Risk-driven exits first; an exit can't be vetoed by risk again
+            # because it's already a closing trade.
+            await self._latency.maybe_emit(self._settings.latency_metrics_interval_sec)
+            stale = self._md_quality.tick_staleness(now=time.time())
+            for sym in stale[:_MAX_MD_RESNAPSHOTS_PER_TICK]:
+                await self._snapshot_book(sym)
         if self.is_multi_strategy_mode():
             self._refresh_ticks_from_books(self._symbols)
         else:
@@ -2437,9 +2437,10 @@ class Engine:
                 self._refresh_ticks_from_books(active.symbols())
         if self._book_resync is not None:
             return
-        if self._market_capturer is not None:
+        if is_trading and self._market_capturer is not None:
             self._market_capturer.on_clock()
-        await self._evaluate_exits()
+        if is_trading:
+            await self._evaluate_exits()
         await self._evaluate_strategies()
 
     async def _maybe_flatten_for_breaker(self) -> None:
@@ -2523,13 +2524,16 @@ class Engine:
         if active is None:
             return
         if mm_core.is_mm_strategy(active.name):
-            await self._evaluate_mm_quotes(active)
+            if self._state.status is EngineStatus.RUNNING:
+                await self._evaluate_mm_quotes(active)
             return
         try:
             feats = {sym: self._features.snapshot(sym) for sym in active.symbols()}
             signals = list(active.on_tick(feats))
         except Exception:  # noqa: BLE001
             logger.exception("strategy %s on_tick raised", active.name)
+            return
+        if self._state.status is not EngineStatus.RUNNING:
             return
         await self._dispatch_signals(signals)
 
@@ -2643,7 +2647,8 @@ class Engine:
         mm_quote_counts: dict[str, tuple[int, int]] = {}
         for strat in self._strategies:
             if mm_core.is_mm_strategy(strat.name):
-                mm_quote_counts[strat.name] = await self._evaluate_mm_quotes(strat)
+                if self._state.status is EngineStatus.RUNNING:
+                    mm_quote_counts[strat.name] = await self._evaluate_mm_quotes(strat)
             else:
                 alpha_strategies.append(strat)
                 symbol_union.update(strat.symbols())
@@ -2654,15 +2659,16 @@ class Engine:
             try:
                 feats = {sym: feats_cache[sym] for sym in strat.symbols() if sym in feats_cache}
                 for sig in strat.on_tick(feats):
-                    tagged.append((strat.name, sig))
-                    sig_counts[strat.name] = sig_counts.get(strat.name, 0) + 1
+                    if self._state.status is EngineStatus.RUNNING:
+                        tagged.append((strat.name, sig))
+                        sig_counts[strat.name] = sig_counts.get(strat.name, 0) + 1
             except Exception:  # noqa: BLE001
                 logger.exception("strategy %s on_tick raised", strat.name)
         self._maybe_log_multi_strategy_summary(
             sig_counts=sig_counts,
             mm_quote_counts=mm_quote_counts,
         )
-        if not tagged:
+        if self._state.status is not EngineStatus.RUNNING or not tagged:
             return
         result = net_strategy_signals(tagged)
         for netted in result.loose:

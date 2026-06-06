@@ -368,9 +368,9 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
               <strong className="text-foreground">Rolling</strong> is the last {"\u2264"}200 parent-level
               realized closes (VWAP slices roll into one row);{" "}
               <strong className="text-foreground">Session</strong> counts every reducing fill with
-              realized P&L since the last <strong className="text-foreground">Start</strong> after{" "}
-              <strong className="text-foreground">Stop</strong> or <strong className="text-foreground">E-Stop</strong>{" "}
-              (pause/resume keeps the same session). <strong className="text-foreground">Headline win rate</strong>{" "}
+              realized P&L since the <strong className="text-foreground">backend process</strong> started
+              (Stop, E-Stop, and dashboard refresh do not reset it; only an API restart does).{" "}
+              <strong className="text-foreground">Headline win rate</strong>{" "}
               = wins / all closes (breakevens in the denominator).{" "}
               <strong className="text-foreground">Breakeven WR</strong> compares{" "}
               <strong className="text-foreground">decisive</strong> win rate wins / (wins + losses) to

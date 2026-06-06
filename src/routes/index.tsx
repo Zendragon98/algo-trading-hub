@@ -70,7 +70,7 @@ function Index() {
   const positions: Position[] = live.positions;
   const trades: Trade[] = live.trades;
   const logs: LogEntry[] = live.logs;
-  const sessionStartedAt = live.sessionStartedAt;
+  const uptimeSec = live.uptimeSec;
   const workingOrders: WorkingOrder[] = live.orders;
   const workingParents: ExecutionParent[] = live.workingParents;
   const executionHistory: ExecutionParent[] = live.executionHistory;
@@ -365,7 +365,7 @@ function Index() {
 
       <TopBar
         status={status}
-        sessionStartedAt={sessionStartedAt}
+        uptimeSec={uptimeSec}
         paperMode={paperMode}
         strategy={strategy}
         backendReachable={backendReachable}

@@ -82,18 +82,17 @@ export function StartupProgressBanner(props: {
   );
 }
 
-function formatUptime(sessionStartedAt: number | null): string {
-  if (sessionStartedAt === null) return "00:00:00";
-  const uptimeSec = Math.max(0, Math.floor(Date.now() / 1000 - sessionStartedAt));
-  const h = Math.floor(uptimeSec / 3600);
-  const m = Math.floor((uptimeSec % 3600) / 60);
-  const s = uptimeSec % 60;
+function formatUptimeSec(uptimeSec: number): string {
+  const totalSec = Math.max(0, Math.floor(uptimeSec));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
 export const TopBar = memo(function TopBar(props: {
   status: AlgoStatus;
-  sessionStartedAt: number | null;
+  uptimeSec: number;
   paperMode: boolean;
   strategy: StrategyInfo | null;
   backendReachable: boolean;
@@ -102,15 +101,21 @@ export const TopBar = memo(function TopBar(props: {
   onEStop: () => void;
   onHaltTrading: (opts?: { flatten?: boolean; pause?: boolean }) => void;
 }) {
-  const { status, sessionStartedAt, paperMode, strategy } = props;
-  const [uptime, setUptime] = useState(() => formatUptime(sessionStartedAt));
+  const { status, uptimeSec, paperMode, strategy } = props;
+  const [displaySec, setDisplaySec] = useState(uptimeSec);
 
   useEffect(() => {
-    setUptime(formatUptime(sessionStartedAt));
-    if (sessionStartedAt === null) return;
-    const id = window.setInterval(() => setUptime(formatUptime(sessionStartedAt)), 1000);
+    setDisplaySec(uptimeSec);
+    if (!props.backendReachable) return;
+    const anchorMs = Date.now();
+    const baseSec = uptimeSec;
+    const id = window.setInterval(() => {
+      setDisplaySec(baseSec + Math.floor((Date.now() - anchorMs) / 1000));
+    }, 1000);
     return () => window.clearInterval(id);
-  }, [sessionStartedAt]);
+  }, [uptimeSec, props.backendReachable]);
+
+  const uptime = formatUptimeSec(displaySec);
 
   const statusMeta = {
     running: { label: "RUNNING", color: "text-bull", dot: "bg-bull glow-bull" },

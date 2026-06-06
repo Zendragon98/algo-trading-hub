@@ -63,6 +63,8 @@ logger = logging.getLogger(__name__)
 _BTC_PAIR_KEY = "BTCUSDT|BTCUSDC"
 _ETH_PAIR_KEY = "ETHUSDT|ETHUSDC"
 _REFERENCE_LOG_INTERVAL_SEC = 10.0
+_WARMUP_STATE_VERSION = 1
+_WARMUP_SAVE_DEBOUNCE_SEC = 30.0
 
 
 # Snapshot returned by the engine. We only need `.equity` so any object
@@ -171,6 +173,17 @@ class _DeviationStats:
             self._sum -= evicted
             self._sumsq -= evicted * evicted
 
+    def restore_samples(self, rows: list[tuple[float, float]]) -> None:
+        """Replace rolling samples (e.g. after backend restart)."""
+        self.samples.clear()
+        self._sum = 0.0
+        self._sumsq = 0.0
+        for ts, value in rows:
+            self.push(float(ts), float(value))
+
+    def export_samples(self) -> list[list[float]]:
+        return [[ts, value] for ts, value in self.samples]
+
     def zscore(self, value: float) -> float | None:
         n = len(self.samples)
         if n < self.min_samples:
@@ -229,8 +242,10 @@ class PairsTradingStrategy(StrategyBase):
         self._analytics_cache: dict[str, str | float | int | bool | None] = {
             "STRATEGY": self.display_label or self.name,
         }
+        self._last_warmup_save_ts: float = 0.0
 
         self._load_calibration(settings)
+        self._restore_warmup_state()
 
         if not self._pairs:
             logger.warning(
@@ -282,6 +297,92 @@ class PairsTradingStrategy(StrategyBase):
                 )
         self._stats = new_stats
         self._load_calibration(settings)
+
+    @staticmethod
+    def _warmup_state_path(settings: Settings) -> Path:
+        base = Path(settings.persist_dir)
+        if not base.is_absolute():
+            base = Path(__file__).resolve().parent.parent.parent / base
+        return base.parent / "state" / "pairs_warmup_state.json"
+
+    def _restore_warmup_state(self) -> None:
+        path = self._warmup_state_path(self._settings)
+        if not path.is_file():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            logger.warning("failed to read pairs warmup state from %s", path, exc_info=True)
+            return
+        if int(payload.get("version", 0)) != _WARMUP_STATE_VERSION:
+            return
+        bar_bucket = payload.get("bar_bucket")
+        if bar_bucket is not None:
+            self._bar_bucket = int(bar_bucket)
+        stats_blob = payload.get("stats")
+        if not isinstance(stats_blob, dict):
+            return
+        restored = 0
+        for key, row in stats_blob.items():
+            if not isinstance(row, dict):
+                continue
+            stats = self._stats.get(str(key))
+            if stats is None:
+                continue
+            if int(row.get("window_sec", stats.window_sec)) != stats.window_sec:
+                continue
+            samples_raw = row.get("samples")
+            if not isinstance(samples_raw, list):
+                continue
+            rows: list[tuple[float, float]] = []
+            for item in samples_raw:
+                if (
+                    isinstance(item, list)
+                    and len(item) == 2
+                    and isinstance(item[0], (int, float))
+                    and isinstance(item[1], (int, float))
+                ):
+                    rows.append((float(item[0]), float(item[1])))
+            if rows:
+                stats.restore_samples(rows)
+                restored += len(rows)
+        if restored:
+            logger.info(
+                "restored pairs warmup state from %s (%d deviation samples)",
+                path,
+                restored,
+            )
+
+    def persist_warmup_state(self) -> None:
+        path = self._warmup_state_path(self._settings)
+        payload = {
+            "version": _WARMUP_STATE_VERSION,
+            "saved_at": time.time(),
+            "bar_bucket": self._bar_bucket,
+            "bar_interval_sec": self._bar_interval_sec,
+            "stats": {
+                key: {
+                    "window_sec": stats.window_sec,
+                    "min_samples": stats.min_samples,
+                    "samples": stats.export_samples(),
+                }
+                for key, stats in self._stats.items()
+            },
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            tmp.replace(path)
+        except Exception:  # noqa: BLE001
+            logger.warning("failed to persist pairs warmup state to %s", path, exc_info=True)
+
+    def _maybe_persist_warmup_state(self, *, force: bool = False) -> None:
+        now = time.time()
+        if not force and now - self._last_warmup_save_ts < _WARMUP_SAVE_DEBOUNCE_SEC:
+            return
+        self._last_warmup_save_ts = now
+        self.persist_warmup_state()
 
     def _load_calibration(self, settings: Settings) -> None:
         """Apply per-base entry/exit/stop z from pair JSON and symbol_calibration."""
@@ -449,6 +550,7 @@ class PairsTradingStrategy(StrategyBase):
             stats = self._stats[key]
             if push_sample:
                 stats.push(now, deviation)
+                self._maybe_persist_warmup_state()
             z = stats.zscore(deviation)
             usdt_mid, usdc_mid = mids_by_pair[key]
             self._maybe_refresh_analytics(

@@ -22,6 +22,7 @@ class EngineState:
     """Mutable bag of per-process state."""
 
     status: EngineStatus = EngineStatus.STOPPED
+    # Process boot time — never reset on trading start/stop; drives uptime_sec.
     started_at: float = field(default_factory=time)
     last_tick_ts: float = 0.0
 

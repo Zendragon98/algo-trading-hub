@@ -65,3 +65,13 @@ def test_non_stable_base_currency_returns_only_that_asset() -> None:
     p = _portfolio(base_currency="BNB")
     p.seed_balances({"BNB": 12.0, "USDT": 1000.0})
     assert p.cash == 12.0
+
+
+def test_reseed_preserves_session_start_equity() -> None:
+    """Engine Start after Stop refreshes wallets without resetting session baselines."""
+    p = _portfolio()
+    p.seed_balances({"USDT": 1000.0})
+    baseline = p.session_start_equity
+    p.seed_balances({"USDT": 1500.0})
+    assert p.session_start_equity == baseline
+    assert p.cash == 1500.0

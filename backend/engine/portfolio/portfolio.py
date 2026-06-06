@@ -111,16 +111,20 @@ class Portfolio:
     def seed_balances(self, balances: Mapping[str, float]) -> None:
         """Replace the per-asset cash map (used at engine boot).
 
-        Sets ``session_start_equity`` so drawdown is measured from this
-        snapshot. Subsequent updates from the venue should go through
-        ``update_asset_balance`` so unreported assets retain their balance.
+        On the first seed in a backend process, sets ``session_start_equity``
+        so drawdown is measured from that snapshot. Re-seeds on later Start
+        cycles only refresh wallet balances — session baselines persist until
+        the API process exits.
         """
         self._cash_by_asset = {k.upper(): float(v) for k, v in balances.items()}
-        self._session_start_equity = self.snapshot().equity
-        self._reset_session_drawdown(self._session_start_equity)
+        equity = self.snapshot().equity
+        if self._session_start_equity <= 0.0:
+            self._session_start_equity = equity
+            self._reset_session_drawdown(self._session_start_equity)
         logger.info(
             "portfolio seeded cash=%.2f equity=%.2f assets=%s",
-            self.cash, self._session_start_equity,
+            self.cash,
+            equity,
             {k: round(v, 2) for k, v in self._cash_by_asset.items()},
         )
 
@@ -175,10 +179,6 @@ class Portfolio:
         self._session_start_equity = eq
         self._reset_session_drawdown(eq)
         logger.info("session_start_equity re-anchored after drawdown rearm: %.2f", eq)
-
-    def begin_new_session(self) -> None:
-        """Clear session-scoped chart history before balances are re-seeded."""
-        self._equity_curve.clear()
 
     def _reset_session_drawdown(self, equity: float) -> None:
         self._session_peak_equity = equity

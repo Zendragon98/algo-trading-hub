@@ -42,9 +42,9 @@ export function equityDtoToPoints(dto: EquityDTO): EquityCurvePoint[] {
   } else if (!dto.equity.length) {
     return [];
   } else {
-    const endTs = dto.last_ts > 0 ? dto.last_ts : Date.now() / 1000;
+    const endTs = dto.last_ts > 0 ? dto.last_ts : 0;
     points = dto.equity.map((equity, i) => ({
-      ts: endTs - (dto.equity.length - 1 - i),
+      ts: endTs > 0 ? endTs - (dto.equity.length - 1 - i) : i,
       equity,
     }));
   }

@@ -57,8 +57,8 @@ class PerformanceTracker:
     ``_realized`` only — closes with a PnL figure (venue ``rp`` or computed),
     capped separately so opens cannot evict realized history.
 
-    Session KPIs count **every** reducing fill with realized PnL since the last
-    engine start after stop or E-Stop (see ``reset_session``). The rolling
+    Session KPIs count **every** reducing fill with realized PnL since backend
+    process boot (see ``reset_session`` for tests). The rolling ``_realized``
     ``_realized`` window still rolls VWAP parent slices into **one** close when
     the parent completes (see ``finalize_parent_close``).
     """
@@ -71,7 +71,7 @@ class PerformanceTracker:
         self._realized: list[TradeRecord] = []
         self._history_size = history_size
         self._pending_parent_closes: dict[str, _PendingParentClose] = {}
-        # Cumulative session stats (since last stop→start); independent of the 200 cap.
+        # Cumulative session stats (since backend process boot); independent of the 200 cap.
         self._session_wins = 0
         self._session_losses = 0
         self._session_breakevens = 0

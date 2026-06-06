@@ -468,3 +468,24 @@ def test_time_stop_emits_pairs_time_reason(monkeypatch) -> None:
     ))
     assert len(sigs) == 2
     assert all("pairs_time" in s.reason for s in sigs)
+
+
+def test_warmup_state_persists_and_reloads(tmp_path, monkeypatch) -> None:
+    settings = _settings(pair_bar_sec=60, pair_min_z_samples=5, persist_dir=str(tmp_path / "runs"))
+    strat = PairsTradingStrategy(settings)
+    key = "BTCUSDT|BTCUSDC"
+    stats = strat._stats[key]  # type: ignore[attr-defined]
+    base = {"BTCUSDT": 100.0, "BTCUSDC": 100.0, "ETHUSDT": 50.0, "ETHUSDC": 50.0}
+
+    monkeypatch.setattr("engine.strategies.pairs_trading.time.time", lambda: 0.0)
+    list(strat.on_tick(_features(base)))
+    monkeypatch.setattr("engine.strategies.pairs_trading.time.time", lambda: 61.0)
+    list(strat.on_tick(_features(base)))
+    monkeypatch.setattr("engine.strategies.pairs_trading.time.time", lambda: 121.0)
+    list(strat.on_tick(_features(base)))
+    assert len(stats.samples) == 2
+
+    strat.persist_warmup_state()
+    reloaded = PairsTradingStrategy(settings)
+    re_stats = reloaded._stats[key]  # type: ignore[attr-defined]
+    assert len(re_stats.samples) == 2

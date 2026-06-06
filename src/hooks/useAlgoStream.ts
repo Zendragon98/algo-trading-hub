@@ -40,7 +40,6 @@ const AlgoStreamContext = createContext<AlgoStream | null>(null);
 function useAlgoStreamInternal(): AlgoStream {
   const [stream, setStream] = useState<AlgoStream>(createEmptyAlgoStream);
   const wsRef = useRef<WebSocket | null>(null);
-  const startedAtRef = useRef<number | null>(null);
   const lastHydrateRef = useRef(0);
   const syncTradingStateRef = useRef<(() => Promise<void>) | null>(null);
   const wsResyncTimerRef = useRef<number | null>(null);
@@ -67,7 +66,6 @@ function useAlgoStreamInternal(): AlgoStream {
 
   const syncTradingState = useCallback(async () => {
     const [state, logs] = await Promise.all([api.state(), api.logs(80)]);
-    startedAtRef.current = Date.now() / 1000 - state.status.uptime_sec;
     lastHydrateRef.current = Date.now();
     setStream((prev) => {
       const next = applyTradingState(
@@ -91,7 +89,6 @@ function useAlgoStreamInternal(): AlgoStream {
   const refresh = useCallback(async () => {
     try {
       const state = await api.state();
-      startedAtRef.current = Date.now() / 1000 - state.status.uptime_sec;
       lastHydrateRef.current = Date.now();
 
       startTransition(() => {
@@ -285,9 +282,6 @@ function useAlgoStreamInternal(): AlgoStream {
         event = JSON.parse(msg.data) as WsEvent;
       } catch {
         return;
-      }
-      if (event.type === "status" && event.data.uptime_sec !== undefined) {
-        startedAtRef.current = Date.now() / 1000 - event.data.uptime_sec;
       }
       enqueueWsEvent(event);
     };
