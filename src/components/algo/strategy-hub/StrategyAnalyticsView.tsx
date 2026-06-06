@@ -22,7 +22,7 @@ const METRIC_LABELS: Record<string, string> = {
   PAIR: "Pair",
   BASE_MID: "Base mid",
   HEDGE_MID: "Hedge mid",
-  SPREAD: "Spread",
+  SPREAD: "Deviation",
   BASIS: "Basis",
   REFERENCE: "Reference",
   PAIR_STATE: "Position side",
@@ -85,8 +85,19 @@ function pnlTone(value: number): string {
   return "text-muted-foreground";
 }
 
-function formatMetricValue(key: string, value: string | number | boolean | null | undefined): string {
+function formatPairState(value: string | number | boolean | null | undefined): string {
   if (value === null || value === undefined) return EM_DASH;
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n === 0) return "Flat";
+  return n > 0 ? "Long USDC / Short USDT" : "Long USDT / Short USDC";
+}
+
+function formatMetricValue(
+  key: string,
+  value: string | number | boolean | null | undefined,
+): string {
+  if (value === null || value === undefined) return EM_DASH;
+  if (key === "PAIR_STATE") return formatPairState(value);
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (key === "INVENTORY_NOTIONAL" && typeof value === "number") {
     return `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
@@ -104,22 +115,27 @@ function formatMetricValue(key: string, value: string | number | boolean | null 
 function signalTone(signal: string): string {
   const upper = signal.toUpperCase();
   if (upper.includes("LONG") || upper.includes("BUY")) return "border-bull/40 bg-bull/10 text-bull";
-  if (upper.includes("SHORT") || upper.includes("SELL")) return "border-bear/40 bg-bear/10 text-bear";
+  if (upper.includes("SHORT") || upper.includes("SELL"))
+    return "border-bear/40 bg-bear/10 text-bear";
   if (upper === "IN_POSITION") return "border-warning/40 bg-warning/10 text-warning";
-  if (upper === "WARMUP" || upper === "HOLD") return "border-border bg-muted/30 text-muted-foreground";
+  if (upper === "WARMUP" || upper === "MONITORING" || upper === "HOLD") {
+    return "border-border bg-muted/30 text-muted-foreground";
+  }
   return "border-border bg-card text-foreground";
 }
 
 function signalIcon(signal: string) {
   const upper = signal.toUpperCase();
   if (upper.includes("LONG") || upper.includes("BUY")) return <ArrowUpRight className="size-4" />;
-  if (upper.includes("SHORT") || upper.includes("SELL")) return <ArrowDownRight className="size-4" />;
+  if (upper.includes("SHORT") || upper.includes("SELL"))
+    return <ArrowDownRight className="size-4" />;
   if (upper === "IN_POSITION") return <Activity className="size-4" />;
   return <Minus className="size-4" />;
 }
 
 function groupMetrics(rows: Record<string, string | number | boolean | null>) {
-  const grouped: Partial<Record<MetricGroup, Array<[string, string | number | boolean | null]>>> = {};
+  const grouped: Partial<Record<MetricGroup, Array<[string, string | number | boolean | null]>>> =
+    {};
   for (const [key, value] of Object.entries(rows)) {
     if (key === "STRATEGY") continue;
     const group = METRIC_GROUPS[key] ?? "execution";
@@ -129,11 +145,7 @@ function groupMetrics(rows: Record<string, string | number | boolean | null>) {
   return grouped;
 }
 
-function MetricGrid({
-  entries,
-}: {
-  entries: Array<[string, string | number | boolean | null]>;
-}) {
+function MetricGrid({ entries }: { entries: Array<[string, string | number | boolean | null]> }) {
   if (!entries.length) return null;
   return (
     <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
@@ -171,10 +183,7 @@ function StrategyTelemetry({
     <div className="space-y-4 p-4">
       {signal ? (
         <div
-          className={cn(
-            "flex items-center gap-3 rounded-md border px-4 py-3",
-            signalTone(signal),
-          )}
+          className={cn("flex items-center gap-3 rounded-md border px-4 py-3", signalTone(signal))}
         >
           {signalIcon(signal)}
           <div>
@@ -184,7 +193,9 @@ function StrategyTelemetry({
           {analytics.Z_SCORE != null ? (
             <div className="ml-auto text-right">
               <div className="text-[10px] uppercase tracking-wider opacity-80">Z-score</div>
-              <div className="font-mono text-sm tabular-nums">{formatMetricValue("Z_SCORE", analytics.Z_SCORE)}</div>
+              <div className="font-mono text-sm tabular-nums">
+                {formatMetricValue("Z_SCORE", analytics.Z_SCORE)}
+              </div>
             </div>
           ) : null}
         </div>
@@ -232,7 +243,9 @@ function StrategyCard({
       right={
         <span className="font-mono text-[10px] normal-case tracking-normal text-muted-foreground">
           {row.name}
-          {row.openLegs.length > 0 ? ` · ${row.openLegs.length} leg${row.openLegs.length === 1 ? "" : "s"}` : ""}
+          {row.openLegs.length > 0
+            ? ` · ${row.openLegs.length} leg${row.openLegs.length === 1 ? "" : "s"}`
+            : ""}
         </span>
       }
     >
@@ -263,23 +276,39 @@ function StrategyCard({
               </thead>
               <tbody>
                 {row.openLegs.map((leg) => (
-                  <tr key={`${row.name}-${leg.symbol}`} className="border-b border-border/50 last:border-0">
+                  <tr
+                    key={`${row.name}-${leg.symbol}`}
+                    className="border-b border-border/50 last:border-0"
+                  >
                     <td className="px-4 py-2 font-mono">{leg.symbol}</td>
                     <td className="px-4 py-2">
                       <Badge
                         variant="outline"
                         className={cn(
                           "text-[10px] uppercase",
-                          leg.side === "long" ? "border-bull/40 text-bull" : "border-bear/40 text-bear",
+                          leg.side === "long"
+                            ? "border-bull/40 text-bull"
+                            : "border-bear/40 text-bear",
                         )}
                       >
                         {leg.side}
                       </Badge>
                     </td>
-                    <td className="px-4 py-2 text-right font-mono tabular-nums">{leg.size.toFixed(6)}</td>
-                    <td className="px-4 py-2 text-right font-mono tabular-nums">{leg.entry.toFixed(4)}</td>
-                    <td className="px-4 py-2 text-right font-mono tabular-nums">{leg.mark.toFixed(4)}</td>
-                    <td className={cn("px-4 py-2 text-right font-mono tabular-nums", pnlTone(leg.unrealizedPnl))}>
+                    <td className="px-4 py-2 text-right font-mono tabular-nums">
+                      {leg.size.toFixed(6)}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono tabular-nums">
+                      {leg.entry.toFixed(4)}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono tabular-nums">
+                      {leg.mark.toFixed(4)}
+                    </td>
+                    <td
+                      className={cn(
+                        "px-4 py-2 text-right font-mono tabular-nums",
+                        pnlTone(leg.unrealizedPnl),
+                      )}
+                    >
                       {formatSignedRealizedPnl(leg.unrealizedPnl)}
                     </td>
                   </tr>
@@ -328,7 +357,10 @@ function ActivityLogEntry({ line }: { line: Record<string, unknown> }) {
           const total = typeof row.total_pnl === "number" ? row.total_pnl : 0;
           const signal = analytics[name]?.SIGNAL;
           return (
-            <div key={`${name}-${i}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <div
+              key={`${name}-${i}`}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"
+            >
               <span className="font-medium">{label}</span>
               <span className={cn("font-mono tabular-nums", pnlTone(total))}>
                 {formatSignedRealizedPnl(total)}
@@ -418,7 +450,12 @@ function SummaryStrip({
           )}
           Portfolio P&L (venue)
         </div>
-        <div className={cn("mt-2 font-mono text-2xl font-semibold tabular-nums", pnlTone(portfolio.total))}>
+        <div
+          className={cn(
+            "mt-2 font-mono text-2xl font-semibold tabular-nums",
+            pnlTone(portfolio.total),
+          )}
+        >
           {formatSignedRealizedPnl(portfolio.total)}
         </div>
         <div className="mt-1 text-[11px] text-muted-foreground">
@@ -426,12 +463,14 @@ function SummaryStrip({
           {formatSignedRealizedPnl(portfolio.unrealized)}
         </div>
         <div className="mt-1 text-[11px] text-muted-foreground">
-          Matches live console · open P&L uses Binance <span className="font-mono">up</span>
+          Matches live console · open P&L from mark-to-market (BBO)
         </div>
       </div>
 
       <div className="rounded-sm border border-border bg-card/60 p-4">
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Session equity Δ</div>
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          Session equity Δ
+        </div>
         <div
           className={cn(
             "mt-2 font-mono text-2xl font-semibold tabular-nums",
@@ -442,7 +481,10 @@ function SummaryStrip({
         </div>
         <div className="mt-1 text-[11px] text-muted-foreground">
           Since engine start · equity $
-          {portfolio.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          {portfolio.equity.toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })}
         </div>
         {equityCurveDelta != null ? (
           <div className="mt-1 text-[11px] text-muted-foreground">
@@ -452,18 +494,28 @@ function SummaryStrip({
       </div>
 
       <div className="rounded-sm border border-border bg-card/60 p-4">
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Attributed breakdown</div>
-        <div className={cn("mt-2 font-mono text-2xl font-semibold tabular-nums", pnlTone(attributed.total))}>
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          Attributed breakdown
+        </div>
+        <div
+          className={cn(
+            "mt-2 font-mono text-2xl font-semibold tabular-nums",
+            pnlTone(attributed.total),
+          )}
+        >
           {formatSignedRealizedPnl(attributed.total)}
         </div>
         <div className="mt-1 text-[11px] text-muted-foreground">
           {hub.strategies.length} strateg{hub.strategies.length === 1 ? "y" : "ies"} · mode{" "}
           <span className="font-mono text-foreground">{hub.mode}</span>
-          {attributed.legs > 0 ? ` · ${attributed.legs} leg${attributed.legs === 1 ? "" : "s"}` : ""}
+          {attributed.legs > 0
+            ? ` · ${attributed.legs} leg${attributed.legs === 1 ? "" : "s"}`
+            : ""}
         </div>
         {showGap ? (
           <div className="mt-1 text-[11px] text-warning">
-            Gap vs venue {formatSignedRealizedPnl(attributionGap)} — unattributed closes or ledger drift
+            Gap vs venue {formatSignedRealizedPnl(attributionGap)} — unattributed closes or ledger
+            drift
           </div>
         ) : null}
       </div>
@@ -474,10 +526,10 @@ function SummaryStrip({
           How to read this
         </div>
         <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-          <strong className="text-foreground">Portfolio P&L</strong> is the venue truth used on the live
-          console. <strong className="text-foreground">Attributed</strong> splits that activity across
-          strategies from the ledger and close tape — it will not always sum exactly. Per-strategy realized
-          counts attributed closes since engine start.
+          <strong className="text-foreground">Portfolio P&L</strong> is the venue truth used on the
+          live console. <strong className="text-foreground">Attributed</strong> splits that activity
+          across strategies from the ledger and close tape — it will not always sum exactly.
+          Per-strategy realized counts attributed closes since engine start.
         </p>
         {updated ? (
           <p className="mt-2 text-[11px] text-muted-foreground">
@@ -492,23 +544,16 @@ function SummaryStrip({
 export function StrategyAnalyticsView({
   hub,
   logLines,
-  error,
+  logError,
   systemHealth = null,
   equityCurveDelta = null,
 }: {
   hub: StrategyHubSnapshot | null;
   logLines: Array<Record<string, unknown>>;
-  error: string | null;
+  logError: string | null;
   systemHealth?: SystemHealth | null;
   equityCurveDelta?: number | null;
 }) {
-  if (error) {
-    return (
-      <div className="rounded-sm border border-bear/40 bg-bear/10 px-4 py-3 text-sm text-bear">
-        {error}
-      </div>
-    );
-  }
   if (!hub) {
     return (
       <div className="rounded-sm border border-border bg-card/60 px-4 py-8 text-center text-sm text-muted-foreground">
@@ -529,8 +574,8 @@ export function StrategyAnalyticsView({
 
       {hub.strategies.length === 0 ? (
         <div className="rounded-sm border border-border bg-card/60 px-4 py-8 text-center text-sm text-muted-foreground">
-          No strategies are active in the current engine mode. Start the engine or switch to multi-strategy
-          mode to see attribution.
+          No strategies are active in the current engine mode. Start the engine or switch to
+          multi-strategy mode to see attribution.
         </div>
       ) : null}
 
@@ -548,9 +593,15 @@ export function StrategyAnalyticsView({
           )
         }
       >
+        {logError ? (
+          <p className="border-b border-bear/30 bg-bear/10 px-4 py-2 text-xs text-bear">
+            {logError}
+          </p>
+        ) : null}
         {logLines.length === 0 ? (
           <p className="px-4 py-6 text-xs text-muted-foreground">
-            No snapshots yet. Entries appear when attributed PnL or strategy telemetry changes materially.
+            No snapshots yet. Entries appear when attributed PnL or strategy telemetry changes
+            materially.
           </p>
         ) : (
           <div className="max-h-96 overflow-auto">

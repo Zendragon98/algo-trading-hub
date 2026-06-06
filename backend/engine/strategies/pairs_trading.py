@@ -565,7 +565,7 @@ class PairsTradingStrategy(StrategyBase):
                 bases=bases,
             )
             if z is None:
-                if push_sample:
+                if push_sample and len(stats.samples) < stats.min_samples:
                     logger.debug(
                         "[pairs] WARMUP %s samples=%d/%d reference_mode=%s",
                         pair.usdt_symbol.removesuffix("USDT"),
@@ -619,8 +619,9 @@ class PairsTradingStrategy(StrategyBase):
         ref_mode = (self._settings.pair_reference_mode or "btc_anchor").strip().lower()
         use_reference = ref_mode != "independent"
         deviation = basis if not use_reference else basis - reference
-        signal = "WARMUP"
-        if z is not None:
+        if len(stats.samples) < stats.min_samples:
+            signal = "WARMUP"
+        elif z is not None:
             if stats.open_side != 0:
                 signal = "IN_POSITION"
             elif z >= pair.entry_z:
@@ -628,7 +629,10 @@ class PairsTradingStrategy(StrategyBase):
             elif z <= -pair.entry_z:
                 signal = "LONG"
             else:
-                signal = "HOLD"
+                signal = "MONITORING"
+        else:
+            # Enough samples but zero rolling std — flat, watching for divergence.
+            signal = "MONITORING"
         self._analytics_cache = {
             "STRATEGY": self.display_label or self.name,
             "PAIR": f"{pair.usdt_symbol}/{pair.usdc_symbol}",

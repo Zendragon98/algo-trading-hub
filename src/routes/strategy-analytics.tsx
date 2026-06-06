@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowLeft, BarChart3 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { StreamStatus, useLiveSystemHealth } from "@/components/algo/dashboard/health";
 import { StrategyAnalyticsView } from "@/components/algo/strategy-hub/StrategyAnalyticsView";
@@ -16,8 +16,16 @@ const LOG_FALLBACK_POLL_MS = 5_000;
 
 function StrategyAnalyticsPage() {
   const live = useAlgoStream();
+  const { connected, loadStrategyHubLogs } = live;
   const [bootHub, setBootHub] = useState<StrategyHubSnapshot | null>(null);
-  const hub = live.strategyHub ?? bootHub;
+  const hub = useMemo(() => {
+    const base = live.strategyHub ?? bootHub;
+    if (!base) return null;
+    if (!base.logPath && bootHub?.logPath) {
+      return { ...base, logPath: bootHub.logPath };
+    }
+    return base;
+  }, [live.strategyHub, bootHub]);
   const systemHealth = useLiveSystemHealth(live.systemHealth, live.systemHealthAsOf);
   const equityCurveDelta =
     live.equityCurve.length >= 2
@@ -45,34 +53,27 @@ function StrategyAnalyticsPage() {
 
     const loadLogs = async () => {
       try {
-        await live.loadStrategyHubLogs();
+        await loadStrategyHubLogs();
         if (!cancelled) setLogError(null);
       } catch (err) {
         if (!cancelled) {
-          setLogError(
-            err instanceof Error ? err.message : "Failed to load strategy analytics log",
-          );
+          setLogError(err instanceof Error ? err.message : "Failed to load strategy analytics log");
         }
       }
     };
 
     void loadLogs();
-    if (live.connected) return () => {
-      cancelled = true;
-    };
+    if (connected)
+      return () => {
+        cancelled = true;
+      };
 
     const timer = window.setInterval(() => void loadLogs(), LOG_FALLBACK_POLL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [live.connected, live.loadStrategyHubLogs]);
-
-  useEffect(() => {
-    if (live.backendReachable && live.error) {
-      setLogError(live.error);
-    }
-  }, [live.backendReachable, live.error]);
+  }, [connected, loadStrategyHubLogs]);
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
@@ -110,7 +111,7 @@ function StrategyAnalyticsPage() {
         <StrategyAnalyticsView
           hub={hub}
           logLines={live.strategyHubLogLines}
-          error={logError}
+          logError={logError}
           systemHealth={systemHealth}
           equityCurveDelta={equityCurveDelta}
         />

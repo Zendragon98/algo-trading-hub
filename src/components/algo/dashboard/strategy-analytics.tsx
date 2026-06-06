@@ -15,7 +15,7 @@ function signalTone(signal: string | undefined): string {
   const upper = signal.toUpperCase();
   if (upper.includes("LONG") || upper.includes("BUY")) return "text-bull";
   if (upper.includes("SHORT") || upper.includes("SELL")) return "text-bear";
-  if (upper === "HOLD" || upper === "WARMUP") return "text-muted-foreground";
+  if (upper === "HOLD" || upper === "WARMUP" || upper === "MONITORING") return "text-muted-foreground";
   return "text-foreground";
 }
 
