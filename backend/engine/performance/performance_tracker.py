@@ -13,6 +13,7 @@ from common.types import Fill
 
 from ..portfolio.portfolio import Portfolio
 from .fill_classification import FillClassification
+from .session_costs import commission_to_usd, stable_usd_amount
 from .strategy_attribution import split_pnl_by_strategy
 
 
@@ -77,6 +78,9 @@ class PerformanceTracker:
         self._session_breakevens = 0
         self._session_gross_win = 0.0
         self._session_gross_loss = 0.0
+        self._session_fees_usd = 0.0
+        # Net funding cost in USD stables (positive = paid out, negative = received).
+        self._session_funding_net_usd = 0.0
         self._strategy_realized: dict[str, float] = {}
 
     def record_fill(
@@ -106,6 +110,10 @@ class PerformanceTracker:
         self._fills.append(record)
         if len(self._fills) > self._history_size:
             self._fills = self._fills[-self._history_size :]
+
+        fee_usd = commission_to_usd(fill.fee, fill.fee_asset)
+        if fee_usd > 0.0:
+            self._session_fees_usd += fee_usd
 
         if classification.action == "close" and classification.pnl is not None:
             self._bump_session(classification.pnl)
@@ -295,6 +303,33 @@ class PerformanceTracker:
             return None
         return gw / gl
 
+    @property
+    def session_fees_paid(self) -> float:
+        """Cumulative commission on fills since process boot (USD stables via WS)."""
+
+        return self._session_fees_usd
+
+    @property
+    def session_funding_net(self) -> float:
+        """Net funding on USD stables: positive = paid out, negative = received."""
+
+        return self._session_funding_net_usd
+
+    def record_funding_balance_change(self, asset: str, balance_change: float) -> None:
+        """Apply one ``ACCOUNT_UPDATE`` balance change tagged ``FUNDING_FEE``."""
+
+        if abs(balance_change) <= 1e-12:
+            return
+        # Paying funding: bc < 0 → wallet down → positive net cost.
+        if balance_change < 0.0:
+            paid = stable_usd_amount(-balance_change, asset)
+            if paid > 0.0:
+                self._session_funding_net_usd += paid
+            return
+        received = stable_usd_amount(balance_change, asset)
+        if received > 0.0:
+            self._session_funding_net_usd -= received
+
     def reset_session(self) -> None:
         """Clear session KPI rollups and trade tape for a new operator session."""
         self._session_wins = 0
@@ -302,6 +337,8 @@ class PerformanceTracker:
         self._session_breakevens = 0
         self._session_gross_win = 0.0
         self._session_gross_loss = 0.0
+        self._session_fees_usd = 0.0
+        self._session_funding_net_usd = 0.0
         self._fills.clear()
         self._realized.clear()
         self._pending_parent_closes.clear()

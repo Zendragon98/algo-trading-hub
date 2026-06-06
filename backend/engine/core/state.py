@@ -51,6 +51,9 @@ class EngineSnapshot:
         rolling_close_wins: int,
         rolling_close_losses: int,
         rolling_close_breakevens: int,
+        session_fees_paid: float = 0.0,
+        session_funding_net: float = 0.0,
+        session_start_equity: float = 0.0,
     ) -> None:
         self.status = state.status
         self.started_at = state.started_at
@@ -85,3 +88,6 @@ class EngineSnapshot:
         self.rolling_close_wins = rolling_close_wins
         self.rolling_close_losses = rolling_close_losses
         self.rolling_close_breakevens = rolling_close_breakevens
+        self.session_fees_paid = session_fees_paid
+        self.session_funding_net = session_funding_net
+        self.session_start_equity = session_start_equity

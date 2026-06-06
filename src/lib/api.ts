@@ -102,6 +102,12 @@ export type KpiDTO = {
   rolling_close_wins: number;
   rolling_close_losses: number;
   rolling_close_breakevens: number;
+  /** Commissions from WS ORDER_TRADE_UPDATE (USD stables), since process boot. */
+  session_fees_paid: number;
+  /** Net funding on USD stables: positive = paid out, negative = received. */
+  session_funding_net: number;
+  /** Wallet equity at first portfolio seed this process (drawdown baseline). */
+  session_start_equity: number;
 };
 
 export type EquityDTO = { equity: number[]; timestamps: number[]; last_ts: number };

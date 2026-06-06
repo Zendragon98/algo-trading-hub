@@ -127,7 +127,12 @@ function Index() {
   }, [maxRiskPct]);
 
   const totalEquity = equityCurve.length ? equityCurve[equityCurve.length - 1]!.equity : 0;
-  const startEquity = equityCurve.length ? equityCurve[0]!.equity : 0;
+  const startEquity =
+    kpi.session_start_equity > 0
+      ? kpi.session_start_equity
+      : equityCurve.length
+        ? equityCurve[0]!.equity
+        : 0;
   const pnlAbs = totalEquity - startEquity;
   const pnlPct = startEquity > 0 ? (pnlAbs / startEquity) * 100 : 0;
 
@@ -398,6 +403,11 @@ function Index() {
                 openPositionCount={positions.length}
                 sessionTradePerf={sessionTradePerf}
                 rollingTradePerf={rollingTradePerf}
+                sessionFeesPaid={kpi.session_fees_paid}
+                sessionFundingNet={kpi.session_funding_net}
+                sessionStartEquity={kpi.session_start_equity}
+                currentEquity={totalEquity}
+                openPnl={openPnl}
               />
               <div className="flex flex-col gap-2 md:col-span-2 xl:col-span-1">
                 <RiskPanel

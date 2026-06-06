@@ -249,6 +249,9 @@ def snapshot_to_state_dto(engine: Engine, snapshot: EngineSnapshot) -> StateDTO:
             rolling_close_wins=snapshot.rolling_close_wins,
             rolling_close_losses=snapshot.rolling_close_losses,
             rolling_close_breakevens=snapshot.rolling_close_breakevens,
+            session_fees_paid=snapshot.session_fees_paid,
+            session_funding_net=snapshot.session_funding_net,
+            session_start_equity=snapshot.session_start_equity,
         ),
         equity=EquityDTO(
             equity=snapshot.equity_curve,

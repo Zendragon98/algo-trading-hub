@@ -887,6 +887,9 @@ class Engine:
             rolling_close_wins=self._performance.rolling_close_wins,
             rolling_close_losses=self._performance.rolling_close_losses,
             rolling_close_breakevens=self._performance.rolling_close_breakevens,
+            session_fees_paid=self._performance.session_fees_paid,
+            session_funding_net=self._performance.session_funding_net,
+            session_start_equity=self._portfolio.session_start_equity,
         )
 
     # --- Lifecycle ---
@@ -2370,6 +2373,13 @@ class Engine:
                 self._portfolio.update_asset_balance(str(asset), float(balance))
             except (TypeError, ValueError):
                 continue
+
+        if str(update.get("event_reason") or "").upper() == "FUNDING_FEE":
+            for asset, bc in update.get("balance_changes") or []:
+                try:
+                    self._performance.record_funding_balance_change(str(asset), float(bc))
+                except (TypeError, ValueError):
+                    continue
 
         positions = update.get("positions") or []
         await self._positions.apply_exchange_positions(positions)

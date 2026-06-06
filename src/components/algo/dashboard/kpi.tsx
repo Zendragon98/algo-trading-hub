@@ -23,6 +23,11 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
   openPositionCount,
   sessionTradePerf,
   rollingTradePerf,
+  sessionFeesPaid = 0,
+  sessionFundingNet = 0,
+  sessionStartEquity = 0,
+  currentEquity = 0,
+  openPnl = 0,
 }: {
   perf: ClosedTradePerfVm;
   scope: "rolling" | "session";
@@ -31,6 +36,11 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
   openPositionCount: number;
   sessionTradePerf: ClosedTradePerfVm;
   rollingTradePerf: ClosedTradePerfVm;
+  sessionFeesPaid?: number;
+  sessionFundingNet?: number;
+  sessionStartEquity?: number;
+  currentEquity?: number;
+  openPnl?: number;
 }) {
   const {
     closed,
@@ -85,6 +95,13 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
   const fillNetDelta = Math.abs(sessionTradePerf.netFromCloses - rollingTradePerf.netFromCloses);
   const fillNetMismatch = sessionClosed > 0 && rollingClosed > 0 && fillNetDelta > 0.01;
   const sliceRollupGap = sessionClosed > rollingClosed;
+
+  const sessionCloseNet = sessionTradePerf.netFromCloses;
+  const netAfterCosts = sessionCloseNet - sessionFeesPaid - sessionFundingNet;
+  const walletDelta =
+    sessionStartEquity > 0 && currentEquity > 0 ? currentEquity - sessionStartEquity : null;
+  const walletReconGap =
+    walletDelta != null ? walletDelta - netAfterCosts - openPnl : null;
 
   return (
     <div className="relative overflow-hidden rounded-sm border border-border bg-card/60 p-3">
@@ -336,6 +353,62 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
             </div>
           </div>
 
+          {scope === "session" && sessionClosed > 0 ? (
+            <div className="mt-2 space-y-1 rounded-md border border-border/50 bg-muted/10 px-2 py-1.5 font-mono text-[10px]">
+              <div className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground">
+                Venue costs (user-data WS)
+              </div>
+              <div className="flex justify-between tabular-nums">
+                <span className="text-muted-foreground">Close P&L (fills)</span>
+                <span>{formatSignedRealizedPnl(sessionCloseNet)}</span>
+              </div>
+              {sessionFeesPaid > 1e-6 ? (
+                <div className="flex justify-between tabular-nums">
+                  <span className="text-muted-foreground">Commissions</span>
+                  <span className="text-bear">{formatNegativeUsd(sessionFeesPaid)}</span>
+                </div>
+              ) : null}
+              {Math.abs(sessionFundingNet) > 1e-6 ? (
+                <div className="flex justify-between tabular-nums">
+                  <span className="text-muted-foreground">Funding (net)</span>
+                  <span className={sessionFundingNet > 0 ? "text-bear" : "text-bull"}>
+                    {sessionFundingNet > 0
+                      ? formatNegativeUsd(sessionFundingNet)
+                      : formatSignedRealizedPnl(-sessionFundingNet)}
+                  </span>
+                </div>
+              ) : null}
+              <div className="flex justify-between border-t border-border/40 pt-1 tabular-nums font-semibold">
+                <span className="text-muted-foreground">Net after costs</span>
+                <span
+                  className={cn(
+                    netAfterCosts > 0 ? "text-bull" : netAfterCosts < 0 ? "text-bear" : "text-muted-foreground",
+                  )}
+                >
+                  {formatSignedRealizedPnl(netAfterCosts)}
+                </span>
+              </div>
+              {walletDelta != null ? (
+                <>
+                  <div className="flex justify-between tabular-nums text-muted-foreground">
+                    <span>Wallet Δ (session start)</span>
+                    <span>{formatSignedRealizedPnl(walletDelta)}</span>
+                  </div>
+                  <div className="flex justify-between tabular-nums text-muted-foreground">
+                    <span>Open P&L (now)</span>
+                    <span>{formatSignedRealizedPnl(openPnl)}</span>
+                  </div>
+                  {walletReconGap != null && Math.abs(walletReconGap) > 0.05 ? (
+                    <div className="text-[9px] leading-snug text-muted-foreground/90">
+                      Residual vs wallet (BNB fees, transfers, mark drift):{" "}
+                      {formatSignedRealizedPnl(walletReconGap)}
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          ) : null}
+
           {sessionClosed > 0 && rollingClosed > 0 ? (
             <p
               className={cn(
@@ -379,16 +452,23 @@ export const WinRateKpiCard = memo(function WinRateKpiCard({
               fills, but <strong className="text-foreground">fill net should match</strong> once all parent
               exits complete. Session KPI values refresh with{" "}
               <code className="rounded bg-muted/60 px-0.5">GET /api/state</code> (about every 5s). The rolling view matches live
-              WebSocket fills. Binance Futures uses field{" "}
+              WebSocket fills. <strong className="text-foreground">Commissions</strong> sum Binance{" "}
+              <code className="rounded bg-muted/60 px-0.5">ORDER_TRADE_UPDATE</code> commission (
+              <code className="rounded bg-muted/60 px-0.5">n</code>/<code className="rounded bg-muted/60 px-0.5">N</code>
+              ) on USDT/USDC fills; <strong className="text-foreground">Funding</strong> sums{" "}
+              <code className="rounded bg-muted/60 px-0.5">ACCOUNT_UPDATE</code> balance changes tagged{" "}
+              <code className="rounded bg-muted/60 px-0.5">FUNDING_FEE</code>.{" "}
+              <strong className="text-foreground">Net after costs</strong> = close P&L − commissions − net funding.
+              Binance Futures uses field{" "}
               <code className="rounded bg-muted/60 px-0.5">rp</code> when it is non-zero; otherwise the console uses{" "}
               <span className="whitespace-nowrap">(exit - entry) {TIMES} closed qty</span>. If{" "}
               <code className="rounded bg-muted/60 px-0.5">rp</code> looks like dust vs that economics (e.g. sub-cent vs several
               dollars), the engine keeps the computed slice PnL. <strong className="text-foreground">Avg win/loss</strong> are
               mean P&L on winning vs losing closes; <strong className="text-foreground">payoff (R)</strong> = avg win / avg
-              loss; <strong className="text-foreground">expectancy</strong> = net / closes. Profit factor =
-              {"\u03A3"} positive closes / {"\u03A3"} |negative closes|. Excludes transfers, funding, and fees unless the venue folds
-              them into{' '}
-              <code className="rounded bg-muted/60 px-0.5">rp</code>. Dollar labels use extra precision when totals are small
+              loss;               <strong className="text-foreground">expectancy</strong> = net / closes. Profit factor =
+              {"\u03A3"} positive closes / {"\u03A3"} |negative closes|. Commissions and funding are tracked separately from close{" "}
+              <code className="rounded bg-muted/60 px-0.5">rp</code>; wallet/equity change includes them via{" "}
+              <code className="rounded bg-muted/60 px-0.5">ACCOUNT_UPDATE</code>. Dollar labels use extra precision when totals are small
               so they reconcile with the factor; RECENT TRADES uses the same idea so tiny realized amounts are not shown as
               <span className="whitespace-nowrap">+0.00</span>.
             </div>
@@ -462,7 +542,7 @@ export const PortfolioSnapshotCard = memo(function PortfolioSnapshotCard({
           icon={<Wallet className="size-3.5" />}
           label="EQUITY"
           value={`$${totalEquity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-          sub={`${pnlAbs >= 0 ? "+" : ""}${pnlAbs.toFixed(2)} (${pnlPct.toFixed(2)}%)`}
+          sub={`${pnlAbs >= 0 ? "+" : ""}${pnlAbs.toFixed(2)} (${pnlPct.toFixed(2)}%) wallet Δ`}
           tone={equityTone}
         />
         <SnapshotMetric

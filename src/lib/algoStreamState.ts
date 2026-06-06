@@ -144,6 +144,9 @@ export const EMPTY_KPI: KpiDTO = {
   rolling_close_wins: 0,
   rolling_close_losses: 0,
   rolling_close_breakevens: 0,
+  session_fees_paid: 0,
+  session_funding_net: 0,
+  session_start_equity: 0,
 };
 
 export const TERMINAL_ORDER_STATUSES: ReadonlyArray<WorkingOrder["status"]> = [

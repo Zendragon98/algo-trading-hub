@@ -264,10 +264,12 @@ class OrderConnection:
 
         balances = payload.get("B") or []
         positions = payload.get("P") or []
+        event_reason = str(payload.get("m", "") or "").upper()
 
         # Wallet balance is realized PnL inclusive. For USDT-M futures,
         # `wb` is the wallet balance for the asset.
         wallet_by_asset: dict[str, float] = {}
+        balance_changes: list[tuple[str, float]] = []
         for b in balances:
             asset = str(b.get("a", "")).upper()
             if not asset:
@@ -276,6 +278,12 @@ class OrderConnection:
                 wallet_by_asset[asset] = float(b.get("wb", 0.0))
             except (TypeError, ValueError):
                 continue
+            bc_raw = b.get("bc")
+            if bc_raw is not None:
+                try:
+                    balance_changes.append((asset, float(bc_raw)))
+                except (TypeError, ValueError):
+                    pass
 
         out_positions: list[Position] = []
         for p in positions:
@@ -303,7 +311,12 @@ class OrderConnection:
                 )
             )
 
-        await self._on_account({"wallet_by_asset": wallet_by_asset, "positions": out_positions})
+        await self._on_account({
+            "wallet_by_asset": wallet_by_asset,
+            "positions": out_positions,
+            "event_reason": event_reason,
+            "balance_changes": balance_changes,
+        })
 
     async def _handle_order_trade_update(self, order: dict) -> None:
         # Fields documented at

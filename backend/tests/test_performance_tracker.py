@@ -189,6 +189,44 @@ def test_reset_session_clears_session_rollups_and_trade_tape() -> None:
     assert perf.realized_pnl_by_strategy() == {}
 
 
+def test_session_fees_accumulate_on_every_fill() -> None:
+    portfolio = MagicMock()
+    perf = PerformanceTracker(portfolio)
+
+    fill_open = _fill(Side.BUY, 1.0, 50.0, idx=0)
+    fill_open.fee = 0.12
+    fill_open.fee_asset = "USDT"
+    perf.record_fill(fill_open, _cls(None, action="open"))
+
+    fill_close = _fill(Side.SELL, 1.0, 51.0, idx=1)
+    fill_close.fee = 0.08
+    fill_close.fee_asset = "USDT"
+    perf.record_fill(fill_close, _cls(1.0))
+
+    assert perf.session_fees_paid == pytest.approx(0.20)
+
+
+def test_session_funding_net_from_account_update() -> None:
+    portfolio = MagicMock()
+    perf = PerformanceTracker(portfolio)
+
+    perf.record_funding_balance_change("USDT", -0.50)
+    assert perf.session_funding_net == pytest.approx(0.50)
+    perf.record_funding_balance_change("USDT", 0.20)
+    assert perf.session_funding_net == pytest.approx(0.30)
+
+
+def test_reset_session_clears_fees_and_funding() -> None:
+    portfolio = MagicMock()
+    perf = PerformanceTracker(portfolio)
+    perf.record_fill(_fill(Side.BUY, 1.0, 50.0), _cls(None, action="open"))
+    perf._session_fees_usd = 1.0  # noqa: SLF001
+    perf.record_funding_balance_change("USDT", -0.25)
+    perf.reset_session()
+    assert perf.session_fees_paid == 0.0
+    assert perf.session_funding_net == 0.0
+
+
 def test_reset_session_clears_session_rollups_and_trade_tape() -> None:
     portfolio = MagicMock()
     perf = PerformanceTracker(portfolio)

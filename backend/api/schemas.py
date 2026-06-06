@@ -104,6 +104,10 @@ class KpiDTO(BaseModel):
     rolling_close_wins: int = 0
     rolling_close_losses: int = 0
     rolling_close_breakevens: int = 0
+    # Venue costs tracked from user-data WS since process boot.
+    session_fees_paid: float = 0.0
+    session_funding_net: float = 0.0
+    session_start_equity: float = 0.0
 
 
 class ChildOrderDTO(BaseModel):
