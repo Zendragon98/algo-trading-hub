@@ -84,12 +84,23 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _should_autostart_engine(args: argparse.Namespace, settings) -> bool:
+    autostart = bool(settings.engine_autostart)
+    if args.engine:
+        autostart = True
+    if args.no_engine:
+        autostart = False
+    return autostart
+
+
 async def _run() -> None:
     args = _parse_args()
     settings = get_settings()
     bus = EventBus()
+    autostart = _should_autostart_engine(args, settings)
 
-    settings = await resolve_binance_auto_universe(settings)
+    if autostart:
+        settings = await resolve_binance_auto_universe(settings)
     settings = partition_multi_strategy_universe(settings)
 
     backend_root = Path(__file__).resolve().parent
@@ -206,12 +217,6 @@ async def _run() -> None:
             strat.attach_fill_vwap_provider(
                 lambda sym, name=strat.name: engine.strategy_ledger.fill_vwap(name, sym)  # noqa: SLF001
             )
-
-    autostart = bool(settings.engine_autostart)
-    if args.engine:
-        autostart = True
-    if args.no_engine:
-        autostart = False
 
     if autostart:
         try:

@@ -223,7 +223,7 @@ Dependency rule: `common/` ← `gateways/` + `engine/` ← `api/` + `analytics/`
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy .env.example .env    # add BINANCE_API_KEY + BINANCE_API_SECRET
+copy .env.example .env    # add Binance Demo/Testnet keys before starting the engine
 python main.py
 # or: .\run.bat           # venv + deps + launch in one step
 ```
@@ -234,12 +234,20 @@ python main.py
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+# add Binance Demo/Testnet keys before starting the engine
 python main.py
 ```
 
-API at **http://127.0.0.1:8000** (REST + `/ws`). Frontend in a second terminal from repo root: `npm install && npm run dev` → http://localhost:5173.
+API at **http://127.0.0.1:8000** (REST + `/ws`). Frontend in a second terminal from repo root: `npm ci && npm run dev` → http://localhost:5173.
 
 By default the engine boots **stopped** — press Start in the UI or `POST /api/control/start`. Auto-start: `ENGINE_AUTOSTART=true` in `.env` or `python main.py --engine`. API-only (engine paused): `python main.py --no-engine`.
+
+While the engine is stopped, the dashboard can render from REST snapshots but
+portfolio values are unseeded defaults. Binance balances and positions are
+loaded only when the engine connects on Start.
+
+Windows one-terminal option from the repo root: `.\run-local.ps1`. It detects
+an active Conda environment before falling back to `backend/.venv`.
 
 ## Folder layout
 
@@ -721,12 +729,12 @@ Loaded via `pydantic-settings`. Defaults shown below.
 | ---------------------------- | ------------------------------------ | ------ |
 | `VENUE`                      | `binance`                            | Selects the gateway adapter (`binance` \| `ibkr`) |
 | `TRADING_MODE`               | `paper`                              | `paper` \| `live`. LIVE force-disables synthetic impact |
-| `BINANCE_API_KEY`            | _required when VENUE=binance_        | Futures API key |
-| `BINANCE_API_SECRET`         | _required when VENUE=binance_        | Futures API secret |
+| `BINANCE_API_KEY`            | blank                                | Futures API key; required before connecting the engine to Binance account/order endpoints |
+| `BINANCE_API_SECRET`         | blank                                | Futures API secret; required before connecting the engine to Binance account/order endpoints |
 | `BINANCE_TESTNET`            | `true`                               | Pin to testnet endpoints |
 | `BINANCE_REST_BASE`          | `https://testnet.binancefuture.com`  | REST host |
 | `BINANCE_WS_BASE`            | `wss://stream.binancefuture.com`     | WS host |
-| `BINANCE_REST_MIN_INTERVAL_MS` | `100`                              | Minimum spacing between REST calls (client-side throttle) |
+| `BINANCE_REST_MIN_INTERVAL_MS` | `200`                              | Minimum spacing between REST calls (client-side throttle) |
 | `BINANCE_REST_429_DEFAULT_BACKOFF_SEC` | `60`                        | HTTP 429 pause when ``Retry-After`` header is absent |
 | `BINANCE_REST_PAUSE_BUFFER_SEC` | `0.5`                           | Extra seconds added to ``Retry-After`` / ban backoff |
 | `IBKR_HOST` / `IBKR_PORT`    | `127.0.0.1` / `7497`                 | TWS / IB Gateway address (7497 paper, 7496 live) |

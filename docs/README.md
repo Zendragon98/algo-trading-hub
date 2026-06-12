@@ -11,6 +11,7 @@ Official documentation for **Algo Trading Hub**. Use this index for audits, hand
 | [**SECURITY.md**](SECURITY.md) | Security / platform | Threat model, secrets, network control plane, hardening checklist |
 | [**COMPLIANCE_AND_GOVERNANCE.md**](COMPLIANCE_AND_GOVERNANCE.md) | Risk / compliance | Limitations of scope, records, change control, regulatory disclaimer |
 | [**ARCHITECTURE.md**](ARCHITECTURE.md) | Architects / security | Canonical links to diagrams + component map |
+| [../BRANCH_CHANGES.md](../BRANCH_CHANGES.md) | Reviewers / teammates | Human-readable log of branch changes from `main` and the reason for each change |
 | [**INVESTOR_DECK.md**](INVESTOR_DECK.md) | Fundraising / LPs | Investor slide plan with archive-backed metrics |
 | [**netting-analysis-report.md**](netting-analysis-report.md) | Quants / ops | Auto-generated netting stats from `data/runs/` |
 | [../backend/AGENTS.md](../backend/AGENTS.md) | Contributors | Engineering conventions for the Python backend |

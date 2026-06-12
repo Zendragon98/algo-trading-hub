@@ -18,6 +18,7 @@ A full-stack **algorithmic trading console**: a React dashboard observes and con
 | Google Cloud deployment | [`deploy/gcp/README.md`](deploy/gcp/README.md) |
 | Security (threat model, secrets, hardening) | [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Risk / compliance (records, governance, disclaimer) | [`docs/COMPLIANCE_AND_GOVERNANCE.md`](docs/COMPLIANCE_AND_GOVERNANCE.md) |
+| Branch change log | [`BRANCH_CHANGES.md`](BRANCH_CHANGES.md) |
 | Architecture diagrams (editable `.mmd`) | [`backend/docs/`](backend/docs/) |
 | Python contribution conventions | [`backend/AGENTS.md`](backend/AGENTS.md) |
 
@@ -36,6 +37,343 @@ A full-stack **algorithmic trading console**: a React dashboard observes and con
 7. **Publish** state to the UI over WebSocket and persist every run under `backend/data/runs/`.
 
 The browser **never talks to Binance** — it mirrors engine state via `GET /api/state` and `/ws`.
+
+---
+
+## Quick start for course review
+
+This README is the entry point for a clean local review. It covers the Python
+3.11 backend setup, Node frontend setup, Binance Demo/Testnet key placement,
+safe paper-mode defaults, and a no-key offline backtest path using checked-in
+data. Detailed backend internals live in [`backend/README.md`](backend/README.md).
+
+The safest first-run profile is:
+
+```dotenv
+TRADING_MODE=paper
+BINANCE_TESTNET=true
+ENGINE_AUTOSTART=false
+```
+
+This starts the API and dashboard without automatically starting the trading
+engine.
+
+For a fast validation path, follow [Installation](#installation), then
+[Run locally](#run-locally), then run
+[No-key offline backtest smoke test](#no-key-offline-backtest-smoke-test).
+
+---
+
+## Prerequisites
+
+| Requirement | Notes |
+|-------------|-------|
+| **Git** | Clone the repository |
+| **Node.js 20+** | Frontend dev server (`npm`) |
+| **Python 3.11+** | Backend engine + API |
+| **Binance Futures Demo/Testnet keys** | Optional for API-only startup and the offline smoke test; required before starting the engine against Binance |
+
+---
+
+## Installation
+
+Clone the repository and install backend and frontend dependencies once.
+
+```powershell
+git clone https://github.com/Zendragon98/algo-trading-hub.git
+cd algo-trading-hub
+```
+
+### Backend dependencies
+
+**Windows:**
+
+```powershell
+cd backend
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+copy .env.example .env
+cd ..
+```
+
+**macOS / Linux:**
+
+```bash
+cd backend
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+cp .env.example .env
+cd ..
+```
+
+Edit `backend/.env` only for values you need to override. For course review,
+keep the safe defaults:
+
+```dotenv
+TRADING_MODE=paper
+BINANCE_TESTNET=true
+ENGINE_AUTOSTART=false
+```
+
+Binance Demo/Testnet keys are needed when the engine connects to user-data,
+account, position, or order endpoints. They are not needed for API-only startup
+or the offline smoke test.
+
+```dotenv
+BINANCE_API_KEY=replace_with_demo_or_testnet_key
+BINANCE_API_SECRET=replace_with_demo_or_testnet_secret
+```
+
+Keep secrets only in `backend/.env`. Do not commit `.env` files.
+
+### Frontend dependencies
+
+From the repo root:
+
+```powershell
+npm ci
+```
+
+Local frontend development does not need a root `.env` file. Vite proxies
+`/api` and `/ws` to the backend automatically.
+
+---
+
+## Run locally
+
+Use **two terminals**.
+
+For Windows convenience, you can also start both processes from the repo root:
+
+```powershell
+.\run-local.ps1
+```
+
+The launcher detects an active Conda environment first; otherwise it uses or
+creates `backend/.venv` with Python 3.11. It checks Python and frontend
+dependencies and installs only when they are missing. Use `.\run-local.ps1
+-NoInstall` when you want it to fail fast instead of installing anything.
+
+This keeps the backend and frontend as separate processes; it only orchestrates
+them from one terminal. Use Ctrl+C to stop both.
+
+### 1. Backend
+
+**Windows:**
+
+```powershell
+cd backend
+.\.venv\Scripts\Activate.ps1
+python main.py
+```
+
+You can also use `.\run.bat` from `backend/` as a Windows convenience launcher.
+
+**macOS / Linux:**
+
+```bash
+cd backend
+source .venv/bin/activate
+python main.py
+```
+
+- API: **http://127.0.0.1:8000** (REST + `/ws`)
+- Engine boots **stopped** by default — press **Start** in the UI or `POST /api/control/start`
+- Auto-start: `ENGINE_AUTOSTART=true` or `python main.py --engine`
+- API-only (engine never started): `python main.py --no-engine`
+- API-only startup does not require Binance connectivity; starting the engine
+  does require valid venue connectivity for live market/account operations.
+- Until the engine starts, the dashboard shows default/unseeded portfolio
+  values such as `0` equity. Binance balances and positions are loaded only
+  when the engine connects on **Start**.
+
+### 2. Frontend
+
+```bash
+npm run dev
+```
+
+- UI: **http://localhost:5173**
+- Vite proxies `/api` and `/ws` → `127.0.0.1:8000` (same-origin, no CORS)
+- Local frontend dev does not need a root `.env` file.
+
+### 3. No-key offline backtest smoke test
+
+This command uses the checked-in kline library under `backend/data/klines` and
+does not connect to Binance. It is a setup smoke test, not a performance result:
+the checked-in sample is intentionally small.
+
+```powershell
+cd backend
+.\.venv\Scripts\Activate.ps1
+python -c "from common.config import Settings; from analytics.backtest.runner import run_backtest; r = run_backtest(Settings(strategy='pairs'), dataset='library'); print({'run_id': r.run_id, 'strategy': r.strategy, 'bars': r.bar_count, 'return_pct': round(r.metrics.total_return_pct, 4), 'trades': r.metrics.trade_count})"
+```
+
+The result is saved under `backend/data/backtest_runs`.
+
+### 4. Suggested review path
+
+1. Read this README for the system overview.
+2. Start the backend and frontend locally.
+3. Run the no-key offline backtest smoke test.
+4. Open the dashboard and inspect state, strategy controls, circuit breakers,
+   OMS panels, logs, and backtesting views.
+5. Review the editable architecture diagrams under `backend/docs`.
+
+### 5. Production: Vercel + GCP
+
+| Piece | Where | Guide |
+|-------|--------|--------|
+| Dashboard | Vercel | [`deploy/vercel/README.md`](deploy/vercel/README.md) |
+| Engine + API | GCP Compute Engine | [`deploy/gcp/README.md`](deploy/gcp/README.md) |
+
+For deployed frontend builds, set `VITE_API_BASE` and optionally
+`VITE_API_TOKEN` in the host/build environment; the root [`.env.example`](.env.example)
+is only a frontend deployment example. Set matching `CORS_ORIGINS` on the GCP VM.
+
+---
+
+## Dashboard behaviour
+
+### Data flow
+
+```mermaid
+flowchart TB
+    subgraph Hydrate
+        S["GET /api/state"]
+        L["GET /api/logs on refresh"]
+    end
+    subgraph Live
+        W["WebSocket /ws"]
+    end
+    H[useAlgoStream] --> S
+    H --> W
+    H --> L
+    H --> P[Dashboard panels]
+```
+
+**Editable source:** [`backend/docs/architecture-frontend.mmd`](backend/docs/architecture-frontend.mmd)
+
+### Resync policy (`useAlgoStream.ts`)
+
+| Trigger | Action |
+|---------|--------|
+| Initial mount | Full `GET /api/state` hydrate |
+| Every **5 s** | Re-fetch state (safety net if WS events missed) |
+| WebSocket reconnect | Debounced full hydrate |
+| WS disconnected | 5 s poll continues |
+| Tab regains focus | Full hydrate |
+| Manual **Refresh** | State + logs + settings |
+
+### Panels
+
+| Panel | Source |
+|-------|--------|
+| Portfolio / equity | `equity` events + `/api/state` |
+| Positions + chart | `position` + `GET /api/klines` |
+| OMS | `order` events |
+| Execution quality | `parent` · `execution` |
+| System health | `status` (latency, WS age, reconcile flags) |
+| Logs / breakers | `log` · `breaker` |
+
+### Controls
+
+- **Start / Pause / Stop / Resume** — engine lifecycle
+- **Flatten** — pause → cancel → sync venue → close each leg (market or VWAP by size/spread) → engine stays **paused** until Resume
+- **Strategy picker** — hot-swap without restart
+- **Risk slider** — `PATCH /api/control/risk` → `max_risk_pct`
+- **Halt** — `POST /api/control/breakers/trip` (trading halt + flatten)
+- **Kill** — `POST /api/control/shutdown` (exit process; not the trading kill switch)
+
+### What to watch in System Health
+
+| Signal | Meaning |
+|--------|---------|
+| **Venue sync age** (`user_data_age_sec`) | Low when user-data WS or periodic REST reconcile has refreshed truth; **`user_ws_event_age_sec`** can stay high quietly while holding exposure |
+| **Order reconcile** | Should be OK; mismatch = venue vs OMS drift |
+| **`reconcile_mismatch` breaker** | Qty drift detected (healed if `RECONCILE_HEAL_ON_MISMATCH=true`) |
+
+Treat open positions as **untrusted** until user-data is fresh and reconcile is clean.
+
+---
+
+## Strategies at a glance
+
+| Strategy | `name` | Universe | Risk model | Entry idea |
+|----------|--------|----------|------------|------------|
+| **Pairs** | `pairs_trading` | `SYMBOLS` USDT+USDC perps | Self-managed (z-space SL/TP) | Volume-weighted implied USDT/USDC basis deviation |
+| **SMA** | `sma_crossover` | `SMA_SYMBOLS` | Engine per-leg brackets | Fast/slow SMA cross per symbol |
+| **Blended signals** | `blended_signals` | `BLEND_SYMBOLS` | Engine per-leg brackets | ADX-gated EMA/MACD/RSI/BB blend with microstructure confirmation |
+| **Flow momentum** | `flow_momentum` | `FLOW_SYMBOLS` | In-strategy (bps stop / reversal) | Follow sustained one-sided tape on liquid majors |
+| **Market making 2.0** | `market_making_v2` | `MM2_SYMBOLS` | MM-specific risk when enabled; engine brackets otherwise | Fee-aware post-only quotes with spread, inventory, and toxicity gates |
+| **All** | `all` | Union of above | Per-strategy rules | Net signals per symbol before one execution path |
+
+Hot-swap: `POST /api/control/strategy` with `{ "name": "pairs_trading" }` (or `sma_crossover`, `blended_signals`, `flow_momentum`, `market_making_v2`, `all`). Boot default: `STRATEGY` in `.env`.
+
+---
+
+## Platform layers
+
+| # | Layer | Paths | Responsibility |
+|---|-------|-------|----------------|
+| 0 | **Venue** | Binance REST + WS | Orders, balances, market data |
+| 1 | **Gateway** | `backend/gateways/` | `GatewayInterface` · signing · reconnect · filters |
+| 2 | **Platform** | `backend/common/`, `backend/engine/persistence/` | Config, `EventBus`, WAL, run bootstrap & JSONL archives |
+| 3 | **Market data** | `backend/engine/market_data/` | L2 book, tape, features, data-quality guards |
+| 4 | **Strategy** | `backend/engine/strategies/`, `backend/analytics/` | Live signals; offline calibration |
+| 5 | **Risk** | `backend/engine/risk/`, `backend/engine/portfolio/`, `backend/engine/position/` | Pre-trade, monitors, circuit breakers |
+| 6 | **Execution** | `backend/engine/execution/`, `backend/engine/orders/` | Wheel, VWAP, OMS, TCA |
+| 7 | **API & UI** | `backend/api/`, `src/` | REST, WebSocket, React console |
+
+Dependency rule: `backend/common/` ← `backend/gateways/` + `backend/engine/` ← `backend/api/` + `backend/analytics/`. Cross-module coupling is **only** through `EventBus`.
+
+---
+
+## Repository layout
+
+Paths below are from the **repo root** (`algo-trading-hub/`). Build artefacts (`dist/`, `node_modules/`, `.venv/`) are omitted.
+
+```
+algo-trading-hub/
+├── docs/                         # Operations, security, compliance (see docs/README.md)
+├── src/                          # React dashboard (TanStack Start)
+│   ├── routes/index.tsx          # Main trading console
+│   ├── hooks/useAlgoStream.ts    # REST hydrate + WebSocket + resync policy
+│   ├── lib/api.ts                # Typed HTTP/WS client
+│   └── components/algo/
+│       ├── types.ts              # View models (mirror backend/api/schemas.py)
+│       ├── EquityChart.tsx
+│       ├── PositionChartDialog.tsx
+│       └── SettingsDialog.tsx
+├── backend/                      # Python engine + API
+│   ├── main.py                   # Entry: engine + uvicorn
+│   ├── common/                   # Settings, EventBus, shared types
+│   ├── engine/                   # Strategy-agnostic core (incl. persistence/, market_data/, …)
+│   ├── gateways/                 # Venue adapters (Binance, IBKR skeleton)
+│   ├── api/                      # FastAPI routes + /ws
+│   ├── analytics/                # Offline calibration
+│   ├── scripts/                  # Optional tooling (e.g. live strategy harnesses)
+│   ├── tests/                    # pytest (mocks only here)
+│   ├── docs/                     # Architecture *.mmd sources
+│   ├── data/                     # Run archives & cache (mostly gitignored)
+│   ├── requirements.txt
+│   ├── pyproject.toml
+│   ├── run.bat
+│   ├── AGENTS.md
+│   └── .env.example
+├── package.json
+├── vite.config.ts                # Dev proxy → backend :8000
+├── wrangler.jsonc                # Cloudflare Workers (TanStack Start production build)
+├── tsconfig.json
+├── components.json               # shadcn/ui
+└── eslint.config.js
+```
+
+`backend/common/config/` hosts default `Settings`; HTTP health routes live in `backend/api/routes/health.py`.
 
 ---
 
@@ -251,208 +589,6 @@ flowchart LR
 | [`architecture.mmd`](backend/docs/architecture.mmd) | Compact single-page view |
 
 Preview diagrams: [mermaid.live](https://mermaid.live) or VS Code Mermaid extension — paste `.mmd` contents.
-
----
-
-## Strategies at a glance
-
-| Strategy | `name` | Universe | Risk model | Entry idea |
-|----------|--------|----------|------------|------------|
-| **Pairs** | `pairs_trading` | `SYMBOLS` USDT+USDC perps | Self-managed (z-space SL/TP) | Volume-weighted implied USDT/USDC basis deviation |
-| **SMA** | `sma_crossover` | `SMA_SYMBOLS` | Engine per-leg brackets | Fast/slow SMA cross per symbol |
-| **Market making** | `market_making_v2` | `MM2_SYMBOLS` | Institutional MM risk when enabled | Fee-aware post-only quotes (MM 2.0) |
-| **Flow momentum** | `flow_momentum` | `FLOW_SYMBOLS` | In-strategy (bps stop / reversal) | Follow sustained one-sided tape on liquid majors |
-| **Market making 2.0** | `market_making_v2` | `MM2_SYMBOLS` | Engine per-leg brackets | Fee-aware fade: spread gate, tape confirm, profit/time exits |
-| **All** | `all` | Union of above | Per-strategy rules | Net signals per symbol before one execution path |
-
-Hot-swap: `POST /api/control/strategy` with `{ "name": "pairs_trading" }` (or `sma_crossover`, `flow_momentum`, `market_making_v2`, `all`). Boot default: `STRATEGY` in `.env`.
-
----
-
-## Platform layers
-
-| # | Layer | Paths | Responsibility |
-|---|-------|-------|----------------|
-| 0 | **Venue** | Binance REST + WS | Orders, balances, market data |
-| 1 | **Gateway** | `backend/gateways/` | `GatewayInterface` · signing · reconnect · filters |
-| 2 | **Platform** | `backend/common/`, `backend/engine/persistence/` | Config, `EventBus`, WAL, run bootstrap & JSONL archives |
-| 3 | **Market data** | `backend/engine/market_data/` | L2 book, tape, features, data-quality guards |
-| 4 | **Strategy** | `backend/engine/strategies/`, `backend/analytics/` | Live signals; offline calibration |
-| 5 | **Risk** | `backend/engine/risk/`, `backend/engine/portfolio/`, `backend/engine/position/` | Pre-trade, monitors, circuit breakers |
-| 6 | **Execution** | `backend/engine/execution/`, `backend/engine/orders/` | Wheel, VWAP, OMS, TCA |
-| 7 | **API & UI** | `backend/api/`, `src/` | REST, WebSocket, React console |
-
-Dependency rule: `backend/common/` ← `backend/gateways/` + `backend/engine/` ← `backend/api/` + `backend/analytics/`. Cross-module coupling is **only** through `EventBus`.
-
----
-
-## Repository layout
-
-Paths below are from the **repo root** (`algo-trading-hub/`). Build artefacts (`dist/`, `node_modules/`, `.venv/`) are omitted.
-
-```
-algo-trading-hub/
-├── docs/                         # Operations, security, compliance (see docs/README.md)
-├── src/                          # React dashboard (TanStack Start)
-│   ├── routes/index.tsx          # Main trading console
-│   ├── hooks/useAlgoStream.ts    # REST hydrate + WebSocket + resync policy
-│   ├── lib/api.ts                # Typed HTTP/WS client
-│   └── components/algo/
-│       ├── types.ts              # View models (mirror backend/api/schemas.py)
-│       ├── EquityChart.tsx
-│       ├── PositionChartDialog.tsx
-│       └── SettingsDialog.tsx
-├── backend/                      # Python engine + API
-│   ├── main.py                   # Entry: engine + uvicorn
-│   ├── common/                   # Settings, EventBus, shared types
-│   ├── engine/                   # Strategy-agnostic core (incl. persistence/, market_data/, …)
-│   ├── gateways/                 # Venue adapters (Binance, IBKR skeleton)
-│   ├── api/                      # FastAPI routes + /ws
-│   ├── analytics/                # Offline calibration
-│   ├── scripts/                  # Optional tooling (e.g. live strategy harnesses)
-│   ├── tests/                    # pytest (mocks only here)
-│   ├── docs/                     # Architecture *.mmd sources
-│   ├── data/                     # Run archives & cache (mostly gitignored)
-│   ├── requirements.txt
-│   ├── pyproject.toml
-│   ├── run.bat
-│   ├── AGENTS.md
-│   └── .env.example
-├── package.json
-├── vite.config.ts                # Dev proxy → backend :8000
-├── wrangler.jsonc                # Cloudflare Workers (TanStack Start production build)
-├── tsconfig.json
-├── components.json               # shadcn/ui
-└── eslint.config.js
-```
-
-`backend/common/config.py` hosts default `Settings`; HTTP health routes live in `backend/api/routes/health.py`.
-
----
-
-## Prerequisites
-
-| Requirement | Notes |
-|-------------|-------|
-| **Node.js 20+** | Frontend dev server (`npm`) |
-| **Python 3.11+** | Backend engine + API |
-| **Binance Futures Testnet** keys | https://testnet.binancefuture.com |
-
----
-
-## Run locally
-
-Use **two terminals**.
-
-### 1. Backend
-
-**Windows:**
-
-```powershell
-cd backend
-copy .env.example .env
-# Set BINANCE_API_KEY and BINANCE_API_SECRET
-.\run.bat
-```
-
-**macOS / Linux:**
-
-```bash
-cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-python main.py
-```
-
-- API: **http://127.0.0.1:8000** (REST + `/ws`)
-- Engine boots **stopped** by default — press **Start** in the UI or `POST /api/control/start`
-- Auto-start: `ENGINE_AUTOSTART=true` or `python main.py --engine`
-- API-only (engine never started): `python main.py --no-engine`
-
-### 2. Frontend
-
-```bash
-npm install
-npm run dev
-```
-
-- UI: **http://localhost:5173**
-- Vite proxies `/api` and `/ws` → `127.0.0.1:8000` (same-origin, no CORS)
-- Override API host: `VITE_API_BASE` in `.env` (see [`.env.example`](.env.example))
-
-### 3. Production: Vercel + GCP
-
-| Piece | Where | Guide |
-|-------|--------|--------|
-| Dashboard | Vercel | [`deploy/vercel/README.md`](deploy/vercel/README.md) |
-| Engine + API | GCP Compute Engine | [`deploy/gcp/README.md`](deploy/gcp/README.md) |
-
-Set `VITE_API_BASE` (and optionally `VITE_API_TOKEN`) in Vercel project settings; set matching `CORS_ORIGINS` on the GCP VM.
-
----
-
-## Dashboard behaviour
-
-### Data flow
-
-```mermaid
-flowchart TB
-    subgraph Hydrate
-        S["GET /api/state"]
-        L["GET /api/logs on refresh"]
-    end
-    subgraph Live
-        W["WebSocket /ws"]
-    end
-    H[useAlgoStream] --> S
-    H --> W
-    H --> L
-    H --> P[Dashboard panels]
-```
-
-**Editable source:** [`backend/docs/architecture-frontend.mmd`](backend/docs/architecture-frontend.mmd)
-
-### Resync policy (`useAlgoStream.ts`)
-
-| Trigger | Action |
-|---------|--------|
-| Initial mount | Full `GET /api/state` hydrate |
-| Every **5 s** | Re-fetch state (safety net if WS events missed) |
-| WebSocket reconnect | Debounced full hydrate |
-| WS disconnected | 5 s poll continues |
-| Tab regains focus | Full hydrate |
-| Manual **Refresh** | State + logs + settings |
-
-### Panels
-
-| Panel | Source |
-|-------|--------|
-| Portfolio / equity | `equity` events + `/api/state` |
-| Positions + chart | `position` + `GET /api/klines` |
-| OMS | `order` events |
-| Execution quality | `parent` · `execution` |
-| System health | `status` (latency, WS age, reconcile flags) |
-| Logs / breakers | `log` · `breaker` |
-
-### Controls
-
-- **Start / Pause / Stop / Resume** — engine lifecycle
-- **Flatten** — pause → cancel → sync venue → close each leg (market or VWAP by size/spread) → engine stays **paused** until Resume
-- **Strategy picker** — hot-swap without restart
-- **Risk slider** — `PATCH /api/control/risk` → `max_risk_pct`
-- **Halt** — `POST /api/control/breakers/trip` (trading halt + flatten)
-- **Kill** — `POST /api/control/shutdown` (exit process; not the trading kill switch)
-
-### What to watch in System Health
-
-| Signal | Meaning |
-|--------|---------|
-| **Venue sync age** (`user_data_age_sec`) | Low when user-data WS or periodic REST reconcile has refreshed truth; **`user_ws_event_age_sec`** can stay high quietly while holding exposure |
-| **Order reconcile** | Should be OK; mismatch = venue vs OMS drift |
-| **`reconcile_mismatch` breaker** | Qty drift detected (healed if `RECONCILE_HEAL_ON_MISMATCH=true`) |
-
-Treat open positions as **untrusted** until user-data is fresh and reconcile is clean.
 
 ---
 
