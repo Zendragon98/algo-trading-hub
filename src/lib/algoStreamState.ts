@@ -664,7 +664,7 @@ export function applyWsEvents(
     if (event.type === "log") logEvents.push(event);
     else rest.push(event);
   }
-  let next = rest.reduce(
+  const next = rest.reduce(
     (state, event) => applyWsEvent(state, event, parentClosePending),
     prev,
   );

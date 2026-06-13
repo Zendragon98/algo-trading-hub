@@ -386,8 +386,8 @@ def test_size_pair_respects_max_leg_notional() -> None:
     assert qty == pytest.approx(5.0)
 
 
-def test_bar_aggregation_pushes_only_on_bar_close(monkeypatch) -> None:
-    settings = _settings(pair_bar_sec=60)
+def test_bar_aggregation_pushes_only_on_bar_close(monkeypatch, tmp_path) -> None:
+    settings = _settings(pair_bar_sec=60, persist_dir=str(tmp_path / "runs"))
     strat = PairsTradingStrategy(settings)
     key = "BTCUSDT|BTCUSDC"
     stats = strat._stats[key]  # type: ignore[attr-defined]

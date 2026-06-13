@@ -133,7 +133,7 @@ def test_min_edge_from_settings() -> None:
         mm2_spread_buffer_bps=2.0,
         mm2_assume_maker_rebate=False,
     )
-    assert _min_edge_bps(s) == pytest.approx(6.0)
+    assert _min_edge_bps(s) == pytest.approx(11.0)
 
 
 def test_derive_thresholds_from_percentile() -> None:

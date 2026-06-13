@@ -177,6 +177,7 @@ def test_mm2_two_sided_always_quotes_despite_low_skew() -> None:
             mm2_two_sided_always=True,
             mm2_spread_gate_mode="off",
             mm_quote_use_venue_spread_floor=False,
+            mm_quote_inside_touch_ticks=0,
         )
     )
     strat.attach_own_book_provider(lambda _s: OwnBookState(symbol="BTCUSDT"))

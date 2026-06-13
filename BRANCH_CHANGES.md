@@ -227,3 +227,61 @@ to navigate without moving working source files.
 
 **Runtime impact:** documentation-only. No source files, imports, scripts, or
 runtime behavior were reorganized.
+
+### Phase 4: Submission Readiness Validation
+
+**Why this phase exists:** after improving setup and documentation, the branch
+needed an evidence-based readiness pass to confirm that a local reviewer can
+build the dashboard and run the backend tests without avoidable failures.
+
+**Files changed:**
+
+- `backend/tests/test_backtest_runner.py`
+- `backend/tests/test_market_making_v2.py`
+- `backend/tests/test_mm_universe_scanner.py`
+- `backend/tests/test_multi_strategy.py`
+- `backend/tests/test_pairs_trading.py`
+- `.prettierrc`
+- `.prettierignore`
+- `eslint.config.js`
+- `src/lib/algoStreamState.ts`
+- `BRANCH_CHANGES.md`
+
+**What changed compared with `main`:**
+
+- Replaced a Unix-only `/tmp` test path with pytest's `tmp_path` fixture so the
+  market-capture test works on Windows.
+- Isolated a pairs bar-aggregation test from persisted local warmup state by
+  giving it a temporary persistence directory.
+- Updated market-making tests to match the current implementation contracts:
+  - fee-floor minimum edge is round-trip fee plus spread buffer,
+  - MM quote evaluation in `STRATEGY=all` only runs while the engine is
+    `RUNNING`,
+  - the two-sided MM skew test disables inside-touch pegging so it tests the
+    skew gate rather than quote placement constraints.
+- Made frontend lint usable in a local Windows review environment by:
+  - excluding local/generated folders such as `.claude/` and `backend/.venv/`,
+  - separating Prettier formatting from ESLint quality checks,
+  - allowing Prettier to preserve local line endings,
+  - fixing one `prefer-const` lint error in `src/lib/algoStreamState.ts`.
+
+**Why these changes matter:**
+
+- The full backend pytest suite now passes locally on Windows.
+- The tests no longer depend on machine-specific paths or stale runtime state.
+- The test expectations better describe the current trading-engine behaviour a
+  reviewer will exercise.
+- `npm run lint` now reports warnings instead of failing on local worktrees,
+  virtualenv files, or formatting churn.
+
+**Validation performed:**
+
+- `python -m pytest -q` from `backend/`: 510 passed.
+- `python -m ruff check` on the changed backend tests: passed.
+- `npm.cmd run lint` from repo root: 0 errors, 13 warnings.
+- `npm.cmd run build` from repo root: passed.
+- `git diff --check`: passed.
+
+**Runtime impact:** test and tooling only, plus one frontend `let` to `const`
+cleanup with no behaviour change. No backend engine, strategy, gateway,
+execution, or dashboard runtime logic changed.

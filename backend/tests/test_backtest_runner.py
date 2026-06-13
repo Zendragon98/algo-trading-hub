@@ -64,7 +64,7 @@ def test_backtest_sma_on_synthetic_klines(tmp_path: Path, monkeypatch) -> None:
     assert len(result.equity_curve) > 0
 
 
-def test_market_capturer_builds_bar() -> None:
+def test_market_capturer_builds_bar(tmp_path) -> None:
     from common.config import Settings
     from engine.market_data.feature_store import Features
     from engine.persistence.market_capture import MarketBarCapturer
@@ -75,7 +75,7 @@ def test_market_capturer_builds_bar() -> None:
         capture_bar_interval_sec=60,
         capture_flush_interval_sec=60,
     )
-    run_dir = Path("/tmp/test_capture_run")
+    run_dir = tmp_path / "test_capture_run"
     run_dir.mkdir(parents=True, exist_ok=True)
     feats = [
         Features(symbol="BTCUSDT", mid=100.0, spread_bps=1.0),

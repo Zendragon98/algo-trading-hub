@@ -1,4 +1,6 @@
 node_modules
+backend/.venv
+.claude
 dist
 .output
 .vinxi
