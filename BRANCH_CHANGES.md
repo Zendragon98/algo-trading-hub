@@ -178,3 +178,52 @@ guidelines to the implemented code, diagrams, tests, and remaining report work.
 `group_unwind_failed` breaker fallback scoping now uses the canonical pairs
 strategy id. No strategy signal logic, gateway logic, or execution sizing was
 changed.
+
+### Phase 3: Backend Documentation Structure
+
+**Why this phase exists:** the backend source tree was already organized around
+infrastructure domains, but `backend/README.md` tried to explain every domain
+in one long document. For a graded submission, the backend needs to be easier
+to navigate without moving working source files.
+
+**Files changed:**
+
+- `backend/README.md`
+- `backend/docs/backend-architecture.md`
+- `backend/docs/market-data-and-strategies.md`
+- `backend/docs/risk-execution-and-portfolio.md`
+- `backend/docs/runtime-reference.md`
+- `docs/README.md`
+- `docs/OPERATIONS.md`
+- `docs/REPORT_ALIGNMENT.md`
+- `README.md`
+- `BRANCH_CHANGES.md`
+
+**What changed compared with `main`:**
+
+- Reframed `backend/README.md` as the backend front door: purpose, quick start,
+  folder map, engine subsystem map, common commands, and reading path.
+- Added focused backend docs that mirror the existing backend folders instead
+  of reorganizing code:
+  - architecture and runtime wiring,
+  - market data, strategies, and analytics,
+  - risk, execution, orders, portfolio, and performance,
+  - runtime reference, API surface, run archive, tests, and troubleshooting.
+- Updated the repository documentation register to include the backend deep
+  dives.
+- Updated the report-alignment document so QF635 sections point to the new
+  backend evidence docs.
+- Redirected root README and operations runbook links from old backend README
+  anchors to the new focused backend documents.
+
+**Why these changes matter:**
+
+- A reviewer can now understand the backend by following the same boundaries as
+  the codebase: `api`, `engine`, `gateways`, `common`, `analytics`, and tests.
+- The detailed infrastructure evidence is still available, but no longer packed
+  into one oversized README.
+- The docs now use the architecture diagrams as anchors for the written
+  explanation.
+
+**Runtime impact:** documentation-only. No source files, imports, scripts, or
+runtime behavior were reorganized.

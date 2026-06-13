@@ -10,7 +10,16 @@ course review, engineering handover, and production-readiness checks.
 | [../README.md](../README.md) | All reviewers | Product overview, local setup, dashboard behaviour, architecture summary |
 | [**REPORT_ALIGNMENT.md**](REPORT_ALIGNMENT.md) | Course reviewers / report writers | QF635 report sections mapped to repo evidence and remaining report work |
 | [**ARCHITECTURE.md**](ARCHITECTURE.md) | Architects / security | Canonical links to diagrams + component map |
-| [../backend/README.md](../backend/README.md) | Engineers / quants | Engine modules, API contract, configuration matrix, troubleshooting |
+| [../backend/README.md](../backend/README.md) | Engineers / quants | Backend overview, quick start, folder map, reading path |
+
+## Backend Deep Dives
+
+| Document | Audience | Purpose |
+|----------|----------|---------|
+| [../backend/docs/backend-architecture.md](../backend/docs/backend-architecture.md) | Engineers / reviewers | Process model, API layer, engine core, gateway, common layer, persistence |
+| [../backend/docs/market-data-and-strategies.md](../backend/docs/market-data-and-strategies.md) | Quants / report writers | Market data, analytics, strategies, backtesting context |
+| [../backend/docs/risk-execution-and-portfolio.md](../backend/docs/risk-execution-and-portfolio.md) | Engineers / risk reviewers | Execution path, risk stack, breakers, flattening, OMS, position truth |
+| [../backend/docs/runtime-reference.md](../backend/docs/runtime-reference.md) | Reviewers / operators | Env, startup modes, API contract, run archive, testing, troubleshooting |
 
 ## Operations and Governance
 

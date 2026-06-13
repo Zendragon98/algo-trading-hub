@@ -520,7 +520,7 @@ flowchart LR
     API --> UI[Dashboard poll 5s + WS]
 ```
 
-Layers: startup REST seed · user-data WS merge · reconnect resync · periodic reconcile with optional heal · dashboard safety poll. Details: [`backend/README.md#position--dashboard-sync`](backend/README.md#position--dashboard-sync).
+Layers: startup REST seed · user-data WS merge · reconnect resync · periodic reconcile with optional heal · dashboard safety poll. Details: [`backend/docs/risk-execution-and-portfolio.md`](backend/docs/risk-execution-and-portfolio.md).
 
 **Editable source:** [`backend/docs/architecture-data-sync.mmd`](backend/docs/architecture-data-sync.mmd)
 
@@ -592,7 +592,7 @@ stateDiagram-v2
 
 `MAJOR` → auto-flatten + latch until `POST /api/control/breakers/rearm`. `MINOR` → auto-resume after cooldown. **Reduce-only** orders bypass entry breakers so exits always reach the venue.
 
-Full matrix: [`backend/README.md — Failsafes`](backend/README.md#failsafes--circuit-breaker-matrix).
+Full risk and breaker reference: [`backend/docs/risk-execution-and-portfolio.md`](backend/docs/risk-execution-and-portfolio.md).
 
 ---
 
@@ -624,12 +624,13 @@ is only a frontend deployment example. Set matching `CORS_ORIGINS` on the GCP VM
 
 | Topic | Location |
 |-------|----------|
-| Module walk-through, env vars, API contract | [`backend/README.md`](backend/README.md) |
-| Position & dashboard sync | [`backend/README.md#position--dashboard-sync`](backend/README.md#position--dashboard-sync) |
-| Pairs / SMA / MM strategy math | [`backend/README.md#module-deep-dives`](backend/README.md#module-deep-dives) |
-| Run archives & post-mortem | [`backend/README.md#run-archive`](backend/README.md#run-archive) |
+| Backend overview and reading path | [`backend/README.md`](backend/README.md) |
+| Env vars, API contract, run archives | [`backend/docs/runtime-reference.md`](backend/docs/runtime-reference.md) |
+| Position & dashboard sync | [`backend/docs/risk-execution-and-portfolio.md`](backend/docs/risk-execution-and-portfolio.md) |
+| Pairs / SMA / MM strategy math | [`backend/docs/market-data-and-strategies.md`](backend/docs/market-data-and-strategies.md) |
+| Run archives & post-mortem | [`backend/docs/runtime-reference.md`](backend/docs/runtime-reference.md) |
 | Architecture signpost & component map | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
-| pytest suite map | [`backend/README.md#testing`](backend/README.md#testing) |
+| pytest suite map | [`backend/docs/runtime-reference.md#testing`](backend/docs/runtime-reference.md#testing) |
 | Operations runbook (health, incidents, prod checklist) | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) |
 | Security model & hardening | [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Compliance, records, governance | [`docs/COMPLIANCE_AND_GOVERNANCE.md`](docs/COMPLIANCE_AND_GOVERNANCE.md) |
