@@ -116,3 +116,65 @@ changed only to prebundle Recharts so the dashboard renders correctly after
 - `.\run-local.ps1` was run successfully from the user's local terminal after
   adding Conda detection and dependency checks.
 - `git diff --check` passed after the edits.
+
+### Phase 2: Report Alignment and Architecture Evidence
+
+**Why this phase exists:** compared with `main`, the repository had strong
+infrastructure documentation but no course-facing map from the QF635 report
+guidelines to the implemented code, diagrams, tests, and remaining report work.
+
+**Files changed:**
+
+- `docs/REPORT_ALIGNMENT.md`
+- `docs/README.md`
+- `README.md`
+- `backend/docs/architecture-strategies.mmd`
+- `backend/docs/architecture-control.mmd`
+- `backend/common/breaker_registry.py`
+- `backend/tests/test_breaker_strategy_scope.py`
+- `src/lib/algoStreamState.ts`
+- `BRANCH_CHANGES.md`
+- `docs/STRUCTURE.md`
+
+**What changed compared with `main`:**
+
+- Added `docs/REPORT_ALIGNMENT.md`, a section-by-section map from the QF635
+  report guidelines to repository evidence and remaining report work.
+- Added the report-alignment document to the documentation register.
+- Reorganized the documentation register into primary reading, operations and
+  governance, and supporting/generated material.
+- Corrected the root README strategy table to use the canonical pairs strategy
+  id `pairs_trading_usdt_usdc`.
+- Clarified that short names such as `pairs`, `pairs_trading`, `sma`, and
+  `blend` are accepted aliases, while the README table shows canonical engine
+  ids.
+- Reduced the root README's opening interruption by replacing the long document
+  table with direct links to the documentation register and QF635 alignment
+  guide.
+- Cleaned `docs/STRUCTURE.md` formatting and reframed it as a quick contributor
+  code map instead of a mixed structure/refactor note.
+- Updated the strategy architecture diagram so market making quote intents flow
+  through `QuoteExecutor` and `OrderManager`, separate from the alpha strategy
+  VWAP execution path.
+- Corrected root README, the editable control-plane diagram, and a frontend
+  offline message so E-Stop maps to `POST /api/control/kill` while process
+  shutdown remains the separate `POST /api/control/shutdown` path.
+- Fixed stale breaker scoping for `group_unwind_failed` so fallback strategy
+  filtering checks the canonical pairs strategy id.
+- Added a targeted breaker-scope test for the canonical pairs strategy id.
+
+**Why these changes matter:**
+
+- A professor or teammate can now trace the report outline directly to files in
+  the repository without guessing which implementation supports which section.
+- The documentation now better separates implemented infrastructure evidence
+  from still-pending strategy evaluation and report narrative.
+- Strategy naming is consistent between docs, frontend settings, API state, and
+  backend strategy classes.
+- The architecture diagram now reflects the actual difference between alpha
+  signal execution and market-making quote execution.
+
+**Runtime impact:** one low-risk code path changed: unattributed
+`group_unwind_failed` breaker fallback scoping now uses the canonical pairs
+strategy id. No strategy signal logic, gateway logic, or execution sizing was
+changed.

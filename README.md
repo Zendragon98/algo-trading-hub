@@ -8,19 +8,9 @@ A full-stack **algorithmic trading console**: a React dashboard observes and con
 | **Backend** | Python 3.11+ · FastAPI · asyncio | Trading engine · REST · WebSocket · run archives |
 | **Venue** | Binance Futures (testnet default) | Market data · order routing · balances · positions |
 
-**Documentation index:** [`docs/README.md`](docs/README.md)
+**Full documentation register:** [`docs/README.md`](docs/README.md)
 
-| Audience | Document |
-|----------|----------|
-| Engineering (engine, API, config, strategies) | [`backend/README.md`](backend/README.md) |
-| Architecture signpost (diagrams + component map) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
-| Operations / SRE (health, incidents, deployment) | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) |
-| Google Cloud deployment | [`deploy/gcp/README.md`](deploy/gcp/README.md) |
-| Security (threat model, secrets, hardening) | [`docs/SECURITY.md`](docs/SECURITY.md) |
-| Risk / compliance (records, governance, disclaimer) | [`docs/COMPLIANCE_AND_GOVERNANCE.md`](docs/COMPLIANCE_AND_GOVERNANCE.md) |
-| Branch change log | [`BRANCH_CHANGES.md`](BRANCH_CHANGES.md) |
-| Architecture diagrams (editable `.mmd`) | [`backend/docs/`](backend/docs/) |
-| Python contribution conventions | [`backend/AGENTS.md`](backend/AGENTS.md) |
+**QF635 report alignment:** [`docs/REPORT_ALIGNMENT.md`](docs/REPORT_ALIGNMENT.md)
 
 **Disclaimer:** This repository is software for engineering and research. It is **not** certified for any specific regulatory regime; institutional use requires your own legal, risk, and security sign-off ([`docs/COMPLIANCE_AND_GOVERNANCE.md`](docs/COMPLIANCE_AND_GOVERNANCE.md)).
 
@@ -40,7 +30,7 @@ The browser **never talks to Binance** — it mirrors engine state via `GET /api
 
 ---
 
-## Quick start for course review
+## Course review path
 
 This README is the entry point for a clean local review. It covers the Python
 3.11 backend setup, Node frontend setup, Binance Demo/Testnet key placement,
@@ -58,9 +48,15 @@ ENGINE_AUTOSTART=false
 This starts the API and dashboard without automatically starting the trading
 engine.
 
-For a fast validation path, follow [Installation](#installation), then
-[Run locally](#run-locally), then run
-[No-key offline backtest smoke test](#no-key-offline-backtest-smoke-test).
+Recommended review order:
+
+1. Follow [Prerequisites](#prerequisites) and [Installation](#installation).
+2. Start the backend and frontend with [Run locally](#run-locally).
+3. Run the [No-key offline backtest smoke test](#no-key-offline-backtest-smoke-test).
+4. Open the dashboard and inspect state, strategy controls, circuit breakers,
+   OMS panels, logs, and backtesting views.
+5. Use [`docs/REPORT_ALIGNMENT.md`](docs/REPORT_ALIGNMENT.md) to map repo
+   evidence to the QF635 report sections.
 
 ---
 
@@ -215,28 +211,6 @@ python -c "from common.config import Settings; from analytics.backtest.runner im
 
 The result is saved under `backend/data/backtest_runs`.
 
-### 4. Suggested review path
-
-1. Read this README for the system overview.
-2. Start the backend and frontend locally.
-3. Run the no-key offline backtest smoke test.
-4. Open the dashboard and inspect state, strategy controls, circuit breakers,
-   OMS panels, logs, and backtesting views.
-5. Review the editable architecture diagrams under `backend/docs`.
-
-### 5. Production: Vercel + GCP
-
-| Piece | Where | Guide |
-|-------|--------|--------|
-| Dashboard | Vercel | [`deploy/vercel/README.md`](deploy/vercel/README.md) |
-| Engine + API | GCP Compute Engine | [`deploy/gcp/README.md`](deploy/gcp/README.md) |
-
-For deployed frontend builds, set `VITE_API_BASE` and optionally
-`VITE_API_TOKEN` in the host/build environment; the root [`.env.example`](.env.example)
-is only a frontend deployment example. Set matching `CORS_ORIGINS` on the GCP VM.
-
----
-
 ## Dashboard behaviour
 
 ### Data flow
@@ -287,7 +261,7 @@ flowchart TB
 - **Strategy picker** — hot-swap without restart
 - **Risk slider** — `PATCH /api/control/risk` → `max_risk_pct`
 - **Halt** — `POST /api/control/breakers/trip` (trading halt + flatten)
-- **Kill** — `POST /api/control/shutdown` (exit process; not the trading kill switch)
+- **E-Stop** — `POST /api/control/kill` (flatten + stop engine; API stays up so Start works again)
 
 ### What to watch in System Health
 
@@ -305,14 +279,14 @@ Treat open positions as **untrusted** until user-data is fresh and reconcile is 
 
 | Strategy | `name` | Universe | Risk model | Entry idea |
 |----------|--------|----------|------------|------------|
-| **Pairs** | `pairs_trading` | `SYMBOLS` USDT+USDC perps | Self-managed (z-space SL/TP) | Volume-weighted implied USDT/USDC basis deviation |
+| **Pairs** | `pairs_trading_usdt_usdc` | `SYMBOLS` USDT+USDC perps | Self-managed (z-space SL/TP) | Volume-weighted implied USDT/USDC basis deviation |
 | **SMA** | `sma_crossover` | `SMA_SYMBOLS` | Engine per-leg brackets | Fast/slow SMA cross per symbol |
 | **Blended signals** | `blended_signals` | `BLEND_SYMBOLS` | Engine per-leg brackets | ADX-gated EMA/MACD/RSI/BB blend with microstructure confirmation |
 | **Flow momentum** | `flow_momentum` | `FLOW_SYMBOLS` | In-strategy (bps stop / reversal) | Follow sustained one-sided tape on liquid majors |
 | **Market making 2.0** | `market_making_v2` | `MM2_SYMBOLS` | MM-specific risk when enabled; engine brackets otherwise | Fee-aware post-only quotes with spread, inventory, and toxicity gates |
 | **All** | `all` | Union of above | Per-strategy rules | Net signals per symbol before one execution path |
 
-Hot-swap: `POST /api/control/strategy` with `{ "name": "pairs_trading" }` (or `sma_crossover`, `blended_signals`, `flow_momentum`, `market_making_v2`, `all`). Boot default: `STRATEGY` in `.env`.
+Hot-swap: `POST /api/control/strategy` with `{ "name": "pairs_trading_usdt_usdc" }` (or `sma_crossover`, `blended_signals`, `flow_momentum`, `market_making_v2`, `all`). Boot default: `STRATEGY` in `.env`. Short aliases such as `pairs`, `pairs_trading`, `sma`, and `blend` are accepted by config normalization, but the table shows canonical engine ids.
 
 ---
 
@@ -567,7 +541,8 @@ flowchart LR
 | Flatten | `POST /flatten` | Pause · cancel · venue sync · close legs · stay paused |
 | Strategy | `POST /strategy` | Hot-swap active strategy (no restart) |
 | Halt | `POST /breakers/trip` | MAJOR breaker · flatten |
-| Kill | `POST /shutdown` | Exit Python process |
+| E-Stop | `POST /kill` | Flatten + stop engine; API stays up |
+| Shutdown | `POST /shutdown` | Exit Python process; not wired to the default dashboard button |
 
 **Editable source:** [`backend/docs/architecture-control.mmd`](backend/docs/architecture-control.mmd)
 
@@ -629,6 +604,19 @@ Full matrix: [`backend/README.md — Failsafes`](backend/README.md#failsafes--ci
 | `live` | WARN | Refuses sandbox hosts; real account balance seeds equity |
 
 Flip venue to mainnet (`BINANCE_TESTNET=false`, mainnet REST/WS URLs) **and** set `TRADING_MODE=live`.
+
+---
+
+## Deployment overview
+
+| Piece | Where | Guide |
+|-------|--------|--------|
+| Dashboard | Vercel | [`deploy/vercel/README.md`](deploy/vercel/README.md) |
+| Engine + API | GCP Compute Engine | [`deploy/gcp/README.md`](deploy/gcp/README.md) |
+
+For deployed frontend builds, set `VITE_API_BASE` and optionally
+`VITE_API_TOKEN` in the host/build environment; the root [`.env.example`](.env.example)
+is only a frontend deployment example. Set matching `CORS_ORIGINS` on the GCP VM.
 
 ---
 

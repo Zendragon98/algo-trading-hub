@@ -29,11 +29,13 @@ flowchart TB
     ALL --> MMQ["mm2: on_tick_quotes"]
     TICK2 --> NET["net_strategy_signals<br/>per symbol + group_id"]
     NET --> DISPATCH["_dispatch_netted"]
-    MMQ --> QE["QuoteExecutor"]
+    MMQ --> QI["QuoteIntent<br/>bid/ask prices + sizes"]
+    QI --> QE["QuoteExecutor<br/>cancel/replace post-only quotes"]
     TICK --> DISPATCH2["_dispatch_signals"]
     DISPATCH --> RISK["PreTrade → Execution"]
     DISPATCH2 --> RISK
-    QE --> RISK
+    QE --> OMS["OrderManager<br/>quote child orders"]
+    OMS --> GW["Gateway.place_order"]
 
     subgraph RiskOwnership["StopLossMonitor ownership"]
         P2["pairs + flow: manages_own_risk"]

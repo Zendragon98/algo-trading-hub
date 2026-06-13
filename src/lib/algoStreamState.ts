@@ -173,7 +173,7 @@ const LATENCY_KEYS = new Set([
 ]);
 
 export const BACKEND_OFFLINE_MSG =
-  "Backend unreachable. After Kill, restart the API (e.g. python backend/main.py).";
+  "Backend unreachable. If the backend process was stopped or shut down, restart the API (e.g. python backend/main.py).";
 
 export function createEmptyAlgoStream(): AlgoStream {
   return {

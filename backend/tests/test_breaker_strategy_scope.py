@@ -74,3 +74,25 @@ def test_submit_guard_passes_flow_momentum_through_toxic_flow() -> None:
     assert not ok_mm
     assert reason_mm == "symbol_breaker"
     assert ok_flow
+
+
+def test_group_unwind_failed_blocks_only_pairs_strategy() -> None:
+    breaker = CircuitBreaker()
+    breaker.trip(
+        Breach(
+            code="group_unwind_failed",
+            scope=BreakerScope.SYMBOL,
+            severity=BreakerSeverity.MAJOR,
+            target="BTCUSDT",
+        )
+    )
+    assert breaker.is_blocked(
+        BreakerScope.SYMBOL,
+        "BTCUSDT",
+        strategy_name="pairs_trading_usdt_usdc",
+    )
+    assert not breaker.is_blocked(
+        BreakerScope.SYMBOL,
+        "BTCUSDT",
+        strategy_name="flow_momentum",
+    )

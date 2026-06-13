@@ -8,7 +8,8 @@ flowchart LR
         HALT["Halt / breakers"]
         STRAT["Strategy picker"]
         RISK["Risk slider"]
-        KILL["Kill process"]
+        ESTOP["E-Stop"]
+        SHUT["Shutdown<br/>(operator/API only)"]
     end
 
     subgraph API["POST /api/control/*"]
@@ -19,7 +20,8 @@ flowchart LR
         A5["/breakers/trip · /rearm"]
         A6["/strategy"]
         A7["PATCH /risk"]
-        A8["/shutdown"]
+        A8["/kill"]
+        A9["/shutdown"]
     end
 
     subgraph Engine["Engine actions"]
@@ -30,7 +32,8 @@ flowchart LR
         E5["CircuitBreaker trip<br/>optional flatten"]
         E6["set_active_strategy<br/>StopLossMonitor externals"]
         E7["settings.max_risk_pct live"]
-        E8["request_shutdown → main.py exit"]
+        E8["flatten + Engine.stop<br/>API stays up"]
+        E9["request_shutdown → main.py exit"]
     end
 
     START --> A1 --> E1
@@ -40,7 +43,8 @@ flowchart LR
     HALT --> A5 --> E5
     STRAT --> A6 --> E6
     RISK --> A7 --> E7
-    KILL --> A8 --> E8
+    ESTOP --> A8 --> E8
+    SHUT -.-> A9 -.-> E9
 
     STATUS["EventType.STATUS<br/>+ /ws fan-out"]
 
@@ -52,6 +56,7 @@ flowchart LR
     E6 --> STATUS
     E7 --> STATUS
     E8 --> STATUS
+    E9 --> STATUS
 
     DASH["Dashboard via REST + /ws"]
     STATUS --> DASH

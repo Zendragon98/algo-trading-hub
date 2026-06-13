@@ -216,7 +216,7 @@ def breaker_applies_to_strategy(code: str, strategy_name: str) -> bool:
     if code == "repeat_reject":
         return bool(strategy_name)
     if code == "group_unwind_failed":
-        return strategy_name == "pairs_trading"
+        return strategy_name == "pairs_trading_usdt_usdc"
     return True
 
 
