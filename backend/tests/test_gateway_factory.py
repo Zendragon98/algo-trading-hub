@@ -33,7 +33,7 @@ def test_factory_is_case_insensitive() -> None:
     assert isinstance(gateway, BinanceGateway)
 
 
-def test_factory_returns_ibkr_skeleton() -> None:
+def test_factory_returns_ibkr_scaffold() -> None:
     gateway = create_gateway(_settings(venue="ibkr"))
     assert isinstance(gateway, IBKRGateway)
 
@@ -72,8 +72,8 @@ def test_impact_model_explicit_enabled_can_adjust_price() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ibkr_skeleton_methods_signal_unimplemented() -> None:
-    """The skeleton must conform to the interface but advertise it isn't done."""
+async def test_ibkr_scaffold_methods_signal_unimplemented() -> None:
+    """The scaffold must conform to the interface while advertising incomplete methods."""
     gateway = IBKRGateway(_settings(venue="ibkr"))
     with pytest.raises(NotImplementedError):
         await gateway.connect()

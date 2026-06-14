@@ -1,14 +1,14 @@
 """Exercise every strategy against a running backend (paper/testnet).
 
 Usage (backend must be up on :8000):
-    python scripts/test_strategies_live.py
-    python scripts/test_strategies_live.py --minutes 30
-    python scripts/test_strategies_live.py --minutes 2 --strategy pairs_trading_usdt_usdc
+    python scripts/soak_strategies_live.py
+    python scripts/soak_strategies_live.py --minutes 30
+    python scripts/soak_strategies_live.py --minutes 2 --strategy pairs_trading_usdt_usdc
 
 Between strategies: flatten, rearm breakers, hot-swap, then soak and scan logs.
 
 Localhost only by default. To hit a remote VM (not recommended for soak loops):
-    python scripts/test_strategies_live.py --api-url https://your-vm --allow-remote
+    python scripts/soak_strategies_live.py --api-url https://your-vm --allow-remote
 """
 
 from __future__ import annotations

@@ -454,3 +454,58 @@ understand.
 **Runtime impact:** documentation and repository-surface cleanup only. No
 backend engine, strategy, gateway, execution, dashboard runtime, dependency, or
 configuration behavior changed.
+
+### Phase 9: Backend File-Level Hygiene
+
+**Why this phase exists:** after removing obvious submission-noise files, the
+backend itself needed a file-level pass to reduce duplicated entrypoints and
+make operational helpers easier to understand.
+
+**Files changed:**
+
+- `backend/engine/main_engine.py`
+- `backend/engine/persistence/run_bootstrap.py`
+- `backend/scripts/soak_strategies_live.py`
+- `backend/.dockerignore`
+- `backend/gateways/gateway_interface.py`
+- `backend/gateways/ibkr/`
+- `backend/tests/test_gateway_factory.py`
+- `backend/docs/backend-architecture.md`
+- `backend/docs/runtime-reference.md`
+- `backend/docs/architecture-system.mmd`
+- `backend/README.md`
+- `README.md`
+- `BRANCH_CHANGES.md`
+
+**What changed compared with `main`:**
+
+- Kept the multi-venue gateway surface intact, including the IBKR connector
+  scaffold, because venue extensibility is part of the infrastructure story.
+- Reworded visible IBKR references from "skeleton" to "connector scaffold" so
+  the adapter reads as an intentional extension point rather than accidental
+  unfinished code.
+- Clarified the backend architecture docs and system diagram so Binance is the
+  fully runnable adapter while IBKR is shown as planned connector work against
+  the IBKR venue, not as a Binance-adapter dependency.
+- Removed `engine/main_engine.py`, an unused engine-only entrypoint that
+  duplicated `main.py` wiring and created another place for runtime behaviour
+  to drift.
+- Updated the run-bootstrap docstring now that `main.py` is the single
+  documented backend entrypoint.
+- Renamed `scripts/test_strategies_live.py` to
+  `scripts/soak_strategies_live.py` so it reads as an operational paper/testnet
+  soak helper, not an automated pytest test.
+
+**Why these changes matter:**
+
+- A reviewer now sees one authoritative backend startup path while the gateway
+  layer still shows how additional venues can plug into the engine.
+- The IBKR connector remains in the repository as architecture evidence for
+  venue extensibility, without overstating it as the active trading venue used
+  by the default local run.
+- Operational helper scripts are named by intent, reducing the risk that a
+  reviewer mistakes a flattening/hot-swap soak tool for a normal test command.
+
+**Runtime impact:** no Binance gateway, strategy, execution, risk, dashboard,
+or documented local-run behaviour changed. The removed engine-only entrypoint
+was not part of the README-backed reviewer startup path.

@@ -1,8 +1,8 @@
 """Abstract venue interface.
 
-Every concrete venue (Binance for now) implements `GatewayInterface`.
-The engine never talks to a venue directly; this seam is what lets us
-plug in a `MockGateway` in tests without touching engine code.
+Every venue adapter or connector scaffold implements `GatewayInterface`.
+The engine never talks to a venue directly; this boundary lets Binance,
+future IBKR work, and test gateways share the same engine-facing contract.
 """
 
 from __future__ import annotations
@@ -121,7 +121,7 @@ class GatewayInterface(ABC):
     async def cancel_order(self, symbol: str, client_order_id: str) -> None: ...
 
     async def fetch_open_orders(self, symbol: str | None = None) -> list[ChildOrder]:
-        """Return working orders on the venue. Default: none (mocks / skeletons)."""
+        """Return working orders on the venue. Default: none for test/scaffold gateways."""
         return []
 
     async def fetch_order_by_client_id(self, symbol: str, client_order_id: str) -> ChildOrder | None:
@@ -143,10 +143,10 @@ class GatewayInterface(ABC):
     def get_symbol_filters(self, symbol: str) -> SymbolFilters | None:
         """Return cached venue trading rules for `symbol`.
 
-        Concrete venues populate this map during ``connect()`` from
-        whatever metadata endpoint they expose (Binance ``exchangeInfo``,
-        IBKR ``reqContractDetails``, ...). The default returns ``None``
-        so test mocks and not-yet-implemented venues stay permissive.
+        Concrete venues populate this map during ``connect()`` from whatever
+        metadata endpoint they expose (Binance ``exchangeInfo``, IBKR
+        ``reqContractDetails``, ...). The default returns ``None`` so test
+        gateways and connector scaffolds stay permissive.
         """
         return None
 
@@ -173,11 +173,11 @@ class GatewayInterface(ABC):
         """Return wallet balance per asset (e.g. ``{"USDT": 100.0, "USDC": 50.0}``).
 
         The default implementation falls back to ``fetch_balance()`` keyed by
-        ``Settings.base_currency`` so existing venues (mocks, IBKR skeleton)
-        keep working without changes. Venues that hold multiple stable assets
-        (Binance USDT-M Futures keeps USDT *and* USDC wallets) override this so
-        the engine can merge per-asset ``ACCOUNT_UPDATE`` messages without
-        zeroing out unreported assets.
+        ``Settings.base_currency`` so test gateways and connector scaffolds work
+        without changes. Venues that hold multiple stable assets (Binance USDT-M
+        Futures keeps USDT *and* USDC wallets) override this so the engine can
+        merge per-asset ``ACCOUNT_UPDATE`` messages without zeroing out
+        unreported assets.
         """
         # Lazy import avoids a circular reference; this is the only place the
         # gateway interface needs to know about Settings, and only at runtime.

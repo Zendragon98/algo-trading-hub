@@ -15,7 +15,7 @@ positions, orders, portfolio state, risk state, persistence, and venue access.
 | Entrypoint | `main.py` | Load settings, create gateway, register strategies, start FastAPI/uvicorn |
 | API | `api/` | REST routes, schemas, serializers, `/ws` event stream |
 | Engine | `engine/` | Trading lifecycle, market data, strategy, risk, execution, portfolio |
-| Gateways | `gateways/` | Venue abstraction; Binance implementation and IBKR skeleton |
+| Gateways | `gateways/` | Venue abstraction; Binance implementation and IBKR connector scaffold |
 | Common | `common/` | Settings, aliases, events, enums, shared types, logging |
 | Analytics | `analytics/` | Backtests, calibration, reports, worker jobs |
 | Runtime docs | `docs/` | Architecture diagrams and backend reference docs |

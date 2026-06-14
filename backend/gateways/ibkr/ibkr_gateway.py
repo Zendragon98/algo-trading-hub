@@ -1,12 +1,12 @@
-"""Interactive Brokers gateway — skeleton implementation.
+"""Interactive Brokers gateway connector scaffold.
 
 Purpose
 -------
-This file exists so the engine can be pointed at a non-Binance venue
-without changing any engine code (set ``VENUE=ibkr`` in `.env`). Every
-method conforms to `GatewayInterface` and currently raises
-`NotImplementedError` with a TODO pointer to the IB API call that will
-satisfy it. Bringing IBKR online is mechanical:
+This file documents the adapter shape needed for a non-Binance venue without
+changing engine code. It is registered behind ``VENUE=ibkr`` so factory wiring
+and settings can be tested, but trading methods intentionally raise
+`NotImplementedError` until the IB API calls are implemented. Bringing IBKR
+online is mechanical:
 
     1. ``pip install ib_async`` (or ``ib_insync``, the older name).
     2. Replace each `NotImplementedError` body with the matching IB call.
@@ -58,13 +58,13 @@ logger = logging.getLogger(__name__)
 
 
 _NOT_IMPLEMENTED_MSG = (
-    "IBKRGateway is a skeleton. Install `ib_async` and fill in the body "
+    "IBKRGateway is a connector scaffold. Install `ib_async` and fill in the body "
     "of this method (see the module-level mapping cheatsheet)."
 )
 
 
 class IBKRGateway(GatewayInterface):
-    """Skeleton gateway for Interactive Brokers TWS / IB Gateway.
+    """Connector scaffold for Interactive Brokers TWS / IB Gateway.
 
     Holds the configured connection coordinates so a real implementation
     can pick them up unchanged. The actual `ib_async` client is

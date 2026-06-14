@@ -36,7 +36,7 @@ flowchart TB
         subgraph GW_Layer["gateways/ — venue seam"]
             FACT["factory.create_gateway"]
             BIN["binance/ BinanceGateway"]
-            IBKR["ibkr/ skeleton"]
+            IBKR["ibkr/ connector scaffold"]
             FACT --> BIN
             FACT -.-> IBKR
         end
@@ -68,11 +68,11 @@ flowchart TB
     BIN <-->|REST| BN_REST
     BIN <-->|WS| BN_WS_PUB
     BIN <-->|WS + listenKey| BN_WS_USER
-    IBKR -.->|"planned"| BIN
+    IBKR -.->|"planned adapter work"| IB
 
     classDef venue fill:#1e3a5f,stroke:#60a5fa,color:#e2e8f0
     classDef browser fill:#14532d,stroke:#4ade80,color:#ecfdf5
     classDef api fill:#422006,stroke:#fbbf24,color:#fffbeb
-    class BN_REST,BN_WS_PUB,BN_WS_USER venue
+    class BN_REST,BN_WS_PUB,BN_WS_USER,IB venue
     class UI,HOOK,API_CLIENT browser
     class FAST,CTRL,SER api

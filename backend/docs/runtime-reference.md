@@ -160,7 +160,7 @@ python -m pytest tests/test_gateway_factory.py -q
 |---|---|
 | `run.bat` | Windows backend launcher |
 | `scripts/monitor_health.py` | Local health/log summary for a running backend |
-| `scripts/test_strategies_live.py` | Paper/testnet strategy soak helper; localhost by default |
+| `scripts/soak_strategies_live.py` | Paper/testnet strategy soak helper; localhost by default |
 | `check_fees.py` | Binance fee audit helper |
 
 `check_fees.py` is a standalone helper and not part of the engine hot path.

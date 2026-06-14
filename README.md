@@ -362,7 +362,7 @@ algo-trading-hub/
 │   ├── main.py                   # Entry: engine + uvicorn
 │   ├── common/                   # Settings, EventBus, shared types
 │   ├── engine/                   # Strategy-agnostic core (incl. persistence/, market_data/, …)
-│   ├── gateways/                 # Venue adapters (Binance, IBKR skeleton)
+│   ├── gateways/                 # Venue adapters (Binance plus IBKR connector scaffold)
 │   ├── api/                      # FastAPI routes + /ws
 │   ├── analytics/                # Offline calibration
 │   ├── scripts/                  # Optional tooling (e.g. live strategy harnesses)

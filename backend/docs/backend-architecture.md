@@ -84,7 +84,12 @@ The engine depends on `GatewayInterface`, not on Binance directly.
 | `gateways/gateway_interface.py` | Abstract venue contract |
 | `gateways/factory.py` | Builds the configured gateway from `VENUE` |
 | `gateways/binance/` | Binance USDT-M Futures REST and WebSocket adapter |
-| `gateways/ibkr/` | IBKR skeleton conforming to the same interface |
+| `gateways/ibkr/` | IBKR connector scaffold conforming to the same interface |
+
+Binance is the fully runnable venue adapter used by the default local review
+flow. The IBKR package is kept as an interface-compliant connector scaffold:
+`VENUE=ibkr` proves factory wiring and settings shape, but the trading methods
+still raise `NotImplementedError` until the IB API calls are implemented.
 
 The Binance adapter is split by connection type:
 
