@@ -371,3 +371,36 @@ launcher path.
 
 **Runtime impact:** launcher robustness only. No backend engine, strategy,
 gateway, execution, dashboard, or configuration behavior changed.
+
+### Phase 7: Submission Readiness Pass
+
+**Why this phase exists:** after validating the local setup path, the remaining
+question was whether the repository is clean and easy to submit as a graded
+artifact. This phase checks the Git-facing package rather than local generated
+state.
+
+**Files changed:**
+
+- `README.md`
+- `BRANCH_CHANGES.md`
+
+**What changed compared with `main`:**
+
+- Added a top-level submission handoff checklist covering the repository URL,
+  ignored local artifacts, Binance key placement, report-evidence map, and the
+  boundary between setup smoke tests and report-grade performance claims.
+- Confirmed that local `.env`, virtual environment, downloaded kline data, run
+  archives, `node_modules/`, and `dist/` are ignored rather than part of the
+  Git submission.
+- Confirmed no tracked sensitive files or generated runtime artifacts are
+  present in the submission surface.
+
+**Why these changes matter:**
+
+- A reviewer can distinguish what to clone, what to configure locally, and what
+  should not be committed.
+- The report handoff is explicit: infrastructure evidence is strong, but final
+  strategy performance still needs a deliberate dataset and archived results.
+
+**Runtime impact:** documentation-only. No code, scripts, dependencies,
+runtime configuration, or dashboard behavior changed.
