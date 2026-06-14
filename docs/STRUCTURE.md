@@ -63,8 +63,7 @@ older imports. Config still accepts `STRATEGY=market_making` as an alias for
 ## Maintainability Notes
 
 The items below are not required to run or review the project. They are
-candidate cleanups if future work changes the same areas. See
-[SPLIT_AUDIT.md](SPLIT_AUDIT.md) for rationale.
+candidate cleanups if future work changes the same areas.
 
 | Priority | Target | Suggested action |
 |---|---|---|

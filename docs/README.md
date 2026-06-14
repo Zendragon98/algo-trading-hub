@@ -35,17 +35,7 @@ course review, engineering handover, and production-readiness checks.
 
 | Document | Audience | Purpose |
 |----------|----------|---------|
-| [../BRANCH_CHANGES.md](../BRANCH_CHANGES.md) | Reviewers / teammates | Human-readable log of branch changes from `main` and the reason for each change |
 | [**STRUCTURE.md**](STRUCTURE.md) | Contributors / reviewers | Quick code map for frontend, backend, and tests |
-
-## Optional / Non-Core Material
-
-This file is useful for context but is not required for a first pass through the
-QF635 submission:
-
-| Document | Purpose |
-|----------|---------|
-| [**SPLIT_AUDIT.md**](SPLIT_AUDIT.md) | Maintainability audit for possible future module splits |
 
 ## Versioning Note
 

@@ -22,6 +22,8 @@ dist-ssr
 .dev.vars
 
 # Editor directories and files
+.claude/
+.cursor/
 .vscode/*
 !.vscode/extensions.json
 .idea
