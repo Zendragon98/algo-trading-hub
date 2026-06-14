@@ -60,31 +60,23 @@ function Test-PythonDependencies {
         [string]$PythonExe,
         [string[]]$Args
     )
-    $checkScript = @'
-import importlib.util
-import sys
-
-modules = [
-    "fastapi",
-    "uvicorn",
-    "pydantic_settings",
-    "dotenv",
-    "numpy",
-    "pandas",
-    "scipy",
-    "statsmodels",
-    "pyarrow",
-    "orjson",
-    "websockets",
-    "httpx",
-    "pytest",
-]
-
-missing = [name for name in modules if importlib.util.find_spec(name) is None]
-if missing:
-    print("missing python modules: " + ", ".join(missing), file=sys.stderr)
-    raise SystemExit(1)
-'@
+    $modules = @(
+        "fastapi",
+        "uvicorn",
+        "pydantic_settings",
+        "dotenv",
+        "numpy",
+        "pandas",
+        "scipy",
+        "statsmodels",
+        "pyarrow",
+        "orjson",
+        "websockets",
+        "httpx",
+        "pytest"
+    )
+    $moduleList = $modules -join ","
+    $checkScript = "import importlib.util, sys; modules = '$moduleList'.split(','); missing = [name for name in modules if importlib.util.find_spec(name) is None]; print('missing python modules: ' + ', '.join(missing), file=sys.stderr) if missing else None; raise SystemExit(1 if missing else 0)"
     $cmdArgs = @($Args) + @("-c", $checkScript)
     return Test-NativeCommand -FilePath $PythonExe -ArgumentList $cmdArgs -WorkingDirectory $backend
 }
@@ -94,6 +86,17 @@ function Test-FrontendDependencies {
         return $false
     }
     return Test-NativeCommand -FilePath "npm.cmd" -ArgumentList @("ls", "--depth=0", "--silent") -WorkingDirectory $root
+}
+
+function Repair-ProcessPathEnvironment {
+    $pathValue = [Environment]::GetEnvironmentVariable("Path", "Process")
+    if (-not $pathValue) {
+        $pathValue = [Environment]::GetEnvironmentVariable("PATH", "Process")
+    }
+    if ($pathValue) {
+        [Environment]::SetEnvironmentVariable("PATH", $null, "Process")
+        [Environment]::SetEnvironmentVariable("Path", $pathValue, "Process")
+    }
 }
 
 function New-RepoVenv {
@@ -189,6 +192,8 @@ Write-Host "Starting local services. Press Ctrl+C to stop both." -ForegroundColo
 Write-Host "Backend:   http://127.0.0.1:8000"
 Write-Host "Dashboard: http://localhost:5173"
 Write-Host ""
+
+Repair-ProcessPathEnvironment
 
 $backendProc = $null
 $frontendProc = $null

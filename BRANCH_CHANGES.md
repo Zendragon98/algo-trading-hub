@@ -334,3 +334,40 @@ readability rather than strategy performance or report writing.
 
 **Runtime impact:** documentation-only. No code, tests, scripts, or runtime
 configuration changed.
+
+### Phase 6: Fresh Reviewer Run-Through
+
+**Why this phase exists:** after improving the documentation, the next risk was
+whether the documented setup path actually behaves like a fresh reviewer would
+expect. This phase exercised the README validation commands and the one-terminal
+launcher path.
+
+**Files changed:**
+
+- `run-local.ps1`
+- `BRANCH_CHANGES.md`
+
+**What changed compared with `main`:**
+
+- Fixed the Windows launcher's Python dependency probe. The previous multiline
+  `python -c` probe could be mangled by Windows PowerShell native argument
+  passing, causing `.\run-local.ps1 -NoInstall` to report missing Python
+  dependencies even when the repo `.venv` had them installed.
+- Added process-level `Path`/`PATH` normalization before starting backend and
+  frontend child processes. This avoids a Windows `Start-Process` failure when
+  the parent environment contains duplicate path keys.
+
+**Validation performed:**
+
+- `cd backend; python -m pytest -q` passed: 510 tests.
+- `npm.cmd run lint` passed with warnings only.
+- `npm.cmd run build` passed outside the Codex sandbox.
+- The documented `sma` no-key offline backtest passed on the local kline
+  library.
+- `.\run-local.ps1 -NoInstall` now passes dependency detection and reaches
+  service startup in the Codex shell. Vite dev startup still requires normal
+  filesystem access outside the Codex sandbox, matching the earlier build
+  behaviour.
+
+**Runtime impact:** launcher robustness only. No backend engine, strategy,
+gateway, execution, dashboard, or configuration behavior changed.
