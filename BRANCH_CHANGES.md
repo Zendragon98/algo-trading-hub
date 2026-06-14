@@ -404,3 +404,53 @@ state.
 
 **Runtime impact:** documentation-only. No code, scripts, dependencies,
 runtime configuration, or dashboard behavior changed.
+
+### Phase 8: Submission File Hygiene
+
+**Why this phase exists:** after the repository became runnable and submission
+ready, the next review focused on whether every visible file belongs in a
+graded submission and whether comments/docs are clean, relevant, and easy to
+understand.
+
+**Files changed:**
+
+- `.cursor/rules/karpathy-guidelines.mdc`
+- `backend/AGENTS.md`
+- `backend/.env.example`
+- `backend/README.md`
+- `docs/INVESTOR_DECK.md`
+- `docs/netting-analysis-report.md`
+- `docs/netting-analysis-data.json`
+- `docs/README.md`
+- `README.md`
+- `BRANCH_CHANGES.md`
+
+**What changed compared with `main`:**
+
+- Removed AI/tooling guidance from the submitted repository surface:
+  `.cursor/rules/karpathy-guidelines.mdc` and `backend/AGENTS.md`.
+- Folded the useful backend contributor conventions into `backend/README.md`
+  under neutral contributor notes.
+- Removed investor-deck and generated netting-analysis material from the
+  submission branch because it is not part of the QF635 review path and could
+  confuse report evidence with fund-facing material.
+- Simplified `backend/.env.example` into a compact local override template:
+  Binance key placeholders, safe first-run posture, common strategy/risk
+  examples, analytics worker settings, and live-mode references.
+- Aligned backend smoke-test documentation with the root README by using the
+  `sma` no-key offline backtest and removing stale checked-in sample wording.
+- Updated documentation indexes and root README links so removed files are no
+  longer referenced.
+
+**Why these changes matter:**
+
+- The submitted repo now reads as a project artifact rather than an AI-assisted
+  working directory or fundraising package.
+- First-time reviewers see fewer distracting optional files and a cleaner
+  backend configuration template.
+- The remaining documentation better distinguishes infrastructure evidence from
+  final strategy-performance evidence.
+
+**Runtime impact:** documentation and repository-surface cleanup only. No
+backend engine, strategy, gateway, execution, dashboard runtime, dependency, or
+configuration behavior changed.

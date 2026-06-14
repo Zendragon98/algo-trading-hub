@@ -372,7 +372,6 @@ algo-trading-hub/
 │   ├── requirements.txt
 │   ├── pyproject.toml
 │   ├── run.bat
-│   ├── AGENTS.md
 │   └── .env.example
 ├── package.json
 ├── vite.config.ts                # Dev proxy → backend :8000
@@ -669,4 +668,3 @@ is only a frontend deployment example. Set matching `CORS_ORIGINS` on the GCP VM
 | Security model & hardening | [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Compliance, records, governance | [`docs/COMPLIANCE_AND_GOVERNANCE.md`](docs/COMPLIANCE_AND_GOVERNANCE.md) |
 | Full documentation register | [`docs/README.md`](docs/README.md) |
-| Code style & layers | [`backend/AGENTS.md`](backend/AGENTS.md) |

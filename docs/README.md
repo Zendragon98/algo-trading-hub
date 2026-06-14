@@ -37,18 +37,15 @@ course review, engineering handover, and production-readiness checks.
 |----------|----------|---------|
 | [../BRANCH_CHANGES.md](../BRANCH_CHANGES.md) | Reviewers / teammates | Human-readable log of branch changes from `main` and the reason for each change |
 | [**STRUCTURE.md**](STRUCTURE.md) | Contributors / reviewers | Quick code map for frontend, backend, and tests |
-| [../backend/AGENTS.md](../backend/AGENTS.md) | Contributors | Engineering conventions for the Python backend |
 
 ## Optional / Non-Core Material
 
-These files are useful for context but are not required for a first pass through
-the QF635 submission:
+This file is useful for context but is not required for a first pass through the
+QF635 submission:
 
 | Document | Purpose |
 |----------|---------|
 | [**SPLIT_AUDIT.md**](SPLIT_AUDIT.md) | Maintainability audit for possible future module splits |
-| [**INVESTOR_DECK.md**](INVESTOR_DECK.md) | Investor slide plan; not required for QF635 submission |
-| [**netting-analysis-report.md**](netting-analysis-report.md) | Generated netting stats from local run archives; verify freshness before citing |
 
 ## Versioning Note
 

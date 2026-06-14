@@ -159,7 +159,7 @@ python -m pytest -q
 Run a no-key offline backtest smoke test:
 
 ```powershell
-python -c "from common.config import Settings; from analytics.backtest.runner import run_backtest; r = run_backtest(Settings(strategy='pairs'), dataset='library'); print({'run_id': r.run_id, 'strategy': r.strategy, 'bars': r.bar_count, 'return_pct': round(r.metrics.total_return_pct, 4), 'trades': r.metrics.trade_count})"
+python -c "from common.config import Settings; from analytics.backtest.runner import run_backtest; r = run_backtest(Settings(strategy='sma'), dataset='library'); print({'run_id': r.run_id, 'strategy': r.strategy, 'bars': r.bar_count, 'return_pct': round(r.metrics.total_return_pct, 4), 'trades': r.metrics.trade_count})"
 ```
 
 ## Notes for Reviewers
@@ -170,4 +170,15 @@ python -c "from common.config import Settings; from analytics.backtest.runner im
 - Mocks are confined to `backend/tests/`.
 - Runtime outputs under `backend/data/` are not source code.
 - Detailed strategy performance claims should come from final backtests or
-  paper/live runs, not from the small checked-in smoke-test sample.
+  paper/live runs, not from the local smoke-test kline library.
+
+## Contributor Notes
+
+- Treat `backend/` as the import root. Use imports such as `from common...` and
+  `from engine...`; avoid ad hoc relative import workarounds.
+- Keep production mocks and fakes out of runtime paths. Test doubles belong in
+  `backend/tests/`.
+- API schema changes should be kept aligned with frontend types in
+  `src/components/algo/types.ts`.
+- Operator-facing behavior changes should update this README, the relevant
+  backend docs, or the operations/security docs in `../docs/`.
