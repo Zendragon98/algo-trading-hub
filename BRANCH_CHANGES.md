@@ -509,3 +509,42 @@ make operational helpers easier to understand.
 **Runtime impact:** no Binance gateway, strategy, execution, risk, dashboard,
 or documented local-run behaviour changed. The removed engine-only entrypoint
 was not part of the README-backed reviewer startup path.
+
+### Phase 10: Install and Run UX Simplification
+
+**Why this phase exists:** the repository was runnable, but the README made a
+first-time reviewer read the manual backend/frontend setup before seeing the
+one-terminal launcher. That made the install and run process feel longer than
+necessary.
+
+**Files changed:**
+
+- `README.md`
+- `backend/README.md`
+- `BRANCH_CHANGES.md`
+
+**What changed compared with `main`:**
+
+- Replaced the root README's manual-first setup with a shorter Quick Start:
+  clone, enter the repo, run `.\run-local.ps1`, then open the dashboard.
+- Moved the detailed virtualenv, `pip install`, `npm ci`, and two-terminal
+  startup instructions into a Manual Setup fallback.
+- Moved the no-key offline backtest out of the startup path and into
+  Validation and Optional Checks.
+- Clarified what `run-local.ps1` does: creates `backend/.env` when missing,
+  prefers active Conda, otherwise uses `backend/.venv`, checks dependencies,
+  and starts backend/frontend together.
+- Updated `backend/README.md` so the full-app path points to the repo-root
+  launcher, while backend-only commands remain available for engineers.
+
+**Why these changes matter:**
+
+- A course reviewer now sees the shortest working path before the detailed
+  setup reference.
+- Manual setup is still documented, but no longer dominates the first-run
+  experience.
+- Validation commands remain available without making dashboard startup feel
+  like a long checklist.
+
+**Runtime impact:** documentation-only. No launcher, backend, frontend,
+strategy, gateway, dependency, or configuration behavior changed.

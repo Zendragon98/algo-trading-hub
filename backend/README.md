@@ -37,7 +37,18 @@ architecture evidence and should be updated when behaviour changes.
 
 ## Quick Start
 
-From `backend/`:
+For the full local app, use the repo-root launcher:
+
+```powershell
+cd ..
+.\run-local.ps1
+```
+
+It starts the backend and frontend together, creates `backend/.env` if needed,
+detects Conda before falling back to `backend/.venv`, and installs missing
+dependencies unless `-NoInstall` is set.
+
+For backend-only work from `backend/`:
 
 ```powershell
 python -m venv .venv
@@ -47,12 +58,7 @@ copy .env.example .env
 python main.py
 ```
 
-You can also use `.\run.bat` from `backend/`, or run both backend and frontend
-from the repository root with:
-
-```powershell
-.\run-local.ps1
-```
+You can also use `.\run.bat` from `backend/` as a Windows convenience launcher.
 
 Default local review settings:
 

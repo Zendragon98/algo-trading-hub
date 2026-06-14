@@ -50,12 +50,11 @@ engine.
 
 Recommended review order:
 
-1. Follow [Prerequisites](#prerequisites) and [Installation](#installation).
-2. Start the backend and frontend with [Run locally](#run-locally).
-3. Run the [No-key offline backtest smoke test](#no-key-offline-backtest-smoke-test).
-4. Open the dashboard and inspect state, strategy controls, circuit breakers,
+1. Follow [Quick start](#quick-start) to launch the local dashboard.
+2. Open the dashboard and inspect state, strategy controls, circuit breakers,
    OMS panels, logs, and backtesting views.
-5. Use [`docs/REPORT_ALIGNMENT.md`](docs/REPORT_ALIGNMENT.md) to map repo
+3. Run any needed [validation and optional checks](#validation-and-optional-checks).
+4. Use [`docs/REPORT_ALIGNMENT.md`](docs/REPORT_ALIGNMENT.md) to map repo
    evidence to the QF635 report sections.
 
 Quick validation checklist:
@@ -67,7 +66,7 @@ Quick validation checklist:
 | Frontend build | `npm.cmd run build` on Windows, or `npm run build` elsewhere | Production build completes |
 | Backend health | `Invoke-RestMethod http://127.0.0.1:8000/health` | `status: ok` |
 | Trading readiness | `Invoke-RestMethod http://127.0.0.1:8000/ready` | `ready=false` until the engine is started |
-| Smoke backtest | [No-key offline backtest smoke test](#no-key-offline-backtest-smoke-test) | Runs without Binance keys after local kline data exists |
+| Smoke backtest | [Optional no-key backtest smoke test](#optional-no-key-backtest-smoke-test) | Runs without Binance keys after local kline data exists |
 
 Submission handoff checklist:
 
@@ -97,18 +96,87 @@ Submission handoff checklist:
 
 ---
 
-## Installation
+## Quick Start
 
-Clone the repository and install backend and frontend dependencies once.
+For a Windows course review, start from the repo root and use the local
+launcher. It creates `backend/.env` if missing, detects an active Conda
+environment first, otherwise uses `backend/.venv`, installs missing Python and
+Node dependencies, and starts the backend and frontend together.
+
+```powershell
+git clone https://github.com/Zendragon98/algo-trading-hub.git
+cd algo-trading-hub
+.\run-local.ps1
+```
+
+Then open:
+
+```text
+http://localhost:5173
+```
+
+The backend API is served at:
+
+```text
+http://127.0.0.1:8000
+```
+
+Use Ctrl+C in the launcher terminal to stop both processes.
+
+The engine starts stopped by default. This lets the dashboard load without
+placing orders or connecting to Binance account/order endpoints. To start the
+engine against Binance Demo/Testnet, add keys to `backend/.env`, then press
+**Start** in the dashboard:
+
+```dotenv
+BINANCE_API_KEY=replace_with_demo_or_testnet_key
+BINANCE_API_SECRET=replace_with_demo_or_testnet_secret
+```
+
+Safe first-run settings are already the defaults:
+
+```dotenv
+TRADING_MODE=paper
+BINANCE_TESTNET=true
+ENGINE_AUTOSTART=false
+```
+
+Useful launcher variants:
+
+```powershell
+.\run-local.ps1 -NoInstall
+```
+
+Fails fast if dependencies are missing.
+
+```powershell
+conda activate <env-name>
+.\run-local.ps1
+```
+
+Uses the active Conda Python instead of `backend/.venv`.
+
+The PowerShell launcher is the shortest supported path on Windows. For
+macOS/Linux, or when you want explicit control over each process, use the
+manual setup below.
+
+---
+
+## Manual Setup
+
+Use this when you do not want the launcher to create environments or install
+dependencies.
+
+### Clone
 
 ```powershell
 git clone https://github.com/Zendragon98/algo-trading-hub.git
 cd algo-trading-hub
 ```
 
-### Backend dependencies
+### Backend
 
-**Windows:**
+**Windows PowerShell:**
 
 ```powershell
 cd backend
@@ -132,18 +200,9 @@ cp .env.example .env
 cd ..
 ```
 
-Edit `backend/.env` only for values you need to override. For course review,
-keep the safe defaults:
-
-```dotenv
-TRADING_MODE=paper
-BINANCE_TESTNET=true
-ENGINE_AUTOSTART=false
-```
-
-Binance Demo/Testnet keys are needed when the engine connects to user-data,
-account, position, or order endpoints. They are not needed for API-only startup
-or the offline smoke test.
+Edit `backend/.env` only for local overrides. Binance Demo/Testnet keys are
+needed when the engine connects to user-data, account, position, or order
+endpoints. They are not needed for API-only startup or the offline smoke test.
 
 ```dotenv
 BINANCE_API_KEY=replace_with_demo_or_testnet_key
@@ -152,7 +211,7 @@ BINANCE_API_SECRET=replace_with_demo_or_testnet_secret
 
 Keep secrets only in `backend/.env`. Do not commit `.env` files.
 
-### Frontend dependencies
+### Frontend
 
 From the repo root:
 
@@ -165,25 +224,9 @@ Local frontend development does not need a root `.env` file. Vite proxies
 
 ---
 
-## Run locally
+### Run With Two Terminals
 
-Use **two terminals**.
-
-For Windows convenience, you can also start both processes from the repo root:
-
-```powershell
-.\run-local.ps1
-```
-
-The launcher detects an active Conda environment first; otherwise it uses or
-creates `backend/.venv` with Python 3.11. It checks Python and frontend
-dependencies and installs only when they are missing. Use `.\run-local.ps1
--NoInstall` when you want it to fail fast instead of installing anything.
-
-This keeps the backend and frontend as separate processes; it only orchestrates
-them from one terminal. Use Ctrl+C to stop both.
-
-### 1. Backend
+Terminal 1, backend:
 
 **Windows:**
 
@@ -213,7 +256,7 @@ python main.py
   values such as `0` equity. Binance balances and positions are loaded only
   when the engine connects on **Start**.
 
-### 2. Frontend
+Terminal 2, frontend:
 
 ```bash
 npm run dev
@@ -223,7 +266,33 @@ npm run dev
 - Vite proxies `/api` and `/ws` → `127.0.0.1:8000` (same-origin, no CORS)
 - Local frontend dev does not need a root `.env` file.
 
-### 3. No-key offline backtest smoke test
+---
+
+## Validation and Optional Checks
+
+### Health checks
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/health
+Invoke-RestMethod http://127.0.0.1:8000/ready
+```
+
+`/health` should return `status: ok`. `/ready` stays false while the engine is
+intentionally stopped or paused.
+
+### Test and build checks
+
+```powershell
+cd backend
+python -m pytest -q
+cd ..
+npm run lint
+npm run build
+```
+
+On Windows, `npm.cmd run lint` and `npm.cmd run build` are equivalent.
+
+### Optional no-key backtest smoke test
 
 This command uses the local kline library under `backend/data/klines` and does
 not connect to Binance. It is a setup smoke test, not a performance result. A
