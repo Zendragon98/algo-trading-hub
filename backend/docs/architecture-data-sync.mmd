@@ -1,59 +1,70 @@
-%% Position & portfolio truth — venue → engine → API → dashboard
+%% Position and portfolio truth - venue, engine, API, dashboard
 flowchart TB
-    BN["Binance Futures<br/>source of truth"]
+    VENUE["Venue account<br/>source of truth"]
 
-    subgraph VenuePaths["Venue → gateway"]
-        WS["User-data WS<br/>ACCOUNT_UPDATE · ORDER_TRADE_UPDATE"]
-        REST["REST<br/>GET /fapi/v2/account · positionRisk · openOrders"]
-        RECON["Periodic reconcile<br/>when user-data idle"]
+    subgraph Gateway["Gateway inputs"]
+        USERWS["User-data WebSocket<br/>ACCOUNT_UPDATE + ORDER_TRADE_UPDATE"]
+        REST["REST snapshots<br/>account, positions, open orders"]
+        RECON["Periodic reconcile<br/>used when streams are stale or drifted"]
     end
 
-    BN --> WS
-    BN --> REST
-    REST --> RECON
+    VENUE --> USERWS
+    VENUE --> REST --> RECON
 
-    subgraph EngineState["Engine state"]
-        PT["PositionTracker<br/>qty · entry · realised PnL"]
-        PF["Portfolio<br/>per-asset wallets USDT+USDC"]
-        OMS["OrderManager<br/>working children"]
+    subgraph Engine["Engine state"]
+        POS["PositionTracker<br/>qty, entry, realised PnL"]
+        PORT["Portfolio<br/>wallets + equity curve"]
+        OMS["OrderManager<br/>working child orders"]
     end
 
-    WS -->|"apply_exchange_positions<br/>merge wallets"| PT
-    WS -->|"apply_exchange_positions<br/>merge wallets"| PF
-    REST -->|"sync_from_venue on mismatch"| PT
-    RECON --> PT
-    RECON --> PF
-    WS --> OMS
+    USERWS -->|"merge exchange state"| POS
+    USERWS -->|"merge wallet state"| PORT
+    USERWS -->|"order/fill updates"| OMS
+    REST -->|"startup seed + explicit resync"| POS
+    REST -->|"startup seed + balance resync"| PORT
+    RECON --> POS
+    RECON --> PORT
+    RECON --> OMS
 
-    subgraph Heal["Drift handling"]
-        H1["RECONCILE_HEAL_ON_MISMATCH<br/>overwrite local from venue"]
-        H2["MAJOR breaker reconcile_mismatch"]
-        H3["order_reconcile_mismatch<br/>cancel orphans"]
+    subgraph Drift["Drift handling"]
+        HEAL["Optional heal<br/>overwrite local from venue"]
+        BREAKER["MAJOR breaker<br/>reconcile mismatch"]
+        ORPHAN["Open-order reconcile<br/>cancel or flag orphans"]
     end
 
-    RECON --> H1 --> H2
-    RECON --> H3
+    RECON --> HEAL
+    RECON --> BREAKER
+    RECON --> ORPHAN
 
-    subgraph API["api/"]
-        SNAP["GET /api/state<br/>engine.snapshot()"]
-        WS_OUT["/ws position · equity · order events"]
+    subgraph API["API surface"]
+        SNAPSHOT["GET /api/state<br/>engine snapshot"]
+        STREAM["WebSocket /ws<br/>position, equity, order events"]
     end
 
-    PT --> SNAP
-    PT --> WS_OUT
-    PF --> SNAP
-    PF --> WS_OUT
-    OMS --> SNAP
-    OMS --> WS_OUT
+    POS --> SNAPSHOT
+    POS --> STREAM
+    PORT --> SNAPSHOT
+    PORT --> STREAM
+    OMS --> SNAPSHOT
+    OMS --> STREAM
 
-    subgraph UI["React dashboard"]
+    subgraph Dashboard["React dashboard"]
         HOOK["useAlgoStream"]
-        POLL["Poll /api/state every 5s<br/>+ reconnect + tab focus"]
+        POLL["5 second state poll<br/>plus focus/reconnect hydrate"]
         HOOK --> POLL
     end
 
-    SNAP --> HOOK
-    WS_OUT --> HOOK
+    SNAPSHOT --> HOOK
+    STREAM --> HOOK
 
-    classDef truth fill:#7f1d1d,stroke:#fca5a5,color:#fef2f2
-    class BN truth
+    classDef venue fill:#fef2f2,stroke:#ef4444,color:#7f1d1d
+    classDef gateway fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef engine fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    classDef risk fill:#fff7ed,stroke:#f97316,color:#7c2d12
+    classDef api fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
+
+    class VENUE venue
+    class USERWS,REST,RECON gateway
+    class POS,PORT,OMS engine
+    class HEAL,BREAKER,ORPHAN risk
+    class SNAPSHOT,STREAM,HOOK,POLL api

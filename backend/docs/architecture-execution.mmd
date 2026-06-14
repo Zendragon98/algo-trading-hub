@@ -1,41 +1,44 @@
-%% Parent-order execution — signal to venue fills
+%% Parent-order execution - signal to venue fills
 sequenceDiagram
     autonumber
-    participant S as Strategy
-    participant P as PreTradeValidator
-    participant K as RiskManager
-    participant R as ExecutionRouter
-    participant W as AlgoWheel
-    participant SL as Slicer
-    participant V as VwapExecutor
-    participant O as OrderManager
-    participant G as Gateway
-    participant T as ExecutionTracker
+    participant Strategy
+    participant PreTrade as PreTradeValidator
+    participant Risk as RiskManager
+    participant Router as ExecutionRouter
+    participant Wheel as AlgoWheel
+    participant Slicer
+    participant VWAP as VwapExecutor
+    participant OMS as OrderManager
+    participant Gateway
+    participant TCA as ExecutionTracker
 
-    S->>P: Signal (optional group_id for pairs)
-    alt pair group
-        P->>P: validate_group · unified qty floor
-    else single leg
-        P->>P: validate_single
+    Strategy->>PreTrade: Signal, optional group_id for pairs
+    alt Pair group
+        PreTrade->>PreTrade: validate group and common quantity floor
+    else Single leg
+        PreTrade->>PreTrade: validate single signal
     end
-    P->>K: capped qty · exposure · spread veto
-    K-->>P: approved / rejected
-    P->>R: ParentOrder request
-    R->>W: features → FRONTLOAD | NORMAL | BACKLOAD
-    W-->>R: AlgoMode
-    R->>SL: slice weights (qty conserved)
-    R->>T: record arrival mid
-    loop each slice until filled or timeout
-        R->>V: schedule slice
-        V->>O: ChildOrder LIMIT (peg bid/ask)
-        O->>G: place_order(clientOrderId deterministic)
-        G-->>O: ack
-        G-->>O: fills (partial OK)
-        alt slice timeout or slippage breach
-            V->>O: cancel child
-            V->>G: market residual (reduce_only if exit)
+
+    PreTrade->>Risk: capped quantity, exposure, spread checks
+    Risk-->>PreTrade: approved or rejected
+    PreTrade->>Router: parent order request
+    Router->>Wheel: choose urgency profile
+    Wheel-->>Router: frontload, normal, or backload
+    Router->>Slicer: create conserved slice schedule
+    Router->>TCA: record arrival mid
+
+    loop Each slice until filled or timeout
+        Router->>VWAP: schedule slice
+        VWAP->>OMS: child LIMIT order
+        OMS->>Gateway: place_order with deterministic clientOrderId
+        Gateway-->>OMS: accepted or rejected
+        Gateway-->>OMS: partial or full fill
+        alt Timeout or slippage breach
+            VWAP->>OMS: cancel child
+            VWAP->>Gateway: market residual, reduce_only if exit
         end
     end
-    O-->>T: fill stream
-    T-->>R: PARENT_UPDATE on each fill
-    T-->>R: EXECUTION_REPORT on parent done
+
+    OMS-->>TCA: fill stream
+    TCA-->>Router: PARENT_UPDATE on each fill
+    TCA-->>Router: EXECUTION_REPORT on completion

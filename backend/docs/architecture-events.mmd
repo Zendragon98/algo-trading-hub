@@ -1,74 +1,66 @@
-%% EventBus fan-out — producers, consumers, persistence
+%% EventBus fan-out - producers, subscribers, and archives
 flowchart TB
     subgraph Producers["Event producers"]
-        ENG["Engine<br/>tick · status · ops"]
-        GW["Gateway callbacks<br/>fills · orders"]
-        OMS["OrderManager<br/>ORDER_UPDATE"]
-        POS["PositionTracker<br/>POSITION"]
-        PF["Portfolio<br/>EQUITY"]
-        RK["Risk / breakers<br/>BREAKER"]
-        EX["ExecutionTracker<br/>PARENT_UPDATE · EXECUTION_REPORT"]
-        LOG["logging.configure<br/>LOG"]
+        direction LR
+        ENGINE["Engine<br/>tick, status, ops"]
+        GATEWAY["Gateway<br/>fills, orders, account"]
+        OMS["OrderManager"]
+        PORT["Portfolio"]
+        RISK["Risk + breakers"]
+        EXEC["ExecutionTracker"]
+        LOGS["Logging bridge"]
     end
 
-    BUS["common/EventBus<br/>asyncio fan-out · bounded queues"]
+    BUS["EventBus<br/>async fan-out with bounded queues"]
 
-    ENG --> BUS
-    GW --> BUS
+    ENGINE --> BUS
+    GATEWAY --> BUS
     OMS --> BUS
-    POS --> BUS
-    PF --> BUS
-    RK --> BUS
-    EX --> BUS
-    LOG --> BUS
+    PORT --> BUS
+    RISK --> BUS
+    EXEC --> BUS
+    LOGS --> BUS
 
-    subgraph Consumers["Subscribers"]
-        WS["api/ws.py<br/>/ws JSON stream"]
-        REC["EventRecorder<br/>per-type *.jsonl"]
-        JOUR["WAL journal<br/>events.wal.jsonl + meta.json"]
-        LAT["LatencyTracker<br/>STATUS histograms"]
-        ALERT["AlertManager<br/>webhook on MAJOR"]
-        LOGBUF["log buffer pump<br/>GET /api/logs"]
+    subgraph Subscribers["Subscribers"]
+        direction LR
+        WS["WebSocket /ws<br/>dashboard stream"]
+        REC["EventRecorder<br/>per-type JSONL"]
+        WAL["WAL journal<br/>recovery state"]
+        LAT["LatencyTracker"]
+        ALERT["AlertManager"]
+        LOGBUF["Log buffer<br/>GET /api/logs"]
     end
 
     BUS --> WS
     BUS --> REC
-    BUS --> JOUR
+    BUS --> WAL
     BUS --> LAT
     BUS --> ALERT
     BUS --> LOGBUF
 
-    WS --> UI["React useAlgoStream"]
+    WS --> UI["React dashboard"]
 
-    subgraph Archive["data/runs/&lt;run-id&gt;/"]
+    subgraph Archive["Run archive: data/runs/<run-id>/"]
         direction LR
-        F1["fills.jsonl"]
-        F2["orders.jsonl"]
-        F3["parents.jsonl"]
-        F4["executions.jsonl"]
-        F5["positions.jsonl"]
-        F6["equity.jsonl"]
-        F7["status.jsonl"]
-        F8["breakers.jsonl"]
-        F9["logs.jsonl"]
-        F10["events.wal.jsonl"]
+        FILES["fills, orders, parents,<br/>executions, positions,<br/>equity, status, breakers,<br/>logs, events.wal"]
     end
 
     REC --> Archive
-    JOUR --> F10
+    WAL --> Archive
 
-    subgraph EventTypes["EventType → stream mapping"]
-        direction TB
-        ET1["FILL → fills"]
-        ET2["ORDER_UPDATE → orders"]
-        ET3["PARENT_UPDATE → parents"]
-        ET4["EXECUTION_REPORT → executions"]
-        ET5["POSITION → positions"]
-        ET6["EQUITY → equity"]
-        ET7["STATUS → status"]
-        ET8["BREAKER → breakers"]
-        ET9["LOG → logs"]
-        ET10["TICK → ticks (opt-in)"]
+    subgraph Analytics["Offline analytics"]
+        ANALYZERS["pair_analyzer<br/>orderbook_analyzer"]
     end
 
-    AN["analytics/ offline<br/>pair_analyzer · orderbook_analyzer"] -.->|"calibrates thresholds"| ENG
+    Archive -.-> ANALYZERS
+    ANALYZERS -.->|"calibrates thresholds"| ENGINE
+
+    classDef producer fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef bus fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    classDef sink fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    classDef archive fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
+
+    class ENGINE,GATEWAY,OMS,PORT,RISK,EXEC,LOGS producer
+    class BUS bus
+    class WS,REC,WAL,LAT,ALERT,LOGBUF,UI sink
+    class FILES,ANALYZERS archive

@@ -8,25 +8,36 @@ This document describes how **Algo Trading Hub** handles authentication, secrets
 
 ```mermaid
 flowchart LR
-  subgraph Trust["Trust zone: operator network"]
-    B[Browser console]
-  end
-  subgraph API["FastAPI backend"]
-    REST["Surface: REST + WebSocket + /health"]
-    ENG[Engine + keys]
-  end
-  subgraph Untrusted["Untrusted: internet"]
-    EX[Binance APIs]
-  end
-  B --> REST
-  ENG --> EX
+    subgraph Operator["Trusted operator network"]
+        BROWSER["Browser console"]
+    end
+
+    subgraph Backend["FastAPI backend"]
+        API["REST + WebSocket + /health"]
+        ENGINE["Engine process<br/>holds venue credentials"]
+        API --> ENGINE
+    end
+
+    subgraph Internet["External internet"]
+        VENUE["Exchange APIs<br/>Binance active, IBKR target"]
+    end
+
+    BROWSER --> API
+    ENGINE --> VENUE
+
+    classDef trusted fill:#ecfdf5,stroke:#22c55e,color:#052e16
+    classDef backend fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef external fill:#fef2f2,stroke:#ef4444,color:#7f1d1d
+    class BROWSER trusted
+    class API,ENGINE backend
+    class VENUE external
 ```
 
 | Boundary | Trust assumption |
 |----------|------------------|
-| **Operator browser ↔ API** | Same policy zone as “who may trade.” Anyone who can send authenticated control requests can start/stop/flatten and trip breakers. |
-| **API ↔ Binance** | Mutual TLS is venue-defined; you rely on HTTPS/WSS and API key signing as implemented in `gateways/binance/`. |
-| **API ↔ Other clients** | Any host that can reach REST/WebSocket endpoints inherits the same exposure as the console unless additional controls are applied. |
+| **Operator browser <-> API** | Same policy zone as "who may trade." Anyone who can send authenticated control requests can start/stop/flatten and trip breakers. |
+| **API <-> exchange venue** | Mutual TLS is venue-defined; you rely on HTTPS/WSS and API key signing as implemented in the venue adapter. |
+| **API <-> other clients** | Any host that can reach REST/WebSocket endpoints inherits the same exposure as the console unless additional controls are applied. |
 
 ---
 
@@ -40,7 +51,7 @@ When **`API_TOKEN`** is non-empty (`Settings.api_token`, `backend/common/config.
 
 **Scope:** This applies to **all** HTTP methods under `/api/control` when the token is set (including `GET` breakers).
 
-**Gap if token is empty:** Control routes are **unauthenticated** — acceptable **only** on isolated localhost development.
+**Gap if token is empty:** Control routes are **unauthenticated** - acceptable **only** on isolated localhost development.
 
 ### 2.2 Read-only API and WebSocket
 
@@ -58,7 +69,7 @@ The following are **not** guarded by `API_TOKEN` in middleware:
 **Critical limitation:** Vite bakes this into the **client JavaScript bundle**. Anyone who can load the UI can extract the token. Mitigations:
 
 - Deploy the console only inside a **trusted network** or behind an **identity-aware proxy** that already gates access.
-- Prefer **short-lived** operator sessions issued by your IdP (would require code changes — not present in-tree).
+- Prefer **short-lived** operator sessions issued by your IdP (would require code changes - not present in-tree).
 - Never use the same secret for API and long-lived bank-grade credentials without rotation policy.
 
 ---
@@ -67,11 +78,11 @@ The following are **not** guarded by `API_TOKEN` in middleware:
 
 | Secret | Purpose | Storage |
 |--------|---------|---------|
-| `BINANCE_API_KEY` / `BINANCE_API_SECRET` | Venue signing | Environment / vault — **never** commit; `.env` gitignored |
+| `BINANCE_API_KEY` / `BINANCE_API_SECRET` | Venue signing | Environment / vault - **never** commit; `.env` gitignored |
 | `API_TOKEN` | Control-plane HTTP | Environment / vault |
-| `ALERT_WEBHOOK_URL` | Outbound alerts | May carry capability URLs — protect as secret |
+| `ALERT_WEBHOOK_URL` | Outbound alerts | May carry capability URLs - protect as secret |
 
-**Settings dump:** `GET /api/settings` returns masked settings — verify masking in `backend/api/routes/settings.py` before exposing externally.
+**Settings dump:** `GET /api/settings` returns masked settings - verify masking in `backend/api/routes/settings.py` before exposing externally.
 
 ---
 
@@ -87,9 +98,9 @@ The following are **not** guarded by `API_TOKEN` in middleware:
 
 | Path | Dev default | Production expectation |
 |------|-------------|------------------------|
-| Browser → API | `http` via Vite proxy | **`https`** termination (load balancer / reverse proxy) |
-| Browser → WebSocket | `ws` via proxy | **`wss`** when page is `https` |
-| API → Binance | HTTPS/WSS per settings | Mainnet endpoints + HSTS as provided by venue |
+| Browser -> API | `http` via Vite proxy | **`https`** termination (load balancer / reverse proxy) |
+| Browser -> WebSocket | `ws` via proxy | **`wss`** when page is `https` |
+| API -> exchange venue | HTTPS/WSS per settings | Mainnet endpoints + HSTS as provided by venue |
 
 ---
 
@@ -103,8 +114,8 @@ The following are **not** guarded by `API_TOKEN` in middleware:
 
 ## 7. Logging and PII
 
-- Logs and JSONL may contain **symbols, sizes, prices, alerts** — classify per your data policy.
-- **No deliberate PII** is required for trading, but operator `detail` strings in breaker trips could include free text — train operators accordingly.
+- Logs and JSONL may contain **symbols, sizes, prices, alerts** - classify per your data policy.
+- **No deliberate PII** is required for trading, but operator `detail` strings in breaker trips could include free text - train operators accordingly.
 
 ---
 
@@ -113,7 +124,7 @@ The following are **not** guarded by `API_TOKEN` in middleware:
 
 - [ ] **Bind address:** Prefer loopback or private interface; put public access behind reverse proxy.
 - [ ] **API_TOKEN:** Required; rotate on operator offboarding.
-- [ ] **Network policy:** Restrict who can reach `/api/*` and `/ws` (beyond CORS — **IP allow lists**, VPN, Zero Trust).
+- [ ] **Network policy:** Restrict who can reach `/api/*` and `/ws` (beyond CORS - **IP allow lists**, VPN, Zero Trust).
 - [ ] **WebSocket auth:** Consider extending `backend/api/ws.py` with token query/header if exposing API beyond trusted network.
 - [ ] **Read path auth:** Consider API gateway JWT for `GET /api/state` if dashboards are internet-facing.
 - [ ] **Secrets:** Inject via vault; audit `.env` permissions on servers.

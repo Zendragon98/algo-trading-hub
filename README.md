@@ -1,12 +1,12 @@
 # Algo Trading Hub
 
-A full-stack **algorithmic trading console**: a React dashboard observes and controls a Python trading engine on **Binance USDT-M Futures** (testnet by default). The engine is **strategy-agnostic** — new `StrategyBase` plug-ins register at boot and appear in the UI strategy picker without frontend changes.
+A full-stack **algorithmic trading console**: a React dashboard observes and controls a Python trading engine on **Binance USDT-M Futures** (testnet by default). The engine is **strategy-agnostic** - new `StrategyBase` plug-ins register at boot and appear in the UI strategy picker without frontend changes.
 
 | Layer | Stack | Responsibility |
 |-------|-------|----------------|
-| **Frontend** | React 19 · TanStack Start · Vite · shadcn/ui | Live dashboard, operator controls, charts, system health |
-| **Backend** | Python 3.11+ · FastAPI · asyncio | Trading engine · REST · WebSocket · run archives |
-| **Venue** | Binance Futures (testnet default) | Market data · order routing · balances · positions |
+| **Frontend** | React 19, TanStack Start, Vite, shadcn/ui | Live dashboard, operator controls, charts, system health |
+| **Backend** | Python 3.11+, FastAPI, asyncio | Trading engine, REST, WebSocket, run archives |
+| **Venue** | Binance Futures (testnet default) | Market data, order routing, balances, positions |
 
 **Full documentation register:** [`docs/README.md`](docs/README.md)
 
@@ -22,11 +22,11 @@ A full-stack **algorithmic trading console**: a React dashboard observes and con
 2. **Compute** microstructure features (spread, imbalance, hit ratios) on every symbol in the active universe.
 3. **Decide** via one active strategy (or `all` with signal netting): pairs basis, SMA crossover, or market making.
 4. **Protect** with layered pre-trade checks, circuit breakers, and portfolio kill switches.
-5. **Execute** parent orders through an algo wheel → VWAP slicer → child limits with passive peg and market fallback.
+5. **Execute** parent orders through an algo wheel, VWAP slicer, and child limits with passive peg and market fallback.
 6. **Reconcile** positions and open orders against the venue on a timer and after WS reconnects.
 7. **Publish** state to the UI over WebSocket and persist every run under `backend/data/runs/`.
 
-The browser **never talks to Binance** — it mirrors engine state via `GET /api/state` and `/ws`.
+The browser **never talks to Binance** - it mirrors engine state via `GET /api/state` and `/ws`.
 
 ---
 
@@ -247,7 +247,7 @@ python main.py
 ```
 
 - API: **http://127.0.0.1:8000** (REST + `/ws`)
-- Engine boots **stopped** by default — press **Start** in the UI or `POST /api/control/start`
+- Engine boots **stopped** by default - press **Start** in the UI or `POST /api/control/start`
 - Auto-start: `ENGINE_AUTOSTART=true` or `python main.py --engine`
 - API-only (engine never started): `python main.py --no-engine`
 - API-only startup does not require Binance connectivity; starting the engine
@@ -263,7 +263,7 @@ npm run dev
 ```
 
 - UI: **http://localhost:5173**
-- Vite proxies `/api` and `/ws` → `127.0.0.1:8000` (same-origin, no CORS)
+- Vite proxies `/api` and `/ws` to `127.0.0.1:8000` (same-origin, no CORS)
 - Local frontend dev does not need a root `.env` file.
 
 ---
@@ -321,17 +321,24 @@ The result is saved under `backend/data/backtest_runs`.
 
 ```mermaid
 flowchart TB
-    subgraph Hydrate
-        S["GET /api/state"]
-        L["GET /api/logs on refresh"]
+    subgraph Snapshot["Snapshot hydrate"]
+        STATE["GET /api/state"]
+        LOGS["GET /api/logs on refresh"]
     end
-    subgraph Live
-        W["WebSocket /ws"]
+
+    subgraph Stream["Live stream"]
+        WS["WebSocket /ws"]
     end
-    H[useAlgoStream] --> S
-    H --> W
-    H --> L
-    H --> P[Dashboard panels]
+
+    HOOK["useAlgoStream"] --> STATE
+    HOOK --> LOGS
+    HOOK --> WS
+    HOOK --> PANELS["Dashboard panels"]
+
+    classDef client fill:#ecfdf5,stroke:#22c55e,color:#052e16
+    classDef api fill:#eff6ff,stroke:#3b82f6,color:#172554
+    class HOOK,PANELS client
+    class STATE,LOGS,WS api
 ```
 
 **Editable source:** [`backend/docs/architecture-frontend.mmd`](backend/docs/architecture-frontend.mmd)
@@ -354,18 +361,18 @@ flowchart TB
 | Portfolio / equity | `equity` events + `/api/state` |
 | Positions + chart | `position` + `GET /api/klines` |
 | OMS | `order` events |
-| Execution quality | `parent` · `execution` |
+| Execution quality | `parent`, `execution` |
 | System health | `status` (latency, WS age, reconcile flags) |
-| Logs / breakers | `log` · `breaker` |
+| Logs / breakers | `log`, `breaker` |
 
 ### Controls
 
-- **Start / Pause / Stop / Resume** — engine lifecycle
-- **Flatten** — pause → cancel → sync venue → close each leg (market or VWAP by size/spread) → engine stays **paused** until Resume
-- **Strategy picker** — hot-swap without restart
-- **Risk slider** — `PATCH /api/control/risk` → `max_risk_pct`
-- **Halt** — `POST /api/control/breakers/trip` (trading halt + flatten)
-- **E-Stop** — `POST /api/control/kill` (flatten + stop engine; API stays up so Start works again)
+- **Start / Pause / Stop / Resume** - engine lifecycle
+- **Flatten** - pause, cancel, sync venue, close each leg, then remain **paused** until Resume
+- **Strategy picker** - hot-swap without restart
+- **Risk slider** - `PATCH /api/control/risk` updates `max_risk_pct`
+- **Halt** - `POST /api/control/breakers/trip` (trading halt + flatten)
+- **E-Stop** - `POST /api/control/kill` (flatten + stop engine; API stays up so Start works again)
 
 ### What to watch in System Health
 
@@ -399,7 +406,7 @@ Hot-swap: `POST /api/control/strategy` with `{ "name": "pairs_trading_usdt_usdc"
 | # | Layer | Paths | Responsibility |
 |---|-------|-------|----------------|
 | 0 | **Venue** | Binance REST + WS | Orders, balances, market data |
-| 1 | **Gateway** | `backend/gateways/` | `GatewayInterface` · signing · reconnect · filters |
+| 1 | **Gateway** | `backend/gateways/` | `GatewayInterface`, signing, reconnect, filters |
 | 2 | **Platform** | `backend/common/`, `backend/engine/persistence/` | Config, `EventBus`, WAL, run bootstrap & JSONL archives |
 | 3 | **Market data** | `backend/engine/market_data/` | L2 book, tape, features, data-quality guards |
 | 4 | **Strategy** | `backend/engine/strategies/`, `backend/analytics/` | Live signals; offline calibration |
@@ -407,7 +414,7 @@ Hot-swap: `POST /api/control/strategy` with `{ "name": "pairs_trading_usdt_usdc"
 | 6 | **Execution** | `backend/engine/execution/`, `backend/engine/orders/` | Wheel, VWAP, OMS, TCA |
 | 7 | **API & UI** | `backend/api/`, `src/` | REST, WebSocket, React console |
 
-Dependency rule: `backend/common/` ← `backend/gateways/` + `backend/engine/` ← `backend/api/` + `backend/analytics/`. Cross-module coupling is **only** through `EventBus`.
+Dependency rule: `backend/common/` <- `backend/gateways/` + `backend/engine/` <- `backend/api/` + `backend/analytics/`. Cross-module coupling is **only** through `EventBus`.
 
 ---
 
@@ -430,7 +437,7 @@ algo-trading-hub/
 ├── backend/                      # Python engine + API
 │   ├── main.py                   # Entry: engine + uvicorn
 │   ├── common/                   # Settings, EventBus, shared types
-│   ├── engine/                   # Strategy-agnostic core (incl. persistence/, market_data/, …)
+│   ├── engine/                   # Strategy-agnostic core (incl. persistence/, market_data/, etc.)
 │   ├── gateways/                 # Venue adapters (Binance plus IBKR connector scaffold)
 │   ├── api/                      # FastAPI routes + /ws
 │   ├── analytics/                # Offline calibration
@@ -443,7 +450,7 @@ algo-trading-hub/
 │   ├── run.bat
 │   └── .env.example
 ├── package.json
-├── vite.config.ts                # Dev proxy → backend :8000
+├── vite.config.ts                # Dev proxy to backend :8000
 ├── wrangler.jsonc                # Cloudflare Workers (TanStack Start production build)
 ├── tsconfig.json
 ├── components.json               # shadcn/ui
@@ -458,8 +465,8 @@ algo-trading-hub/
 
 | Principle | How it shows up |
 |-----------|-----------------|
-| **Single process** | `main.py` runs Engine + uvicorn on one asyncio loop — no IPC, no shared-memory locks for live state. |
-| **Venue seam** | `GatewayInterface` — engine code never imports Binance; tests swap in `MockGateway`. |
+| **Single process** | `main.py` runs Engine + uvicorn on one asyncio loop - no IPC, no shared-memory locks for live state. |
+| **Venue seam** | `GatewayInterface` - engine code never imports Binance; tests swap in `MockGateway`. |
 | **Event-driven UI** | `EventBus` fans out fills, positions, breakers; API/WebSocket are subscribers, not owners of truth. |
 | **Venue is truth** | Positions and wallets heal from REST/`ACCOUNT_UPDATE` when local books drift. |
 | **Fail closed on LIVE** | `TRADING_MODE=live` refuses sandbox hosts so equity seeds from a real account. |
@@ -473,41 +480,53 @@ One Python process owns the engine and API. The gateway is the only component th
 
 ```mermaid
 flowchart TB
-    subgraph Browser["Browser — React + TanStack Start"]
-        UI["Dashboard · src/routes/index.tsx"]
-        HOOK["useAlgoStream · REST + /ws"]
-        UI --> HOOK
+    subgraph Browser["Browser console"]
+        UI["React dashboard"]
+        HOOK["useAlgoStream"]
+        CLIENT["REST + WebSocket client"]
+        UI --> HOOK --> CLIENT
     end
 
-    subgraph Backend["backend/ — single asyncio process"]
-        MAIN["main.py · EventBus · Engine · uvicorn"]
-        subgraph API["api/ — control plane"]
-            FAST["FastAPI REST + /ws"]
+    subgraph Backend["backend/ - one Python asyncio process"]
+        MAIN["main.py"]
+        subgraph API["API control plane"]
+            FAST["FastAPI<br/>REST + /ws"]
         end
-        subgraph Core["engine/ — data plane"]
-            ENG["Engine · 1 Hz clock"]
-            MD["market_data"] --> ST["strategies"]
-            ST --> RK["risk"] --> EX["execution + orders"]
-            EX --> POS["position + portfolio"]
+        subgraph Core["Engine data plane"]
+            ENG["Engine<br/>1 Hz clock + callbacks"]
+            MD["market_data"] --> ST["strategies"] --> RK["risk"]
+            RK --> EX["execution + orders"] --> POS["position + portfolio"]
         end
-        GW["gateways/ BinanceGateway"]
-        BUS["EventBus → WAL + JSONL archive"]
+        GW["GatewayInterface<br/>Binance active, IBKR scaffold"]
+        BUS["EventBus<br/>WAL + JSONL archive"]
         MAIN --> ENG
+        MAIN --> FAST
         ENG <--> GW
         ENG --> BUS
         BUS --> FAST
     end
 
-    subgraph Venue["Binance USDT-M Futures"]
-        REST["REST · orders · account · depth"]
-        WS_P["Public WS · book · tape · tickers"]
-        WS_U["User WS · fills · ACCOUNT_UPDATE"]
+    subgraph Venue["External venues"]
+        REST["Binance REST<br/>orders, account, depth"]
+        WS_P["Binance public WS<br/>book, tape, tickers"]
+        WS_U["Binance user WS<br/>fills, wallet, orders"]
+        TWS["IBKR TWS/Gateway<br/>future adapter target"]
     end
 
-    HOOK <-->|"dev: Vite proxy /api, /ws"| FAST
+    CLIENT <-->|"dev proxy: /api and /ws"| FAST
     GW <-->|REST| REST
-    GW <-->|WS| WS_P
-    GW <-->|WS| WS_U
+    GW <-->|WebSocket| WS_P
+    GW <-->|listenKey WebSocket| WS_U
+    GW -.-> TWS
+
+    classDef ui fill:#ecfdf5,stroke:#22c55e,color:#052e16
+    classDef backend fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef engine fill:#f8fafc,stroke:#64748b,color:#0f172a
+    classDef venue fill:#fef2f2,stroke:#ef4444,color:#7f1d1d
+    class UI,HOOK,CLIENT ui
+    class MAIN,FAST,GW,BUS backend
+    class ENG,MD,ST,RK,EX,POS engine
+    class REST,WS_P,WS_U,TWS venue
 ```
 
 **Editable source:** [`backend/docs/architecture-system.mmd`](backend/docs/architecture-system.mmd)
@@ -517,24 +536,28 @@ flowchart TB
 ```mermaid
 sequenceDiagram
     autonumber
-    participant M as main.py
-    participant E as Engine
-    participant G as Gateway
-    participant U as uvicorn
+    participant Main as main.py
+    participant Engine
+    participant Gateway
+    participant API as FastAPI
 
-    M->>E: create Engine + strategies
-    alt autostart
-        M->>E: start()
-        E->>G: connect · REST book snapshots
-        E->>G: subscribe market + user WS
-        E->>E: seed balances/positions · reconcilers
+    Main->>Engine: create Engine + strategies
+    Main->>API: create FastAPI app
+    alt Autostart enabled
+        Main->>Engine: start()
+        Engine->>Gateway: connect and fetch snapshots
+        Engine->>Gateway: subscribe market and user streams
+        Engine->>Engine: seed balances, positions, reconcilers
+    else Default local startup
+        Engine-->>Main: wait for POST /api/control/start
     end
-    M->>U: serve FastAPI
-    Note over U: SIGINT → engine.stop()
+    Main->>API: serve REST and WebSocket
+    Note over API,Main: SIGINT or shutdown request
+    API-->>Main: stop event
     opt FLATTEN_ON_STOP
-        E->>E: flatten all legs
+        Engine->>Engine: flatten all legs
     end
-    E->>G: cancel orders · disconnect
+    Engine->>Gateway: cancel orders and disconnect
 ```
 
 **Editable source:** [`backend/docs/architecture-lifecycle.mmd`](backend/docs/architecture-lifecycle.mmd)
@@ -545,59 +568,77 @@ Market data arrives on WebSocket callbacks; the **1 Hz clock** drives mark-to-ma
 
 ```mermaid
 flowchart TB
-    subgraph In["Async inputs"]
-        T[tick / depth / trade]
-        F[fill / order / account]
+    subgraph Inputs["Async gateway inputs"]
+        MDIN["Market data<br/>tick, depth, trade"]
+        ACCT["Account events<br/>fill, order, wallet"]
     end
 
-    subgraph MD["market_data"]
-        OB[OrderBook + TradeTape]
-        FS[FeatureStore]
-        T --> OB --> FS
+    subgraph MarketData["Market data layer"]
+        BOOKS["OrderBook + TradeTape"]
+        FEATURES["FeatureStore"]
+        MDIN --> BOOKS --> FEATURES
     end
 
-    subgraph Clock["1 Hz _on_clock_tick"]
-        C1[mark_to_market · PnL · breakers]
-        C2[risk exits · StopLossMonitor]
-        C3[strategy.on_tick or all+netter]
-        C1 --> C2 --> C3
+    subgraph Clock["1 Hz engine clock"]
+        MTM["Mark to market<br/>PnL + health"]
+        EXITS["Risk exits"]
+        SIGNALS["Strategy tick<br/>single or all-mode"]
+        MTM --> EXITS --> SIGNALS
     end
 
-    subgraph Out["Execution"]
-        PRE[PreTradeValidator]
-        RT[Router → Wheel → VWAP → OMS]
-        GW[Gateway]
-        C3 --> PRE --> RT --> GW
-        F --> POS[position + portfolio]
-        GW --> F
+    subgraph Execution["Risk and execution"]
+        PRE["PreTradeValidator"]
+        ROUTE["Router + Wheel + VWAP + OMS"]
+        GATEWAY["Gateway"]
+        SIGNALS --> PRE --> ROUTE --> GATEWAY
     end
 
-    FS --> C3
+    FEATURES --> SIGNALS
+    GATEWAY -->|"fills"| ACCT
+    ACCT --> STATE["Position + portfolio"]
+
+    classDef input fill:#ecfeff,stroke:#06b6d4,color:#164e63
+    classDef clock fill:#eef2ff,stroke:#6366f1,color:#1e1b4b
+    classDef exec fill:#fff7ed,stroke:#f97316,color:#7c2d12
+    class MDIN,ACCT input
+    class MTM,EXITS,SIGNALS clock
+    class PRE,ROUTE,GATEWAY,STATE exec
 ```
 
-**Per-tick diagram — source:** [`backend/docs/architecture-tick.mmd`](backend/docs/architecture-tick.mmd)
+**Per-tick diagram - source:** [`backend/docs/architecture-tick.mmd`](backend/docs/architecture-tick.mmd)
 
 ### Events, persistence, and UI stream
 
-**Events diagram — source:** [`backend/docs/architecture-events.mmd`](backend/docs/architecture-events.mmd)
+**Events diagram - source:** [`backend/docs/architecture-events.mmd`](backend/docs/architecture-events.mmd)
 
 ```mermaid
 flowchart LR
-    subgraph Produce["Publishers"]
-        ENG["Engine · OMS · portfolio · risk"]
+    subgraph Producers["Event producers"]
+        ENGINE["Engine, gateway,<br/>OMS, portfolio, risk"]
     end
+
     BUS["EventBus"]
-    subgraph Sink["Persistence + delivery"]
+
+    subgraph Subscribers["Subscribers"]
         WAL["WAL journal"]
         REC["Per-run JSONL"]
-        WSS["WebSocket /ws"]
+        WS["WebSocket /ws"]
     end
+
     UI["React dashboard"]
-    ENG --> BUS
+
+    ENGINE --> BUS
     BUS --> WAL
     BUS --> REC
-    BUS --> WSS
-    WSS --> UI
+    BUS --> WS
+    WS --> UI
+
+    classDef producer fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef bus fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    classDef sink fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    class ENGINE producer
+    class BUS bus
+    class WAL,REC,WS,UI sink
 ```
 
 | `EventType` | Archive file | UI use |
@@ -608,22 +649,29 @@ flowchart LR
 | `EXECUTION_REPORT` | `executions.jsonl` | Execution quality TCA |
 | `POSITION` | `positions.jsonl` | Positions table |
 | `EQUITY` | `equity.jsonl` | Equity chart |
-| `STATUS` | `status.jsonl` | Engine state · latency metrics |
+| `STATUS` | `status.jsonl` | Engine state, latency metrics |
 | `BREAKER` | `breakers.jsonl` | Breaker audit |
 | `LOG` | `logs.jsonl` | Log panel |
 
-### Position sync: venue → engine → dashboard
+### Position sync: venue to engine to dashboard
 
 ```mermaid
 flowchart LR
-    BN[Binance] -->|ACCOUNT_UPDATE| GW[Gateway]
-    BN -->|REST reconcile| GW
-    GW --> PT[PositionTracker]
-    PT --> API["GET /api/state + /ws"]
-    API --> UI[Dashboard poll 5s + WS]
+    VENUE["Venue account<br/>source of truth"] -->|"user-data stream"| GATEWAY["Gateway"]
+    VENUE -->|"REST reconcile"| GATEWAY
+    GATEWAY --> STATE["PositionTracker<br/>Portfolio<br/>OrderManager"]
+    STATE --> API["GET /api/state<br/>WebSocket /ws"]
+    API --> UI["Dashboard<br/>5s poll + live stream"]
+
+    classDef venue fill:#fef2f2,stroke:#ef4444,color:#7f1d1d
+    classDef backend fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef ui fill:#ecfdf5,stroke:#22c55e,color:#052e16
+    class VENUE venue
+    class GATEWAY,STATE,API backend
+    class UI ui
 ```
 
-Layers: startup REST seed · user-data WS merge · reconnect resync · periodic reconcile with optional heal · dashboard safety poll. Details: [`backend/docs/risk-execution-and-portfolio.md`](backend/docs/risk-execution-and-portfolio.md).
+Layers: startup REST seed, user-data WS merge, reconnect resync, periodic reconcile with optional heal, dashboard safety poll. Details: [`backend/docs/risk-execution-and-portfolio.md`](backend/docs/risk-execution-and-portfolio.md).
 
 **Editable source:** [`backend/docs/architecture-data-sync.mmd`](backend/docs/architecture-data-sync.mmd)
 
@@ -631,19 +679,27 @@ Layers: startup REST seed · user-data WS merge · reconnect resync · periodic 
 
 ```mermaid
 flowchart LR
-    UI[Dashboard] -->|POST /api/control/*| API[FastAPI]
-    API --> ENG[Engine]
-    ENG -->|STATUS + breakers| UI
+    UI["Dashboard controls"] -->|"POST /api/control/*"| API["FastAPI routes"]
+    API --> ENGINE["Engine action"]
+    ENGINE --> EVENTS["STATUS + BREAKER events"]
+    EVENTS --> UI
+
+    classDef ui fill:#ecfdf5,stroke:#22c55e,color:#052e16
+    classDef api fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef engine fill:#fff7ed,stroke:#f97316,color:#7c2d12
+    class UI ui
+    class API,EVENTS api
+    class ENGINE engine
 ```
 
 | Control | Endpoint | Engine effect |
 |---------|----------|---------------|
 | Start | `POST /start` | `connect()` + WS + reconcilers |
-| Pause / Resume | `POST /pause` · `/resume` | Stop / resume strategy ticks |
-| Stop | `POST /stop` | Optional flatten · disconnect |
-| Flatten | `POST /flatten` | Pause · cancel · venue sync · close legs · stay paused |
+| Pause / Resume | `POST /pause`, `/resume` | Stop / resume strategy ticks |
+| Stop | `POST /stop` | Optional flatten, disconnect |
+| Flatten | `POST /flatten` | Pause, cancel, venue sync, close legs, stay paused |
 | Strategy | `POST /strategy` | Hot-swap active strategy (no restart) |
-| Halt | `POST /breakers/trip` | MAJOR breaker · flatten |
+| Halt | `POST /breakers/trip` | MAJOR breaker, flatten |
 | E-Stop | `POST /kill` | Flatten + stop engine; API stays up |
 | Shutdown | `POST /shutdown` | Exit Python process; not wired to the default dashboard button |
 
@@ -666,7 +722,7 @@ flowchart LR
 | [`architecture-breakers.mmd`](backend/docs/architecture-breakers.mmd) | Circuit breaker states |
 | [`architecture.mmd`](backend/docs/architecture.mmd) | Compact single-page view |
 
-Preview diagrams: [mermaid.live](https://mermaid.live) or VS Code Mermaid extension — paste `.mmd` contents.
+Preview diagrams: [mermaid.live](https://mermaid.live) or VS Code Mermaid extension - paste `.mmd` contents.
 
 ---
 
@@ -676,24 +732,24 @@ Unified **circuit breaker** across the stack:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Armed
-    Armed --> Minor: stale_tick · wide_spread · stale_md
-    Minor --> Armed: cooldown
-    Armed --> Major: drawdown · reconcile · operator_halt
-    Major --> Latched: flatten
-    Latched --> Armed: POST /breakers/rearm
+    [*] --> Armed: engine start
+    Armed --> Minor: stale tick, wide spread, stale MD
+    Minor --> Armed: cooldown elapsed
+    Armed --> Major: drawdown, reconcile, operator halt
+    Major --> Latched: flatten triggered
+    Latched --> Armed: operator rearm
 ```
 
 | Stage | Components |
 |-------|------------|
-| **Pre-trade** | `PreTradeValidator` — fat finger, dedup, spread collar, group parity |
-| **Submit** | `SubmitGuard` — open parents cap, global rate limit |
+| **Pre-trade** | `PreTradeValidator` - fat finger, dedup, spread collar, group parity |
+| **Submit** | `SubmitGuard` - open parents cap, global rate limit |
 | **In-flight** | Urgency profiles, passive peg, slippage abort per parent |
 | **Portfolio** | HWM drawdown, daily loss, consecutive losses, exec-quality kill |
 | **Reconcile** | Position + open-order sync vs venue; auto-heal optional |
 | **System** | MD quality, WS staleness pause, webhooks, `/health` + `/ready` |
 
-`MAJOR` → auto-flatten + latch until `POST /api/control/breakers/rearm`. `MINOR` → auto-resume after cooldown. **Reduce-only** orders bypass entry breakers so exits always reach the venue.
+`MAJOR` auto-flattens and latches until `POST /api/control/breakers/rearm`. `MINOR` auto-resumes after cooldown. **Reduce-only** orders bypass entry breakers so exits always reach the venue.
 
 Full risk and breaker reference: [`backend/docs/risk-execution-and-portfolio.md`](backend/docs/risk-execution-and-portfolio.md).
 

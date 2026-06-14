@@ -1,50 +1,70 @@
-%% Frontend data plane — TanStack Start console
+%% Frontend data plane - TanStack Start dashboard
 flowchart TB
-    subgraph DevProxy["Vite dev server :5173"]
-        PROXY["proxy /api, /ws → :8000"]
+    subgraph Dev["Local development"]
+        VITE["Vite dev server<br/>localhost:5173"]
+        PROXY["Proxy /api and /ws<br/>to backend :8000"]
+        VITE --> PROXY
     end
 
-    subgraph App["src/"]
-        ROUTE["routes/index.tsx<br/>panels · controls · charts"]
-        HOOK["hooks/useAlgoStream.ts"]
-        CLIENT["lib/api.ts<br/>fetch + WebSocket"]
-        TYPES["components/algo/types.ts<br/>mirrors api/schemas.py"]
-        CHART["EquityChart · PositionChartDialog"]
-        ROUTE --> HOOK
-        HOOK --> CLIENT
-        CLIENT --> TYPES
-        ROUTE --> CHART
+    subgraph App["React application"]
+        ROUTE["Dashboard route<br/>src/routes/index.tsx"]
+        HOOK["useAlgoStream"]
+        CLIENT["lib/api.ts"]
+        TYPES["Dashboard DTO types<br/>mirrors api/schemas.py"]
+        CHARTS["Charts and dialogs"]
+        ROUTE --> HOOK --> CLIENT --> TYPES
+        ROUTE --> CHARTS
     end
 
-    subgraph Hydrate["Initial + periodic hydrate"]
-        H1["GET /api/state<br/>positions · orders · KPIs · strategies"]
-        H2["GET /api/logs · settings on refresh"]
-        H3["Poll every 5s + on WS reconnect + tab focus"]
+    subgraph Backend["Backend data sources"]
+        STATE["GET /api/state<br/>full snapshot"]
+        LOGS["GET /api/logs<br/>on refresh"]
+        SETTINGS["GET /api/settings"]
+        WS["WebSocket /ws<br/>incremental events"]
     end
 
-    subgraph Live["WebSocket /ws"]
-        W1["fill · order · parent · execution"]
-        W2["position · equity · status · breaker · log"]
+    subgraph Resync["Resync policy"]
+        MOUNT["Initial mount"]
+        POLL["5 second safety poll"]
+        FOCUS["Tab focus"]
+        RECONNECT["WebSocket reconnect"]
+    end
+
+    subgraph Panels["Dashboard panels"]
+        PORT["Portfolio and equity"]
+        POS["Positions and klines"]
+        OMS["Working orders"]
+        TCA["Execution quality"]
+        HEALTH["System health"]
+        AUDIT["Logs and breakers"]
     end
 
     PROXY --> CLIENT
-    CLIENT --> H1
-    CLIENT --> H2
-    CLIENT --> H3
-    CLIENT --> Live
+    CLIENT --> STATE
+    CLIENT --> LOGS
+    CLIENT --> SETTINGS
+    CLIENT --> WS
+    MOUNT --> HOOK
+    POLL --> HOOK
+    FOCUS --> HOOK
+    RECONNECT --> HOOK
+    HOOK -->|"merge snapshot + events"| ROUTE
+    ROUTE --> PORT
+    ROUTE --> POS
+    ROUTE --> OMS
+    ROUTE --> TCA
+    ROUTE --> HEALTH
+    ROUTE --> AUDIT
 
-    HOOK -->|"merge incremental events"| ROUTE
+    NOTE["The browser never calls Binance directly"]
+    NOTE -.-> CLIENT
 
-    subgraph Panels["Dashboard panels"]
-        P1["Portfolio · equity curve"]
-        P2["Positions + klines chart"]
-        P3["OMS working orders"]
-        P4["Execution quality TCA"]
-        P5["System health<br/>latency · breakers · WS age"]
-        P6["Logs · breakers audit"]
-    end
+    classDef local fill:#f8fafc,stroke:#94a3b8,color:#334155
+    classDef app fill:#ecfdf5,stroke:#22c55e,color:#052e16
+    classDef api fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef panel fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
 
-    ROUTE --> Panels
-
-    Note1["UI never calls Binance directly"]
-    Note1 -.-> CLIENT
+    class VITE,PROXY local
+    class ROUTE,HOOK,CLIENT,TYPES,CHARTS,NOTE app
+    class STATE,LOGS,SETTINGS,WS,MOUNT,POLL,FOCUS,RECONNECT api
+    class PORT,POS,OMS,TCA,HEALTH,AUDIT panel
