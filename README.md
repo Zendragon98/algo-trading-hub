@@ -34,8 +34,8 @@ The browser **never talks to Binance** — it mirrors engine state via `GET /api
 
 This README is the entry point for a clean local review. It covers the Python
 3.11 backend setup, Node frontend setup, Binance Demo/Testnet key placement,
-safe paper-mode defaults, and a no-key offline backtest path using checked-in
-data. Detailed backend internals live in [`backend/README.md`](backend/README.md).
+safe paper-mode defaults, and an offline backtest path when a local kline
+library is available. Detailed backend internals live in [`backend/README.md`](backend/README.md).
 
 The safest first-run profile is:
 
@@ -57,6 +57,17 @@ Recommended review order:
    OMS panels, logs, and backtesting views.
 5. Use [`docs/REPORT_ALIGNMENT.md`](docs/REPORT_ALIGNMENT.md) to map repo
    evidence to the QF635 report sections.
+
+Quick validation checklist:
+
+| Check | Command / location | Expected result |
+|---|---|---|
+| Backend tests | `cd backend; python -m pytest -q` | Full pytest suite passes |
+| Frontend lint | `npm.cmd run lint` on Windows, or `npm run lint` elsewhere | No lint errors; warnings may remain |
+| Frontend build | `npm.cmd run build` on Windows, or `npm run build` elsewhere | Production build completes |
+| Backend health | `Invoke-RestMethod http://127.0.0.1:8000/health` | `status: ok` |
+| Trading readiness | `Invoke-RestMethod http://127.0.0.1:8000/ready` | `ready=false` until the engine is started |
+| Smoke backtest | [No-key offline backtest smoke test](#no-key-offline-backtest-smoke-test) | Runs without Binance keys after local kline data exists |
 
 ---
 
@@ -199,14 +210,23 @@ npm run dev
 
 ### 3. No-key offline backtest smoke test
 
-This command uses the checked-in kline library under `backend/data/klines` and
-does not connect to Binance. It is a setup smoke test, not a performance result:
-the checked-in sample is intentionally small.
+This command uses the local kline library under `backend/data/klines` and does
+not connect to Binance. It is a setup smoke test, not a performance result. A
+fresh clone may not have local klines yet because `backend/data/` is gitignored.
+
+To create a local library first, run a small kline download from `backend/`:
+
+```powershell
+python -m analytics.data_loader --symbols BTCUSDT --interval 1m --days 30
+```
+
+Then run the smoke test. It uses `sma` because that validates the offline
+backtest path without writing pairs-strategy warmup state:
 
 ```powershell
 cd backend
 .\.venv\Scripts\Activate.ps1
-python -c "from common.config import Settings; from analytics.backtest.runner import run_backtest; r = run_backtest(Settings(strategy='pairs'), dataset='library'); print({'run_id': r.run_id, 'strategy': r.strategy, 'bars': r.bar_count, 'return_pct': round(r.metrics.total_return_pct, 4), 'trades': r.metrics.trade_count})"
+python -c "from common.config import Settings; from analytics.backtest.runner import run_backtest; r = run_backtest(Settings(strategy='sma'), dataset='library'); print({'run_id': r.run_id, 'strategy': r.strategy, 'bars': r.bar_count, 'return_pct': round(r.metrics.total_return_pct, 4), 'trades': r.metrics.trade_count})"
 ```
 
 The result is saved under `backend/data/backtest_runs`.
@@ -625,10 +645,9 @@ is only a frontend deployment example. Set matching `CORS_ORIGINS` on the GCP VM
 | Topic | Location |
 |-------|----------|
 | Backend overview and reading path | [`backend/README.md`](backend/README.md) |
-| Env vars, API contract, run archives | [`backend/docs/runtime-reference.md`](backend/docs/runtime-reference.md) |
-| Position & dashboard sync | [`backend/docs/risk-execution-and-portfolio.md`](backend/docs/risk-execution-and-portfolio.md) |
-| Pairs / SMA / MM strategy math | [`backend/docs/market-data-and-strategies.md`](backend/docs/market-data-and-strategies.md) |
-| Run archives & post-mortem | [`backend/docs/runtime-reference.md`](backend/docs/runtime-reference.md) |
+| Runtime commands, env vars, API contract, run archives | [`backend/docs/runtime-reference.md`](backend/docs/runtime-reference.md) |
+| Position truth, execution, breakers, risk controls | [`backend/docs/risk-execution-and-portfolio.md`](backend/docs/risk-execution-and-portfolio.md) |
+| Market data, analytics, and strategy logic | [`backend/docs/market-data-and-strategies.md`](backend/docs/market-data-and-strategies.md) |
 | Architecture signpost & component map | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
 | pytest suite map | [`backend/docs/runtime-reference.md#testing`](backend/docs/runtime-reference.md#testing) |
 | Operations runbook (health, incidents, prod checklist) | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) |

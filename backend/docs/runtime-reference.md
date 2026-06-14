@@ -118,22 +118,24 @@ The run archive is the main evidence source for post-run review.
 
 ## Backtesting Data
 
-Captured or downloaded 1m klines live under `backend/data/klines/`.
+Captured or downloaded 1m klines live under `backend/data/klines/`. The
+`backend/data/` directory is gitignored, so a fresh clone may need to download
+or capture klines before running offline backtests.
 
 No-key smoke test:
 
 ```powershell
-python -c "from common.config import Settings; from analytics.backtest.runner import run_backtest; r = run_backtest(Settings(strategy='pairs'), dataset='library'); print({'run_id': r.run_id, 'strategy': r.strategy, 'bars': r.bar_count, 'return_pct': round(r.metrics.total_return_pct, 4), 'trades': r.metrics.trade_count})"
+python -c "from common.config import Settings; from analytics.backtest.runner import run_backtest; r = run_backtest(Settings(strategy='sma'), dataset='library'); print({'run_id': r.run_id, 'strategy': r.strategy, 'bars': r.bar_count, 'return_pct': round(r.metrics.total_return_pct, 4), 'trades': r.metrics.trade_count})"
 ```
 
 Download a larger dataset:
 
 ```powershell
-python -m analytics.data_loader --symbols BTCUSDT,ETHUSDT --interval 1m --days 30
+python -m analytics.data_loader --symbols BTCUSDT --interval 1m --days 30
 ```
 
-The checked-in sample is only a setup smoke test, not report-grade performance
-evidence.
+Local sample data is only suitable for setup smoke tests unless you deliberately
+download or capture a report-grade sample period.
 
 ## Testing
 

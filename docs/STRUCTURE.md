@@ -1,7 +1,8 @@
 # Repository Structure
 
-Quick map of where code lives and what to refactor next. See
-[SPLIT_AUDIT.md](SPLIT_AUDIT.md) for per-file split guidance.
+Quick map of where code lives. This is intended for reviewers and teammates who
+want to move from the high-level architecture diagrams into the actual source
+tree.
 
 ## Frontend (`src/`)
 
@@ -21,7 +22,7 @@ Quick map of where code lives and what to refactor next. See
 | `dashboard/chrome.tsx` | Top bar, startup/resync banner |
 | `dashboard/kpi.tsx` | Win-rate KPI card, equity KPI card |
 | `dashboard/primitives.tsx` | Panel, ToggleRow |
-| `dashboard/control-panels.tsx` | Strategy picker, risk, breakers; split candidate |
+| `dashboard/control-panels.tsx` | Strategy picker, risk, breakers |
 | `dashboard/health.tsx` | System health collapsible |
 | `dashboard/tables.tsx` | Positions, trades, live log |
 | `dashboard/oms.tsx` | OMS and execution quality |
@@ -59,9 +60,11 @@ Legacy shims at `engine/strategies/mm_*.py` re-export from the package for
 older imports. Config still accepts `STRATEGY=market_making` as an alias for
 `market_making_v2`.
 
-## Suggested Next Refactors
+## Maintainability Notes
 
-See [SPLIT_AUDIT.md](SPLIT_AUDIT.md) for rationale.
+The items below are not required to run or review the project. They are
+candidate cleanups if future work changes the same areas. See
+[SPLIT_AUDIT.md](SPLIT_AUDIT.md) for rationale.
 
 | Priority | Target | Suggested action |
 |---|---|---|
@@ -73,7 +76,9 @@ See [SPLIT_AUDIT.md](SPLIT_AUDIT.md) for rationale.
 Not recommended: further splits of `engine.py` unless a new bounded workflow
 appears with the same clarity as `book_resync_runtime`.
 
-## Tests
+## Validation Commands
 
-- Backend: `cd backend && pytest -q`
-- Frontend: `npm run build`
+- Backend tests: `cd backend; python -m pytest -q`
+- Backend lint for touched files: `python -m ruff check <paths>`
+- Frontend lint: `npm.cmd run lint` on Windows, or `npm run lint` elsewhere
+- Frontend build: `npm.cmd run build` on Windows, or `npm run build` elsewhere

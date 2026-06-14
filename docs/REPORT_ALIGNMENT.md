@@ -64,7 +64,9 @@ as the final report itself.
   local/cloud operability.
 - Final performance claims still require a chosen dataset, chosen strategy, and
   reproducible backtest or paper-trading evidence.
-- The checked-in offline backtest sample is useful for smoke testing local
-  setup, but it is too small for report conclusions.
+- The offline backtest path is useful for smoke testing local setup once local
+  klines exist, but local samples under `backend/data/` are gitignored and
+  should not be treated as report evidence unless deliberately generated and
+  documented.
 - Canonical strategy ids should be used in the report. Short aliases such as
   `pairs`, `blend`, and `sma` are operator conveniences.

@@ -53,9 +53,10 @@ reverse-engineering the backend.
   to account/order endpoints, but not for the offline backtest demo.
 - Clarified that account equity/balances remain unseeded defaults until the
   stopped engine is started and connects to Binance.
-- Added a no-key offline backtest command using checked-in kline data.
+- Added a no-key offline backtest command using the local kline library.
 - Clarified that the no-key backtest is a smoke test, not a performance result,
-  because the checked-in sample currently contains only a few bars.
+  because local samples under `backend/data/` are setup evidence unless they are
+  deliberately generated and documented for evaluation.
 - Changed `backend/.env.example` Binance credentials to blank values so copied
   env files do not look configured before real Demo/Testnet keys are supplied.
 - Clarified that local frontend development does not need a root `.env`; the
@@ -285,3 +286,51 @@ build the dashboard and run the backend tests without avoidable failures.
 **Runtime impact:** test and tooling only, plus one frontend `let` to `const`
 cleanup with no behaviour change. No backend engine, strategy, gateway,
 execution, or dashboard runtime logic changed.
+
+### Phase 5: Submission-Grade Repository Experience
+
+**Why this phase exists:** the repository was runnable and validated, but a
+first-time course reviewer still needed a clearer path through the top-level
+README and documentation register. This phase keeps the focus on infrastructure
+readability rather than strategy performance or report writing.
+
+**Files changed:**
+
+- `README.md`
+- `docs/README.md`
+- `docs/STRUCTURE.md`
+- `docs/REPORT_ALIGNMENT.md`
+- `backend/docs/market-data-and-strategies.md`
+- `backend/docs/runtime-reference.md`
+- `BRANCH_CHANGES.md`
+
+**What changed compared with `main`:**
+
+- Added a compact validation checklist to the root README covering backend
+  tests, frontend lint/build, health/readiness checks, and the no-key smoke
+  backtest.
+- Reduced duplication in the root README's "Learn more" table and grouped
+  backend references by reviewer intent: runtime, risk/execution, and
+  market-data/strategy logic.
+- Reframed the documentation register around a course-review reading path, then
+  separated backend deep dives, operations/governance, supporting material, and
+  optional/non-core material.
+- Reworded `docs/STRUCTURE.md` as a source-tree map first, with refactor notes
+  clearly marked as future maintainability context.
+- Clarified that offline backtest smoke tests use local `backend/data/klines`
+  data, and that `backend/data/` is gitignored rather than shipped as committed
+  evidence.
+- Switched the documented no-key smoke test to `sma`/`BTCUSDT` so it validates
+  the offline backtest path without touching pairs-strategy warmup state.
+
+**Why these changes matter:**
+
+- A reviewer can now answer "what should I run first?" from the README without
+  reading the full architecture section.
+- Optional documents such as investor-deck and generated netting material no
+  longer compete with the core QF635 review path.
+- The repo still presents the same infrastructure, but with clearer entry
+  points for setup, validation, backend internals, architecture, and operations.
+
+**Runtime impact:** documentation-only. No code, tests, scripts, or runtime
+configuration changed.

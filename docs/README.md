@@ -3,14 +3,14 @@
 Official documentation for **Algo Trading Hub**. Use this as the entry point for
 course review, engineering handover, and production-readiness checks.
 
-## Primary Reading Path
+## Course Review Reading Path
 
 | Document | Audience | Purpose |
 |----------|----------|---------|
-| [../README.md](../README.md) | All reviewers | Product overview, local setup, dashboard behaviour, architecture summary |
-| [**REPORT_ALIGNMENT.md**](REPORT_ALIGNMENT.md) | Course reviewers / report writers | QF635 report sections mapped to repo evidence and remaining report work |
-| [**ARCHITECTURE.md**](ARCHITECTURE.md) | Architects / security | Canonical links to diagrams + component map |
+| [../README.md](../README.md) | All reviewers | Product overview, installation, local run path, validation checklist |
 | [../backend/README.md](../backend/README.md) | Engineers / quants | Backend overview, quick start, folder map, reading path |
+| [**ARCHITECTURE.md**](ARCHITECTURE.md) | Architects / reviewers | Canonical architecture diagram index and component map |
+| [**REPORT_ALIGNMENT.md**](REPORT_ALIGNMENT.md) | Course reviewers / report writers | QF635 report sections mapped to repo evidence and remaining report work |
 
 ## Backend Deep Dives
 
@@ -31,16 +31,24 @@ course review, engineering handover, and production-readiness checks.
 | [**deploy/gcp/README.md**](../deploy/gcp/README.md) | Platform / SRE | Google Cloud: Compute Engine, Docker, Artifact Registry, backups |
 | [**deploy/vercel/README.md**](../deploy/vercel/README.md) | Platform / frontend | Dashboard deployment and frontend environment variables |
 
-## Supporting and Generated Material
+## Supporting Material
 
 | Document | Audience | Purpose |
 |----------|----------|---------|
 | [../BRANCH_CHANGES.md](../BRANCH_CHANGES.md) | Reviewers / teammates | Human-readable log of branch changes from `main` and the reason for each change |
-| [**STRUCTURE.md**](STRUCTURE.md) | Contributors | Quick code map and current refactor notes |
-| [**SPLIT_AUDIT.md**](SPLIT_AUDIT.md) | Contributors | Maintainability audit for large modules |
-| [**INVESTOR_DECK.md**](INVESTOR_DECK.md) | Fundraising / LPs | Investor slide plan with archive-backed metrics; not required for QF635 submission |
-| [**netting-analysis-report.md**](netting-analysis-report.md) | Quants / ops | Auto-generated netting stats from `data/runs/`; verify freshness before citing |
+| [**STRUCTURE.md**](STRUCTURE.md) | Contributors / reviewers | Quick code map for frontend, backend, and tests |
 | [../backend/AGENTS.md](../backend/AGENTS.md) | Contributors | Engineering conventions for the Python backend |
+
+## Optional / Non-Core Material
+
+These files are useful for context but are not required for a first pass through
+the QF635 submission:
+
+| Document | Purpose |
+|----------|---------|
+| [**SPLIT_AUDIT.md**](SPLIT_AUDIT.md) | Maintainability audit for possible future module splits |
+| [**INVESTOR_DECK.md**](INVESTOR_DECK.md) | Investor slide plan; not required for QF635 submission |
+| [**netting-analysis-report.md**](netting-analysis-report.md) | Generated netting stats from local run archives; verify freshness before citing |
 
 ## Versioning Note
 

@@ -151,5 +151,7 @@ Offline backtesting currently supports SMA, blended, and pairs via
 - `library`: merged kline library in `backend/data/klines`.
 - `run:<id>`: bars captured from a live/paper run.
 
-The checked-in kline sample is useful for smoke testing setup, but it is too
-small for final report performance claims.
+A local kline sample is useful for smoke testing setup, but `backend/data/` is
+gitignored and any local sample is too small for final report performance claims
+unless it was deliberately downloaded or captured for the chosen evaluation
+period.
