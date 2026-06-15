@@ -10,7 +10,7 @@ A full-stack **algorithmic trading console**: a React dashboard observes and con
 
 **Full documentation register:** [`docs/README.md`](docs/README.md)
 
-**QF635 report alignment:** [`docs/REPORT_ALIGNMENT.md`](docs/REPORT_ALIGNMENT.md)
+**Project report support:** [`docs/REPORT_ALIGNMENT.md`](docs/REPORT_ALIGNMENT.md)
 
 **Disclaimer:** This repository is software for engineering and research. It is **not** certified for any specific regulatory regime; institutional use requires your own legal, risk, and security sign-off ([`docs/COMPLIANCE_AND_GOVERNANCE.md`](docs/COMPLIANCE_AND_GOVERNANCE.md)).
 
@@ -30,9 +30,9 @@ The browser **never talks to Binance** - it mirrors engine state via `GET /api/s
 
 ---
 
-## Course review path
+## Getting oriented
 
-This README is the entry point for a clean local review. It covers the Python
+This README is the entry point for a clean local setup and code review. It covers the Python
 3.11 backend setup, Node frontend setup, Binance Demo/Testnet key placement,
 safe paper-mode defaults, and an offline backtest path when a local kline
 library is available. Detailed backend internals live in [`backend/README.md`](backend/README.md).
@@ -48,14 +48,26 @@ ENGINE_AUTOSTART=false
 This starts the API and dashboard without automatically starting the trading
 engine.
 
-Recommended review order:
+Recommended first pass:
 
 1. Follow [Quick start](#quick-start) to launch the local dashboard.
 2. Open the dashboard and inspect state, strategy controls, circuit breakers,
    OMS panels, logs, and backtesting views.
 3. Run any needed [validation and optional checks](#validation-and-optional-checks).
-4. Use [`docs/REPORT_ALIGNMENT.md`](docs/REPORT_ALIGNMENT.md) to map repo
-   evidence to the QF635 report sections.
+4. Use [`docs/REPORT_ALIGNMENT.md`](docs/REPORT_ALIGNMENT.md) when preparing a
+   project report from the repository evidence.
+
+Where to start reading the code:
+
+| Goal | Start here |
+|---|---|
+| Source-tree map | [`docs/STRUCTURE.md`](docs/STRUCTURE.md) |
+| Backend infrastructure | [`backend/README.md`](backend/README.md), then [`backend/main.py`](backend/main.py) |
+| Engine lifecycle | [`backend/engine/core/engine.py`](backend/engine/core/engine.py) |
+| API and WebSocket surface | [`backend/api/routes/`](backend/api/routes/), [`backend/api/ws.py`](backend/api/ws.py) |
+| Venue adapter boundary | [`backend/gateways/gateway_interface.py`](backend/gateways/gateway_interface.py), [`backend/gateways/binance/`](backend/gateways/binance/) |
+| Strategy implementations | [`backend/engine/strategies/`](backend/engine/strategies/) |
+| Dashboard data flow | [`src/routes/index.tsx`](src/routes/index.tsx), [`src/hooks/useAlgoStream.ts`](src/hooks/useAlgoStream.ts), [`src/lib/api.ts`](src/lib/api.ts) |
 
 Quick validation checklist:
 
@@ -83,7 +95,7 @@ Quick validation checklist:
 
 ## Quick Start
 
-For a Windows course review, start from the repo root and use the local
+For a Windows local run, start from the repo root and use the local
 launcher. It creates `backend/.env` if missing, detects an active Conda
 environment first, otherwise uses `backend/.venv`, installs missing Python and
 Node dependencies, and starts the backend and frontend together.

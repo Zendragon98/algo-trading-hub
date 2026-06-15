@@ -136,4 +136,5 @@ The browser never talks to Binance. It reads:
 - `/ws` for incremental events.
 - specific REST routes for logs, klines, settings, control, and backtests.
 
-This boundary is why the backend is the source of truth for a submission review.
+This boundary is why the backend is the source of truth for positions, orders,
+portfolio state, and operational status.

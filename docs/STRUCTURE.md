@@ -1,6 +1,6 @@
 # Repository Structure
 
-Quick map of where code lives. This is intended for reviewers and teammates who
+Quick map of where code lives. This is intended for contributors and engineers who
 want to move from the high-level architecture diagrams into the actual source
 tree.
 

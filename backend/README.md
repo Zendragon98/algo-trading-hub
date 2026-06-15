@@ -30,7 +30,7 @@ positions, orders, portfolio state, risk state, persistence, and venue access.
 | Market data, signals, strategies, analytics | [`docs/market-data-and-strategies.md`](docs/market-data-and-strategies.md) | `architecture-tick.mmd`, `architecture-strategies.mmd` |
 | Risk, execution, flattening, positions | [`docs/risk-execution-and-portfolio.md`](docs/risk-execution-and-portfolio.md) | `architecture-execution.mmd`, `architecture-breakers.mmd`, `architecture-data-sync.mmd`, `architecture-control.mmd` |
 | Config, API contract, run archive, tests | [`docs/runtime-reference.md`](docs/runtime-reference.md) | REST/WebSocket and run-archive references |
-| Repository-wide docs and report alignment | [`../docs/README.md`](../docs/README.md) | QF635 report map |
+| Repository-wide docs and report support | [`../docs/README.md`](../docs/README.md) | Project report map |
 
 Editable Mermaid sources live in [`docs/`](docs/). They are version-controlled
 architecture evidence and should be updated when behaviour changes.
@@ -168,7 +168,7 @@ Run a no-key offline backtest smoke test:
 python -c "from common.config import Settings; from analytics.backtest.runner import run_backtest; r = run_backtest(Settings(strategy='sma'), dataset='library'); print({'run_id': r.run_id, 'strategy': r.strategy, 'bars': r.bar_count, 'return_pct': round(r.metrics.total_return_pct, 4), 'trades': r.metrics.trade_count})"
 ```
 
-## Notes for Reviewers
+## Operational Notes
 
 - The backend does not depend on browser state. The dashboard reads snapshots
   and events from the backend.

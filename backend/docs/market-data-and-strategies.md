@@ -1,7 +1,7 @@
 # Market Data, Strategies, and Analytics
 
 This document maps the strategy and analytics parts of the backend to the
-course concepts around market microstructure, limit order books, signals,
+market microstructure concepts around limit order books, signals,
 backtesting, and strategy design.
 
 ## Diagram Anchors
@@ -27,7 +27,7 @@ backtesting, and strategy design.
 | `own_quote_book.py` | Resting MM quote state |
 | `symbol_calibration.py` | Per-symbol calibration artefacts |
 
-Course connection:
+Concept connection:
 
 - LOB mechanics are represented by `OrderBook` and depth snapshots.
 - Order-flow and aggressor pressure are represented by `TradeTape`.
