@@ -94,15 +94,18 @@ def _should_autostart_engine(args: argparse.Namespace, settings) -> bool:
     return autostart
 
 
+async def _prepare_boot_settings(settings):
+    settings = await resolve_binance_auto_universe(settings)
+    return partition_multi_strategy_universe(settings)
+
+
 async def _run() -> None:
     args = _parse_args()
     settings = get_settings()
     bus = EventBus()
     autostart = _should_autostart_engine(args, settings)
 
-    if autostart:
-        settings = await resolve_binance_auto_universe(settings)
-    settings = partition_multi_strategy_universe(settings)
+    settings = await _prepare_boot_settings(settings)
 
     backend_root = Path(__file__).resolve().parent
     bootstrap = await bootstrap_run(settings, bus, backend_root)

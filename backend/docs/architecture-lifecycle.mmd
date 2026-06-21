@@ -34,7 +34,7 @@ sequenceDiagram
 
     Main->>API: serve HTTP and WebSocket
 
-    Note over API,Main: SIGINT, SIGTERM, or POST /shutdown
+    Note over API,Main: SIGINT, SIGTERM, or POST /api/control/shutdown
     API-->>Main: stop event
     Main->>Engine: stop()
     opt FLATTEN_ON_STOP

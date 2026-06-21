@@ -698,14 +698,14 @@ flowchart LR
 
 | Control | Endpoint | Engine effect |
 |---------|----------|---------------|
-| Start | `POST /start` | `connect()` + WS + reconcilers |
-| Pause / Resume | `POST /pause`, `/resume` | Stop / resume strategy ticks |
-| Stop | `POST /stop` | Optional flatten, disconnect |
-| Flatten | `POST /flatten` | Pause, cancel, venue sync, close legs, stay paused |
-| Strategy | `POST /strategy` | Hot-swap active strategy (no restart) |
-| Halt | `POST /breakers/trip` | MAJOR breaker, flatten |
-| E-Stop | `POST /kill` | Flatten + stop engine; API stays up |
-| Shutdown | `POST /shutdown` | Exit Python process; not wired to the default dashboard button |
+| Start | `POST /api/control/start` | `connect()` + WS + reconcilers |
+| Pause / Resume | `POST /api/control/pause`, `POST /api/control/resume` | Stop / resume strategy ticks |
+| Stop | `POST /api/control/stop` | Optional flatten, disconnect |
+| Flatten | `POST /api/control/flatten` | Pause, cancel, venue sync, close legs, stay paused |
+| Strategy | `POST /api/control/strategy` | Hot-swap active strategy (no restart) |
+| Halt | `POST /api/control/breakers/trip` | MAJOR breaker, flatten |
+| E-Stop | `POST /api/control/kill` | Flatten + stop engine; API stays up |
+| Shutdown | `POST /api/control/shutdown` | Exit Python process; not wired to the default dashboard button |
 
 **Editable source:** [`backend/docs/architecture-control.mmd`](backend/docs/architecture-control.mmd)
 

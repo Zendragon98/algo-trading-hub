@@ -5,6 +5,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $PSBoundParameters.ContainsKey("Python") -and $PythonArgs.Count -gt 0) {
+    throw "-PythonArgs requires -Python so the launcher knows which interpreter receives the args."
+}
+
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $backend = Join-Path $root "backend"
 $venvPython = Join-Path $backend ".venv\Scripts\python.exe"
@@ -58,7 +63,7 @@ function Test-NativeCommand {
 function Test-PythonDependencies {
     param(
         [string]$PythonExe,
-        [string[]]$Args
+        [string[]]$PythonArgs
     )
     $modules = @(
         "fastapi",
@@ -77,7 +82,7 @@ function Test-PythonDependencies {
     )
     $moduleList = $modules -join ","
     $checkScript = "import importlib.util, sys; modules = '$moduleList'.split(','); missing = [name for name in modules if importlib.util.find_spec(name) is None]; print('missing python modules: ' + ', '.join(missing), file=sys.stderr) if missing else None; raise SystemExit(1 if missing else 0)"
-    $cmdArgs = @($Args) + @("-c", $checkScript)
+    $cmdArgs = @($PythonArgs) + @("-c", $checkScript)
     return Test-NativeCommand -FilePath $PythonExe -ArgumentList $cmdArgs -WorkingDirectory $backend
 }
 
@@ -96,6 +101,19 @@ function Repair-ProcessPathEnvironment {
     if ($pathValue) {
         [Environment]::SetEnvironmentVariable("PATH", $null, "Process")
         [Environment]::SetEnvironmentVariable("Path", $pathValue, "Process")
+    }
+}
+
+function Stop-ProcessTree {
+    param(
+        [System.Diagnostics.Process]$Process
+    )
+    if ($null -eq $Process -or $Process.HasExited) {
+        return
+    }
+    & taskkill.exe /PID $Process.Id /T /F *> $null
+    if ($LASTEXITCODE -ne 0 -and -not $Process.HasExited) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -164,7 +182,7 @@ $backendPython = [string]$backendPythonInfo.Exe
 $backendPythonArgs = [string[]]$backendPythonInfo.Args
 Write-Host "[backend] using Python: $($backendPythonInfo.Source) -> $backendPython $($backendPythonArgs -join ' ')" -ForegroundColor DarkCyan
 
-if (-not (Test-PythonDependencies -PythonExe $backendPython -Args $backendPythonArgs)) {
+if (-not (Test-PythonDependencies -PythonExe $backendPython -PythonArgs $backendPythonArgs)) {
     if ($NoInstall) {
         throw "Python dependencies are missing and -NoInstall was set."
     }
@@ -224,8 +242,6 @@ try {
     }
 } finally {
     foreach ($proc in @($frontendProc, $backendProc)) {
-        if ($null -ne $proc -and -not $proc.HasExited) {
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-        }
+        Stop-ProcessTree -Process $proc
     }
 }

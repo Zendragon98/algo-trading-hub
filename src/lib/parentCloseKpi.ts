@@ -33,7 +33,7 @@ export function accumulateParentClose(
       entryPrice: trade.entryPrice,
       ts: trade.ts,
       strategyName: trade.strategyName,
-      strategyContributions: trade.strategyContributions,
+      strategyContributions: { ...trade.strategyContributions },
     };
     pending.set(parentId, acc);
   }
@@ -71,7 +71,7 @@ export function finalizeParentCloseTrade(
     exitPrice: exitVwap,
     pnl: acc.totalPnl,
     strategyName: acc.strategyName,
-    strategyContributions: acc.strategyContributions,
+    strategyContributions: { ...acc.strategyContributions },
   };
 }
 

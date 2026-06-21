@@ -94,14 +94,14 @@ orders can reach the venue.
 | Control | Endpoint | Effect |
 |---|---|---|
 | Start | `POST /api/control/start` | Connect and start loops |
-| Pause / Resume | `POST /api/control/pause`, `/resume` | Stop/resume strategy evaluation |
+| Pause / Resume | `POST /api/control/pause`, `POST /api/control/resume` | Stop/resume strategy evaluation |
 | Stop | `POST /api/control/stop` | Optional flatten and disconnect |
 | Flatten | `POST /api/control/flatten` | Pause, cancel, sync venue, close legs, stay paused |
 | E-Stop | `POST /api/control/kill` | Flatten + `Engine.stop()`; API stays up |
 | Shutdown | `POST /api/control/shutdown` | Stop engine and exit process |
 | Strategy | `POST /api/control/strategy` | Hot-swap strategy |
 | Risk | `PATCH /api/control/risk` | Update `max_risk_pct` |
-| Breakers | `/api/control/breakers/*` | Inspect, enable/disable, trip, rearm |
+| Breakers | `GET /api/control/breakers`, `PATCH /api/control/breakers/enabled`, `POST /api/control/breakers/trip`, `POST /api/control/breakers/rearm` | Inspect, enable/disable, trip, rearm |
 
 ## Flatten Path
 

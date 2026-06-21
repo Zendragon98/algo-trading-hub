@@ -21,7 +21,7 @@ flowchart LR
         CRISK["PATCH /risk"]
         CBREAK["POST /breakers/trip<br/>POST /breakers/rearm"]
         CKILL["POST /kill"]
-        CSHUT["POST /shutdown"]
+        CSHUT["POST /api/control/shutdown"]
     end
 
     subgraph Engine["Engine effects"]
