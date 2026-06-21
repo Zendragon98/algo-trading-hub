@@ -29,10 +29,10 @@ This document supports **risk management**, **audit trail mapping**, and **organ
 | Artefact | Location | Use in audit |
 |----------|----------|--------------|
 | Run manifest | `data/runs/<id>/manifest.json` | Session identity, started-at |
-| Event JSONL | `fills.jsonl`, `orders.jsonl`, `positions.jsonl`, etc. | Reconstruct trading activity |
+| Event JSONL | `fills.jsonl`, `orders.jsonl`, `positions.jsonl`, `markouts.jsonl`, `strategy_hub.jsonl`, `logs.jsonl`, etc. | Reconstruct trading activity |
 | Breakers | `breakers.jsonl` | Safety trips and operator halts |
-| WAL | `events.wal.jsonl` (optional) | Full bus replay when enabled |
-| Application log | `app.log` | Human-readable diagnostics |
+| WAL | `events.wal.jsonl` + `meta.json` (optional) | Full bus replay and checkpoint metadata when enabled |
+| Application log | `app.log` | Human-readable diagnostics, separate from structured `logs.jsonl` events |
 
 Ensure **WORM** or **immutable backup** policies if your policy requires non-repudiation.
 

@@ -545,7 +545,9 @@ function touchSystemHealth(
   };
 }
 
-function logEntryFromWsEvent(event: WsEvent): LogEntry {
+type LogWsEvent = Extract<WsEvent, { type: "log" }>;
+
+function logEntryFromWsEvent(event: LogWsEvent): LogEntry {
   return {
     ts: fmtTime(event.ts),
     level: event.data.level,
@@ -658,7 +660,7 @@ export function applyWsEvents(
   parentClosePending: Map<string, PendingParentClose>,
 ): AlgoStream {
   const coalesced = coalesceWsEventBatch(events);
-  const logEvents: WsEvent[] = [];
+  const logEvents: LogWsEvent[] = [];
   const rest: WsEvent[] = [];
   for (const event of coalesced) {
     if (event.type === "log") logEvents.push(event);

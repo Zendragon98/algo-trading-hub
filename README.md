@@ -6,7 +6,7 @@ A full-stack **algorithmic trading console**: a React dashboard observes and con
 |-------|-------|----------------|
 | **Frontend** | React 19, TanStack Start, Vite, shadcn/ui | Live dashboard, operator controls, charts, system health |
 | **Backend** | Python 3.11+, FastAPI, asyncio | Trading engine, REST, WebSocket, run archives |
-| **Venue** | Binance Futures (testnet default) | Market data, order routing, balances, positions |
+| **Venue gateways** | Binance Futures active; IBKR scaffold | Market data, order routing, balances, positions |
 
 **Full documentation register:** [`docs/README.md`](docs/README.md)
 
@@ -65,7 +65,7 @@ Where to start reading the code:
 | Backend infrastructure | [`backend/README.md`](backend/README.md), then [`backend/main.py`](backend/main.py) |
 | Engine lifecycle | [`backend/engine/core/engine.py`](backend/engine/core/engine.py) |
 | API and WebSocket surface | [`backend/api/routes/`](backend/api/routes/), [`backend/api/ws.py`](backend/api/ws.py) |
-| Venue adapter boundary | [`backend/gateways/gateway_interface.py`](backend/gateways/gateway_interface.py), [`backend/gateways/binance/`](backend/gateways/binance/) |
+| Venue adapter boundary | [`backend/gateways/gateway_interface.py`](backend/gateways/gateway_interface.py), [`backend/gateways/binance/`](backend/gateways/binance/), [`backend/gateways/ibkr/`](backend/gateways/ibkr/) |
 | Strategy implementations | [`backend/engine/strategies/`](backend/engine/strategies/) |
 | Dashboard data flow | [`src/routes/index.tsx`](src/routes/index.tsx), [`src/hooks/useAlgoStream.ts`](src/hooks/useAlgoStream.ts), [`src/lib/api.ts`](src/lib/api.ts) |
 
@@ -649,6 +649,13 @@ flowchart LR
 | `STATUS` | `status.jsonl` | Engine state, latency metrics |
 | `BREAKER` | `breakers.jsonl` | Breaker audit |
 | `LOG` | `logs.jsonl` | Log panel |
+| `MARKOUT` | `markouts.jsonl` | Post-trade markout review |
+| `STRATEGY_HUB` | `strategy_hub.jsonl` | Strategy analytics / attribution |
+| `TICK` | `ticks.jsonl` | Optional tick archive when `PERSIST_RECORD_TICKS=true` |
+
+Run directories can also contain `manifest.json`, optional `events.wal.jsonl`
+plus `meta.json`, and `app.log`. `app.log` is human-readable process logging;
+`logs.jsonl` is the structured `EventType.LOG` stream.
 
 ### Position sync: venue to engine to dashboard
 

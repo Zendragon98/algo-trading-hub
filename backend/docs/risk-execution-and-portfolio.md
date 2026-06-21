@@ -81,7 +81,7 @@ Examples:
 |---|---|---|
 | `stale_tick` | symbol | Pause entries for stale public market data |
 | `wide_spread` | symbol | Veto entry on poor spread |
-| `toxic_flow` | symbol/MM | Pause MM quotes |
+| `toxic_flow` | symbol | Pause MM quotes |
 | `reconcile_mismatch` | engine | Flatten and latch on venue/local drift |
 | `max_drawdown` | engine | Flatten and latch |
 | `operator_halt` | engine | Manual halt |

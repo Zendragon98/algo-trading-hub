@@ -88,7 +88,9 @@ The live engine is a **single long-lived process** with WebSockets and on-disk r
 
 - **Stdout / logging**: configured in `backend/common/logging.py`; failures and operator actions must be collectable to your central log platform.
 - **Per-run file**: `backend/data/runs/<run-id>/app.log` (rotating, when enabled).
-- **JSONL streams**: fills, orders, positions, equity, breakers, optional WAL — see [`Run Archive`](../backend/docs/runtime-reference.md#run-archive).
+- **JSONL streams**: fills, orders, positions, equity, logs, markouts,
+  strategy hub, breakers, optional ticks, optional WAL - see
+  [`Run Archive`](../backend/docs/runtime-reference.md#run-archive).
 
 ### 2.4 WebSocket stream
 

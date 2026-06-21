@@ -71,12 +71,13 @@ def _log_mode_banner(settings) -> None:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Algo trading backend")
-    parser.add_argument(
+    engine_mode = parser.add_mutually_exclusive_group()
+    engine_mode.add_argument(
         "--no-engine",
         action="store_true",
         help="Boot the API but leave the engine stopped (manual /control/start)",
     )
-    parser.add_argument(
+    engine_mode.add_argument(
         "--engine",
         action="store_true",
         help="Start the engine automatically on boot (overrides ENGINE_AUTOSTART)",

@@ -88,7 +88,8 @@ Strategy aliases are normalized in `common/config/aliases.py`.
 | `WS` | `/ws` | WebSocket event stream |
 
 WebSocket events include `tick`, `fill`, `order`, `parent`, `execution`,
-`position`, `equity`, `log`, `status`, and `breaker`.
+`position`, `equity`, `log`, `status`, `breaker`, `markout`, and
+`strategy_hub`.
 
 ## Run Archive
 
@@ -102,8 +103,9 @@ Typical files:
 
 | File | Purpose |
 |---|---|
-| `manifest.json` | Run metadata |
-| `app.log` | Human-readable logs |
+| `manifest.json` | Event-recorder manifest: start time, tick-recording flag, stream list |
+| `app.log` | Human-readable Python/application log when `LOG_FILE_ENABLED=true` |
+| `logs.jsonl` | Structured `EventType.LOG` events from the EventBus |
 | `fills.jsonl` | Venue fills |
 | `orders.jsonl` | Child order updates |
 | `parents.jsonl` | Parent-order progress |
@@ -112,7 +114,16 @@ Typical files:
 | `equity.jsonl` | Equity curve |
 | `breakers.jsonl` | Breaker trips/clears |
 | `status.jsonl` | Status and latency events |
+| `markouts.jsonl` | Post-trade markout observations |
+| `strategy_hub.jsonl` | Per-strategy analytics and attributed PnL snapshots |
+| `ticks.jsonl` | Optional market-data tick stream when `PERSIST_RECORD_TICKS=true` |
 | `events.wal.jsonl` | Optional WAL journal |
+| `meta.json` | WAL checkpoint metadata: last sequence, run id, start time |
+
+`app.log` and `logs.jsonl` are deliberately separate. `app.log` is the
+human-readable logger output from the Python process. `logs.jsonl` is a
+structured EventBus stream that can be replayed alongside fills, positions, and
+other event records.
 
 The run archive is the main evidence source for post-run review.
 
