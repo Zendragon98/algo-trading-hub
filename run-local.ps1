@@ -138,7 +138,7 @@ function New-RepoVenv {
 }
 
 function Resolve-BackendPython {
-    if ($PSBoundParameters.ContainsKey("Python")) {
+    if ($Python) {
         return @{
             Exe = $Python
             Args = $PythonArgs
