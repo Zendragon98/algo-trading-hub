@@ -12,7 +12,7 @@ os.environ.setdefault("BINANCE_API_SECRET", "test")
 from collections.abc import Iterable  # noqa: E402
 
 from common.config import Settings  # noqa: E402
-from common.enums import Side  # noqa: E402
+from common.enums import EngineStatus, Side  # noqa: E402
 from common.events import EventBus  # noqa: E402
 from common.types import ChildOrder, Kline, Position, QuoteIntent, Signal  # noqa: E402
 from engine.core.engine import ALL_STRATEGIES_MODE, Engine  # noqa: E402
@@ -139,6 +139,7 @@ async def test_market_making_quotes_in_all_mode() -> None:
     mm = _MmStubStrategy()
     engine = _engine([_EmitStrategy("alpha", "ETHUSDT"), mm])
     engine.set_active_strategy(ALL_STRATEGIES_MODE)
+    engine._state.status = EngineStatus.RUNNING
     await engine._evaluate_strategies()
     assert mm.quote_tick_count == 1
 

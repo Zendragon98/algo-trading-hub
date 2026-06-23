@@ -1,57 +1,69 @@
-%% Operator control plane — UI actions → REST → engine
+%% Operator control plane - dashboard actions to engine effects
 flowchart LR
     subgraph UI["Dashboard controls"]
         START["Start"]
         PAUSE["Pause / Resume"]
         STOP["Stop"]
-        FLAT["Flatten all"]
-        HALT["Halt / breakers"]
-        STRAT["Strategy picker"]
-        RISK["Risk slider"]
-        KILL["Kill process"]
+        FLATTEN["Flatten"]
+        STRATEGY["Strategy"]
+        RISK["Risk"]
+        HALT["Halt / Rearm"]
+        KILL["E-Stop"]
+        SHUTDOWN["Shutdown<br/>operator/API only"]
     end
 
-    subgraph API["POST /api/control/*"]
-        A1["/start"]
-        A2["/pause · /resume"]
-        A3["/stop"]
-        A4["/flatten"]
-        A5["/breakers/trip · /rearm"]
-        A6["/strategy"]
-        A7["PATCH /risk"]
-        A8["/shutdown"]
+    subgraph API["FastAPI control routes"]
+        CSTART["POST /start"]
+        CPAUSE["POST /pause<br/>POST /resume"]
+        CSTOP["POST /stop"]
+        CFLAT["POST /flatten"]
+        CSTRAT["POST /strategy"]
+        CRISK["PATCH /risk"]
+        CBREAK["POST /breakers/trip<br/>POST /breakers/rearm"]
+        CKILL["POST /kill"]
+        CSHUT["POST /api/control/shutdown"]
     end
 
-    subgraph Engine["Engine actions"]
-        E1["connect + start loops"]
-        E2["status=PAUSED<br/>no new signals"]
-        E3["flatten_on_stop + disconnect"]
-        E4["pause → cancel → sync venue → VWAP/market close → wait flat"]
-        E5["CircuitBreaker trip<br/>optional flatten"]
-        E6["set_active_strategy<br/>StopLossMonitor externals"]
-        E7["settings.max_risk_pct live"]
-        E8["request_shutdown → main.py exit"]
+    subgraph Engine["Engine effects"]
+        ESTART["Connect gateway<br/>start streams and loops"]
+        EPAUSE["Pause entries<br/>keep state live"]
+        ESTOP["Optional flatten<br/>disconnect gateway"]
+        EFLAT["Pause, cancel, resync<br/>close legs, stay paused"]
+        ESTRAT["Hot-swap active strategy"]
+        ERISK["Update max_risk_pct"]
+        EBREAK["Trip/rearm breaker<br/>major may flatten"]
+        EKILL["Flatten + stop engine<br/>API remains alive"]
+        ESHUT["Request process exit"]
     end
 
-    START --> A1 --> E1
-    PAUSE --> A2 --> E2
-    STOP --> A3 --> E3
-    FLAT --> A4 --> E4
-    HALT --> A5 --> E5
-    STRAT --> A6 --> E6
-    RISK --> A7 --> E7
-    KILL --> A8 --> E8
+    START --> CSTART --> ESTART
+    PAUSE --> CPAUSE --> EPAUSE
+    STOP --> CSTOP --> ESTOP
+    FLATTEN --> CFLAT --> EFLAT
+    STRATEGY --> CSTRAT --> ESTRAT
+    RISK --> CRISK --> ERISK
+    HALT --> CBREAK --> EBREAK
+    KILL --> CKILL --> EKILL
+    SHUTDOWN -.-> CSHUT -.-> ESHUT
 
-    STATUS["EventType.STATUS<br/>+ /ws fan-out"]
+    STATUS["STATUS and BREAKER events<br/>EventBus -> WebSocket"]
+    ESTART --> STATUS
+    EPAUSE --> STATUS
+    ESTOP --> STATUS
+    EFLAT --> STATUS
+    ESTRAT --> STATUS
+    ERISK --> STATUS
+    EBREAK --> STATUS
+    EKILL --> STATUS
+    ESHUT --> STATUS
+    STATUS --> DASH["Dashboard status view"]
 
-    E1 --> STATUS
-    E2 --> STATUS
-    E3 --> STATUS
-    E4 --> STATUS
-    E5 --> STATUS
-    E6 --> STATUS
-    E7 --> STATUS
-    E8 --> STATUS
+    classDef ui fill:#ecfdf5,stroke:#22c55e,color:#052e16
+    classDef api fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef engine fill:#fff7ed,stroke:#f97316,color:#7c2d12
+    classDef status fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
 
-    DASH["Dashboard via REST + /ws"]
-    STATUS --> DASH
+    class START,PAUSE,STOP,FLATTEN,STRATEGY,RISK,HALT,KILL,SHUTDOWN,DASH ui
+    class CSTART,CPAUSE,CSTOP,CFLAT,CSTRAT,CRISK,CBREAK,CKILL,CSHUT api
+    class ESTART,EPAUSE,ESTOP,EFLAT,ESTRAT,ERISK,EBREAK,EKILL,ESHUT engine
+    class STATUS status

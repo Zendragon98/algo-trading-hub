@@ -24,7 +24,7 @@ Implications:
 
 - **Vertical scaling** for the trading process (CPU, network, kernel file descriptors); worker uses additional cores for pandas/backtest.
 - **No horizontal replica** of the live engine state without external redesign (single-writer to the venue per API key is typical for this pattern).
-- A process crash clears **in-memory** circuit-breaker state; persisted audit lives via [`Run archive`](../backend/README.md#run-archive).
+- A process crash clears **in-memory** circuit-breaker state; persisted audit lives via the run archive described in [`runtime-reference.md`](../backend/docs/runtime-reference.md#run-archive).
 
 ### 1.2 Frontend vs backend
 
@@ -88,7 +88,9 @@ The live engine is a **single long-lived process** with WebSockets and on-disk r
 
 - **Stdout / logging**: configured in `backend/common/logging.py`; failures and operator actions must be collectable to your central log platform.
 - **Per-run file**: `backend/data/runs/<run-id>/app.log` (rotating, when enabled).
-- **JSONL streams**: fills, orders, positions, equity, breakers, optional WAL — see [`Run archive`](../backend/README.md#run-archive).
+- **JSONL streams**: fills, orders, positions, equity, logs, markouts,
+  strategy hub, breakers, optional ticks, optional WAL - see
+  [`Run Archive`](../backend/docs/runtime-reference.md#run-archive).
 
 ### 2.4 WebSocket stream
 
@@ -125,7 +127,7 @@ REST control under **`/api/control/*`**. When `API_TOKEN` is set, **all** paths 
 1. Confirm `GET /ready` and `system_health` in `/api/state`.
 2. Check venue status and account ListenKey lifecycle (Binance user stream).
 3. If stale while positions are open: treat dashboard as **indicative**; venue account/positions are ground truth.
-4. If `reconcile_mismatch` or heal events occurred: follow [Position sync](../backend/README.md#position--dashboard-sync) guidance; do not resume aggressive strategies until order + position reconcile are clean.
+4. If `reconcile_mismatch` or heal events occurred: follow the position truth guidance in [`risk-execution-and-portfolio.md`](../backend/docs/risk-execution-and-portfolio.md#position-and-portfolio-truth); do not resume aggressive strategies until order + position reconcile are clean.
 
 ### 4.1a Circuit-breaker toggles (dashboard)
 
@@ -143,7 +145,7 @@ In **LIVE**, turning off a **major** kill switch requires typing `DISABLE LIVE B
 
 1. Inspect `/api/control/breakers` and `breakers.jsonl` for code + scope.
 2. Automatic flatten may have run — confirm flat on venue before re-arm.
-3. `POST /api/control/breakers/rearm` only after root cause addressed (see [Failsafes matrix](../backend/README.md#failsafes--circuit-breaker-matrix)).
+3. `POST /api/control/breakers/rearm` only after root cause addressed (see [`risk-execution-and-portfolio.md`](../backend/docs/risk-execution-and-portfolio.md#circuit-breakers)).
 
 ### 4.3 Process crash mid-session
 

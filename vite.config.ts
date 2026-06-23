@@ -65,7 +65,7 @@ export default defineConfig(({ command }) => {
     },
     optimizeDeps: {
       noDiscovery: true,
-      include: [],
+      include: ["recharts"],
       exclude: [
         "@tanstack/react-start",
         "@tanstack/react-start-server",

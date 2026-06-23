@@ -1,60 +1,73 @@
-%% Gateway seam — Binance adapter internals
+%% Gateway seam - venue-agnostic engine and exchange adapters
 flowchart LR
-    subgraph Engine["Engine (venue-agnostic)"]
-        E1["subscribe_market_data"]
-        E2["subscribe_user_data"]
-        E3["place_order / cancel_order"]
-        E4["fetch_balances_and_positions"]
-        E5["book_snapshot"]
+    subgraph Engine["Engine calls"]
+        MKT_SUB["subscribe_market_data"]
+        USER_SUB["subscribe_user_data"]
+        ORDERS["place_order<br/>cancel_order"]
+        ACCOUNT["fetch balances<br/>and positions"]
+        BOOK["book_snapshot"]
     end
 
     subgraph Interface["gateways/gateway_interface.py"]
-        IF["GatewayInterface ABC<br/>SymbolFilters · callbacks"]
+        ABC["GatewayInterface<br/>adapter contract + callbacks"]
     end
 
-    subgraph BinanceGW["gateways/binance/binance_gateway.py"]
+    subgraph Binance["Binance adapter"]
         BG["BinanceGateway"]
-        subgraph Connections
-            REST["rest_client.py<br/>signed httpx · throttle · 429 backoff"]
-            MKT["market_connection.py<br/>combined streams · reconnect"]
-            ORD["order_connection.py<br/>orders · listenKey keepalive"]
-            ACC["account_connection.py<br/>balances · positions"]
-        end
+        REST["rest_client.py<br/>signed HTTP + throttling"]
+        MARKET["market_connection.py<br/>public streams + reconnect"]
+        ORDER["order_connection.py<br/>orders + listenKey"]
+        ACCT["account_connection.py<br/>balances + positions"]
         BG --> REST
-        BG --> MKT
-        BG --> ORD
-        BG --> ACC
+        BG --> MARKET
+        BG --> ORDER
+        BG --> ACCT
     end
 
-    subgraph BinanceAPI["Binance USDT-M Futures"]
-        R1["REST /fapi/v2/*"]
-        W1["wss stream.binancefuture.com"]
-        W2["user stream + listenKey"]
+    subgraph IBKR["IBKR adapter scaffold"]
+        IB["gateways/ibkr/<br/>future connector target"]
     end
 
-    E1 --> IF
-    E2 --> IF
-    E3 --> IF
-    E4 --> IF
-    E5 --> IF
-    IF --> BG
-    REST --> R1
-    MKT --> W1
-    ORD --> R1
-    ORD --> W2
-    ACC --> R1
+    subgraph Venue["External venues"]
+        BREST["Binance REST /fapi"]
+        BWS["Binance public WebSocket"]
+        BUSR["Binance user stream"]
+        TWS["IBKR TWS / Gateway"]
+    end
+
+    MKT_SUB --> ABC
+    USER_SUB --> ABC
+    ORDERS --> ABC
+    ACCOUNT --> ABC
+    BOOK --> ABC
+
+    ABC --> BG
+    ABC -.-> IB
+    REST --> BREST
+    ORDER --> BREST
+    MARKET --> BWS
+    ORDER --> BUSR
+    IB -.-> TWS
 
     subgraph Callbacks["Callbacks into Engine"]
-        CB1["on_tick · on_depth · on_trade"]
-        CB2["on_fill · on_order_update"]
-        CB3["on_account_update · on_ws_connected"]
-        CB4["on_quote_volume_24h · on_reconnect"]
+        MARKET_CB["on_tick<br/>on_depth<br/>on_trade"]
+        ORDER_CB["on_fill<br/>on_order_update"]
+        ACCOUNT_CB["on_account_update<br/>on_ws_connected"]
+        META_CB["on_quote_volume_24h<br/>on_reconnect"]
     end
 
-    MKT --> CB1
-    ORD --> CB2
-    ORD --> CB3
-    MKT --> CB4
+    MARKET --> MARKET_CB
+    ORDER --> ORDER_CB
+    ORDER --> ACCOUNT_CB
+    ACCT --> ACCOUNT_CB
+    MARKET --> META_CB
 
-    classDef engine fill:#1e293b,stroke:#94a3b8,color:#f1f5f9
-    class E1,E2,E3,E4,E5 engine
+    classDef engine fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef seam fill:#fef3c7,stroke:#f59e0b,color:#78350f
+    classDef adapter fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    classDef venue fill:#fef2f2,stroke:#ef4444,color:#7f1d1d
+
+    class MKT_SUB,USER_SUB,ORDERS,ACCOUNT,BOOK engine
+    class ABC seam
+    class BG,REST,MARKET,ORDER,ACCT,IB,MARKET_CB,ORDER_CB,ACCOUNT_CB,META_CB adapter
+    class BREST,BWS,BUSR,TWS venue

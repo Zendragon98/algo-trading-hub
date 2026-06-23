@@ -1,8 +1,7 @@
-"""Shared run-directory, journal, recorder, and WAL recovery wiring.
+"""Run-directory, journal, recorder, and WAL recovery wiring for ``main.py``.
 
-Used by ``main.py`` and ``engine.main_engine`` so both entrypoints get the
-same persistence behaviour when ``JOURNAL_ENABLED`` is on without requiring
-``PERSIST_ENABLED`` or ``LOG_FILE_ENABLED``.
+``JOURNAL_ENABLED`` can create a run archive even when ``PERSIST_ENABLED`` or
+``LOG_FILE_ENABLED`` are off, because WAL recovery needs a durable location.
 """
 
 from __future__ import annotations

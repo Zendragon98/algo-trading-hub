@@ -1,41 +1,55 @@
-%% Compact end-to-end view (legacy single file)
-%% Prefer split sources for detail — see backend/docs/README in backend/README.md
-
+%% Compact end-to-end view
+%% Prefer the split architecture-*.mmd sources for implementation detail.
 flowchart TB
-    subgraph External
-        BN["Binance Futures<br/>REST + public WS + user WS"]
-        UI["React console<br/>REST + /ws"]
+    subgraph External["External interfaces"]
+        UI["React console<br/>REST + WebSocket"]
+        VENUE["Exchange venues<br/>Binance active, IBKR scaffold"]
     end
 
-    subgraph Process["backend/ — asyncio"]
+    subgraph Backend["backend/ - one asyncio process"]
         MAIN["main.py"]
-        GW["GatewayInterface → BinanceGateway"]
-        subgraph Engine["engine/"]
-            direction TB
-            MD["Market data → Features"] --> ST["Strategy"]
-            ST --> RK["Pre-trade + CircuitBreaker"]
-            RK --> EX["Router → Wheel → VWAP → OMS"]
-            EX --> GW
-            GW -->|fills| POS["Position + Portfolio"]
-        end
+        API["FastAPI<br/>control + snapshots + /ws"]
         BUS["EventBus"]
-        API["FastAPI + /ws"]
-        PERS["WAL + Run JSONL"]
-        MAIN --> Engine
-        Engine --> BUS
+        PERSIST["WAL + run JSONL"]
+
+        subgraph Engine["Engine"]
+            MARKET["Market data<br/>books, trades, features"]
+            STRATEGY["Strategies"]
+            RISK["Risk and breakers"]
+            EXEC["Execution<br/>router, slicer, OMS"]
+            STATE["Position + portfolio"]
+            MARKET --> STRATEGY --> RISK --> EXEC --> STATE
+        end
+
+        GATEWAY["GatewayInterface<br/>venue adapters"]
+
+        MAIN --> MARKET
+        MAIN --> API
+        STATE <--> GATEWAY
+        STATE --> BUS
         BUS --> API
-        BUS --> PERS
+        BUS --> PERSIST
     end
 
-    BN <--> GW
-    API <--> UI
+    UI <--> API
+    GATEWAY <--> VENUE
 
-    subgraph Safety["Cross-cutting"]
-        REC["Reconcile · order reconcile"]
-        BRK["Circuit breakers"]
-        OBS["Latency · alerts · /health"]
+    subgraph Safety["Cross-cutting controls"]
+        RECON["Position/order reconcile"]
+        OBS["Health, latency, alerts"]
+        STOP["Flatten, halt, E-Stop"]
     end
 
-    Engine --> REC
-    Engine --> BRK
-    Engine --> OBS
+    STATE --> RECON
+    STATE --> OBS
+    STATE --> STOP
+
+    classDef external fill:#fef2f2,stroke:#ef4444,color:#7f1d1d
+    classDef backend fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef engine fill:#f0fdf4,stroke:#22c55e,color:#14532d
+    classDef safety fill:#fff7ed,stroke:#f97316,color:#7c2d12
+
+    class UI,VENUE external
+    class MAIN,API,BUS,PERSIST,GATEWAY backend
+    class MARKET,STRATEGY,RISK,EXEC,STATE engine
+    class RECON,OBS,STOP safety

@@ -1,54 +1,46 @@
-%% Engine bootstrap and shutdown — main.py + Engine.start/stop
+%% Engine lifecycle - process boot, optional autostart, graceful shutdown
 sequenceDiagram
     autonumber
-    participant M as main.py
-    participant B as EventBus
-    participant R as bootstrap_run
-    participant G as Gateway
-    participant E as Engine
-    participant U as uvicorn
+    participant Main as main.py
+    participant Boot as bootstrap_run
+    participant Bus as EventBus
+    participant Gateway
+    participant Engine
+    participant API as uvicorn/FastAPI
 
-    M->>B: EventBus()
-    M->>R: bootstrap_run(settings)<br/>run dir · WAL · recorder
-    M->>G: create_gateway(VENUE)
-    M->>E: Engine(settings, strategies, recovery_wal)
-    Note over M,E: Wire equity/weight providers into strategies
+    Main->>Bus: create EventBus
+    Main->>Boot: create run archive, WAL, recorder
+    Main->>Gateway: create_gateway(VENUE)
+    Main->>Engine: create Engine(settings, strategies, recovery_wal)
+    Main->>API: create_app(engine, bus)
 
     alt ENGINE_AUTOSTART or --engine
-        M->>E: start()
-    else default / --no-engine
-        Note over E: status=STOPPED until POST /control/start
-    end
-
-    rect rgb(30, 41, 59)
-        Note over E,G: Engine.start() sequence
-        E->>G: connect() + sync_server_time
+        Main->>Engine: start()
+        Engine->>Gateway: connect and sync server time
         opt RECOVER_ON_START
-            E->>E: replay WAL → OMS + positions
+            Engine->>Engine: replay WAL into OMS and positions
         end
-        E->>G: REST book snapshots (all symbols)
-        E->>G: subscribe_market_data(WS)
-        E->>G: prime mids (bookTicker wait → REST depth fallback)
-        E->>G: fetch_balances_and_positions()
-        E->>E: seed portfolio + PositionTracker
-        E->>E: order_reconcile sync_startup
-        E->>G: subscribe_user_data(WS)
-        E->>E: volume_weights refresh
-        E->>E: clock.start() + reconciler loops
+        Engine->>Gateway: fetch book snapshots
+        Engine->>Gateway: subscribe market data
+        Engine->>Gateway: prime mids
+        Engine->>Gateway: fetch balances and positions
+        Engine->>Engine: seed portfolio and PositionTracker
+        Engine->>Engine: reconcile open orders
+        Engine->>Gateway: subscribe user data
+        Engine->>Engine: start clock and background loops
+    else Default local startup
+        Engine-->>Main: status STOPPED until POST /api/control/start
     end
 
-    M->>U: create_app(engine, bus) + serve()
+    Main->>API: serve HTTP and WebSocket
 
-    Note over U: SIGINT/SIGTERM → shutdown
-
-    U-->>M: stop_event
-    M->>E: stop()
-    rect rgb(55, 30, 30)
-        opt FLATTEN_ON_STOP
-            E->>E: flatten_and_wait_for_flat
-        end
-        E->>E: cancel reconcilers · router shutdown
-        E->>G: cancel_all_open_orders
-        E->>G: disconnect()
+    Note over API,Main: SIGINT, SIGTERM, or POST /api/control/shutdown
+    API-->>Main: stop event
+    Main->>Engine: stop()
+    opt FLATTEN_ON_STOP
+        Engine->>Engine: flatten and wait for flat
     end
-    M->>R: shutdown_bootstrap
+    Engine->>Engine: stop reconcilers and router
+    Engine->>Gateway: cancel open orders
+    Engine->>Gateway: disconnect
+    Main->>Boot: flush and close run archive

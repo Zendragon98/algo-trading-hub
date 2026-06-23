@@ -71,12 +71,13 @@ def _log_mode_banner(settings) -> None:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Algo trading backend")
-    parser.add_argument(
+    engine_mode = parser.add_mutually_exclusive_group()
+    engine_mode.add_argument(
         "--no-engine",
         action="store_true",
         help="Boot the API but leave the engine stopped (manual /control/start)",
     )
-    parser.add_argument(
+    engine_mode.add_argument(
         "--engine",
         action="store_true",
         help="Start the engine automatically on boot (overrides ENGINE_AUTOSTART)",
@@ -84,13 +85,27 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _should_autostart_engine(args: argparse.Namespace, settings) -> bool:
+    autostart = bool(settings.engine_autostart)
+    if args.engine:
+        autostart = True
+    if args.no_engine:
+        autostart = False
+    return autostart
+
+
+async def _prepare_boot_settings(settings):
+    settings = await resolve_binance_auto_universe(settings)
+    return partition_multi_strategy_universe(settings)
+
+
 async def _run() -> None:
     args = _parse_args()
     settings = get_settings()
     bus = EventBus()
+    autostart = _should_autostart_engine(args, settings)
 
-    settings = await resolve_binance_auto_universe(settings)
-    settings = partition_multi_strategy_universe(settings)
+    settings = await _prepare_boot_settings(settings)
 
     backend_root = Path(__file__).resolve().parent
     bootstrap = await bootstrap_run(settings, bus, backend_root)
@@ -206,12 +221,6 @@ async def _run() -> None:
             strat.attach_fill_vwap_provider(
                 lambda sym, name=strat.name: engine.strategy_ledger.fill_vwap(name, sym)  # noqa: SLF001
             )
-
-    autostart = bool(settings.engine_autostart)
-    if args.engine:
-        autostart = True
-    if args.no_engine:
-        autostart = False
 
     if autostart:
         try:

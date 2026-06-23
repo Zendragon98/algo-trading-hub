@@ -173,7 +173,7 @@ const LATENCY_KEYS = new Set([
 ]);
 
 export const BACKEND_OFFLINE_MSG =
-  "Backend unreachable. After Kill, restart the API (e.g. python backend/main.py).";
+  "Backend unreachable. If the backend process was stopped or shut down, restart the API (e.g. python backend/main.py).";
 
 export function createEmptyAlgoStream(): AlgoStream {
   return {
@@ -545,7 +545,9 @@ function touchSystemHealth(
   };
 }
 
-function logEntryFromWsEvent(event: WsEvent): LogEntry {
+type LogWsEvent = Extract<WsEvent, { type: "log" }>;
+
+function logEntryFromWsEvent(event: LogWsEvent): LogEntry {
   return {
     ts: fmtTime(event.ts),
     level: event.data.level,
@@ -658,13 +660,13 @@ export function applyWsEvents(
   parentClosePending: Map<string, PendingParentClose>,
 ): AlgoStream {
   const coalesced = coalesceWsEventBatch(events);
-  const logEvents: WsEvent[] = [];
+  const logEvents: LogWsEvent[] = [];
   const rest: WsEvent[] = [];
   for (const event of coalesced) {
     if (event.type === "log") logEvents.push(event);
     else rest.push(event);
   }
-  let next = rest.reduce(
+  const next = rest.reduce(
     (state, event) => applyWsEvent(state, event, parentClosePending),
     prev,
   );

@@ -1,78 +1,76 @@
-%% System context — venues, single Python process, React console
-%% Render: GitHub / VS Code Mermaid preview / https://mermaid.live
-
+%% System context - browser, backend process, gateway, and venue
 flowchart TB
-    subgraph Browser["Browser — React + TanStack Start"]
+    subgraph Browser["Browser console"]
         direction TB
-        UI["Dashboard<br/>src/routes/index.tsx"]
-        HOOK["useAlgoStream<br/>REST hydrate + /ws"]
-        API_CLIENT["lib/api.ts<br/>typed DTOs"]
-        UI --> HOOK --> API_CLIENT
+        UI["React dashboard<br/>src/routes/index.tsx"]
+        STREAM["useAlgoStream<br/>hydrate + live events"]
+        CLIENT["lib/api.ts<br/>REST + WebSocket client"]
+        UI --> STREAM --> CLIENT
     end
 
-    subgraph Process["backend/ — one asyncio event loop"]
+    subgraph Backend["backend/ - one Python asyncio process"]
         direction TB
-        subgraph Entry["Entry & wiring"]
-            MAIN["main.py<br/>EventBus · Engine · uvicorn"]
+
+        subgraph App["Startup and API"]
+            MAIN["main.py<br/>settings, EventBus, Engine, uvicorn"]
+            FASTAPI["FastAPI<br/>REST control plane + /ws stream"]
+            MAIN --> FASTAPI
         end
-        subgraph API_Layer["api/ — control plane"]
-            FAST["FastAPI<br/>REST + /ws"]
-            CTRL["routes/control<br/>start · pause · flatten · strategy"]
-            SER["serializers → schemas.py"]
-            FAST --> CTRL
-            FAST --> SER
+
+        subgraph Engine["Engine data plane"]
+            CORE["Engine<br/>1 Hz clock + async callbacks"]
+            MD["market_data"]
+            STRAT["strategies"]
+            RISK["risk"]
+            EXEC["execution + orders"]
+            PORT["position + portfolio"]
+            CORE --> MD --> STRAT --> RISK --> EXEC --> PORT
         end
-        subgraph Core["engine/ — data plane"]
-            ENG["Engine<br/>1 Hz clock + callbacks"]
-            subgraph Modules["Hot path modules"]
-                MD["market_data/"]
-                ST["strategies/"]
-                RK["risk/"]
-                EX["execution/ + orders/"]
-                POS["position/ + portfolio/"]
-            end
-            ENG --> Modules
+
+        subgraph Gateway["Venue seam"]
+            IFACE["GatewayInterface"]
+            BINANCE["BinanceGateway<br/>active adapter"]
+            IBKR["IBKR adapter<br/>scaffold"]
+            IFACE --> BINANCE
+            IFACE -.-> IBKR
         end
-        subgraph GW_Layer["gateways/ — venue seam"]
-            FACT["factory.create_gateway"]
-            BIN["binance/ BinanceGateway"]
-            IBKR["ibkr/ skeleton"]
-            FACT --> BIN
-            FACT -.-> IBKR
-        end
-        subgraph Platform["common/ + persistence/"]
+
+        subgraph Persistence["Events and persistence"]
             BUS["EventBus"]
-            CFG["config.Settings"]
             WAL["WAL journal"]
-            REC["Run recorder<br/>data/runs/…"]
+            RUNS["Run archive<br/>data/runs/<run-id>/"]
+            BUS --> WAL
+            BUS --> RUNS
         end
-        MAIN --> ENG
-        MAIN --> FAST
-        ENG <--> BIN
-        ENG --> BUS
-        BUS --> WAL
-        BUS --> REC
-        BUS --> FAST
-        CFG -.-> ENG
-        CFG -.-> BIN
+
+        MAIN --> CORE
+        CORE <--> IFACE
+        CORE --> BUS --> FASTAPI
     end
 
     subgraph Venue["External venues"]
-        BN_REST["Binance Futures REST<br/>signed orders · account · depth"]
-        BN_WS_PUB["Public WS<br/>bookTicker · depth · aggTrade · !ticker@arr"]
-        BN_WS_USER["User-data WS<br/>ORDER_TRADE_UPDATE · ACCOUNT_UPDATE"]
-        IB["IBKR TWS<br/>future adapter"]
+        BREST["Binance REST<br/>orders, account, depth"]
+        BPUB["Public WebSocket<br/>book, trades, tickers"]
+        BUSER["User-data WebSocket<br/>fills, orders, wallet"]
+        TWS["IBKR TWS / Gateway<br/>future adapter target"]
     end
 
-    API_CLIENT <-->|"dev: Vite proxy /api, /ws"| FAST
-    BIN <-->|REST| BN_REST
-    BIN <-->|WS| BN_WS_PUB
-    BIN <-->|WS + listenKey| BN_WS_USER
-    IBKR -.->|"planned"| BIN
+    CLIENT <-->|"dev proxy: /api and /ws"| FASTAPI
+    BINANCE <-->|REST| BREST
+    BINANCE <-->|WebSocket| BPUB
+    BINANCE <-->|listenKey WebSocket| BUSER
+    IBKR -.-> TWS
 
-    classDef venue fill:#1e3a5f,stroke:#60a5fa,color:#e2e8f0
-    classDef browser fill:#14532d,stroke:#4ade80,color:#ecfdf5
-    classDef api fill:#422006,stroke:#fbbf24,color:#fffbeb
-    class BN_REST,BN_WS_PUB,BN_WS_USER venue
-    class UI,HOOK,API_CLIENT browser
-    class FAST,CTRL,SER api
+    classDef ui fill:#ecfdf5,stroke:#22c55e,color:#052e16
+    classDef backend fill:#eff6ff,stroke:#3b82f6,color:#172554
+    classDef engine fill:#f8fafc,stroke:#64748b,color:#0f172a
+    classDef risk fill:#fff7ed,stroke:#f97316,color:#7c2d12
+    classDef persist fill:#f5f3ff,stroke:#8b5cf6,color:#2e1065
+    classDef venue fill:#fef2f2,stroke:#ef4444,color:#7f1d1d
+
+    class UI,STREAM,CLIENT ui
+    class MAIN,FASTAPI,IFACE,BINANCE,IBKR backend
+    class CORE,MD,STRAT,EXEC,PORT engine
+    class RISK risk
+    class BUS,WAL,RUNS persist
+    class BREST,BPUB,BUSER,TWS venue

@@ -38,7 +38,7 @@ All Mermaid sources live in [`../backend/docs/`](../backend/docs/). Treat them a
 | Strategies | `backend/engine/strategies/` | Signal generation |
 | Risk | `backend/engine/risk/` | Pre-trade, breakers, monitors |
 | Execution | `backend/engine/execution/`, `orders/` | Router, VWAP wheel, OMS |
-| Gateway | `backend/gateways/binance/` | REST + WS venue adapter |
+| Gateway | `backend/gateways/` | Venue adapters: Binance active, IBKR scaffold |
 | Persistence | `backend/engine/persistence/` | JSONL run recorder, WAL |
 
 ---

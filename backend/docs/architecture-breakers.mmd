@@ -1,27 +1,37 @@
-%% Circuit breaker state machine — single breaker, many codes
+%% Circuit breaker state machine - one breaker, many trigger codes
 stateDiagram-v2
     [*] --> Armed: engine start
 
-    Armed --> TrippedMinor: minor breach<br/>stale_tick · wide_spread · stale_md
-    TrippedMinor --> Armed: cooldown elapsed<br/>BREAKER_MINOR_COOLDOWN_SEC
+    Armed --> Minor: minor breach<br/>stale_tick, wide_spread, stale_md
+    Minor --> Armed: cooldown elapsed
 
-    Armed --> TrippedMajor: major breach<br/>drawdown · reconcile · operator_halt
-    TrippedMajor --> Latched: flatten triggered<br/>auto or operator
+    Armed --> Major: major breach<br/>drawdown, reconcile, operator_halt
+    Major --> Latched: flatten triggered
+    Latched --> Armed: operator rearm
 
-    Latched --> Armed: POST /breakers/rearm<br/>operator clear
-
-    state TrippedMinor {
-        [*] --> VetoEntries
-        VetoEntries --> AutoResume: breaker.tick()
+    state Armed {
+        [*] --> EntriesAllowed
+        EntriesAllowed --> EntriesAllowed: pre-trade checks pass
     }
 
-    state TrippedMajor {
+    state Minor {
+        [*] --> EntryVeto
+        EntryVeto --> WaitingCooldown
+        WaitingCooldown --> [*]: breaker.tick()
+    }
+
+    state Major {
         [*] --> PauseAndFlatten
-        PauseAndFlatten --> BlockEntries: engine scope blocked
-        Note right of BlockEntries: reduce_only still allowed
+        PauseAndFlatten --> BlockEntries
+        BlockEntries --> [*]
     }
 
     note right of Armed
-        PreTradeValidator checks breaker
-        before every entry signal
+        PreTradeValidator checks
+        breaker state before entries.
+    end note
+
+    note right of Major
+        Reduce-only exits remain allowed
+        so flattening can still reach the venue.
     end note

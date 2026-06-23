@@ -11,6 +11,8 @@ export type PendingParentClose = {
   exitNotional: number;
   entryPrice: number | null;
   ts: string;
+  strategyName: string;
+  strategyContributions: Record<string, number>;
   excludeFromStreak?: boolean;
 };
 
@@ -30,6 +32,8 @@ export function accumulateParentClose(
       exitNotional: 0,
       entryPrice: trade.entryPrice,
       ts: trade.ts,
+      strategyName: trade.strategyName,
+      strategyContributions: { ...trade.strategyContributions },
     };
     pending.set(parentId, acc);
   }
@@ -66,6 +70,8 @@ export function finalizeParentCloseTrade(
     entryPrice: acc.entryPrice,
     exitPrice: exitVwap,
     pnl: acc.totalPnl,
+    strategyName: acc.strategyName,
+    strategyContributions: { ...acc.strategyContributions },
   };
 }
 
