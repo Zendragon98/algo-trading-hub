@@ -8,11 +8,12 @@ sequenceDiagram
     participant Engine
     participant API as uvicorn/FastAPI
 
+    Main->>Main: load settings and resolve AUTO universes
     Main->>Bus: create EventBus
     Main->>Boot: create run archive, WAL, recorder
     Main->>Gateway: create_gateway(VENUE)
+    Main->>Main: create strategies and wire providers
     Main->>Engine: create Engine(settings, strategies, recovery_wal)
-    Main->>API: create_app(engine, bus)
 
     alt ENGINE_AUTOSTART or --engine
         Main->>Engine: start()
@@ -32,15 +33,16 @@ sequenceDiagram
         Engine-->>Main: status STOPPED until POST /api/control/start
     end
 
+    Main->>API: create_app(engine, bus)
     Main->>API: serve HTTP and WebSocket
 
-    Note over API,Main: SIGINT, SIGTERM, or POST /api/control/shutdown
+    Note over API,Main: SIGINT/SIGTERM or POST /api/control/shutdown
     API-->>Main: stop event
     Main->>Engine: stop()
-    opt FLATTEN_ON_STOP
+    opt FLATTEN_ON_STOP or API shutdown force_flatten
         Engine->>Engine: flatten and wait for flat
     end
-    Engine->>Engine: stop reconcilers and router
+    Engine->>Engine: stop clock, reconcilers, router, loops
     Engine->>Gateway: cancel open orders
     Engine->>Gateway: disconnect
     Main->>Boot: flush and close run archive
