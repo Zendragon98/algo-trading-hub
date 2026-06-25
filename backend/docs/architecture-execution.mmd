@@ -5,6 +5,7 @@ sequenceDiagram
     participant PreTrade as PreTradeValidator
     participant Risk as RiskManager
     participant Router as ExecutionRouter
+    participant SG as SubmitGuard
     participant Wheel as AlgoWheel
     participant Slicer
     participant VWAP as VwapExecutor
@@ -22,6 +23,8 @@ sequenceDiagram
     PreTrade->>Risk: capped quantity, exposure, spread checks
     Risk-->>PreTrade: approved or rejected
     PreTrade->>Router: parent order request
+    Router->>SG: can_submit_parent
+    SG-->>Router: allowed or rejected
     Router->>Wheel: choose algo mode
     Wheel-->>Router: frontload, normal, or backload
     Router->>TCA: record arrival mid
@@ -39,5 +42,5 @@ sequenceDiagram
         end
     end
 
-    Gateway-->>TCA: fill events (via Engine on_fill callback)
-    Note over TCA: publishes PARENT_UPDATE and<br/>EXECUTION_REPORT to EventBus
+    Gateway-->>OMS: fill (Engine._on_fill → OMS and TCA)
+    Note over OMS,TCA: Engine._on_fill also updates ExecutionTracker,<br/>which publishes PARENT_UPDATE and EXECUTION_REPORT to EventBus
