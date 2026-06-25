@@ -53,7 +53,7 @@ flowchart TB
     subgraph RiskOwner["Stop-loss ownership"]
         OWNED["Pairs + flow<br/>strategy manages exits"]
         ENGINE["SMA + blend<br/>engine brackets"]
-        MM_RISK["Market making<br/>institutional quote risk"]
+        MM_RISK["Market making<br/>microstructure risk gates"]
     end
 
     PAIRS -.-> OWNED

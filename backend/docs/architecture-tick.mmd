@@ -19,12 +19,13 @@ flowchart TB
     end
 
     subgraph Clock["1 Hz engine clock"]
-        MTM["Mark to market<br/>PnL + execution quality"]
+        MTM["Mark to market<br/>PnL snapshot"]
+        GUARDS["Loss/margin/exec-quality guards"]
         HEALTH["ConnectionMonitor<br/>market/user stream freshness"]
         BREAKER["CircuitBreaker.tick<br/>cooldowns + latches"]
         EXITS["Risk exits<br/>StopLossMonitor"]
         SIGNALS["Strategy tick<br/>single strategy or netted all-mode"]
-        MTM --> HEALTH --> BREAKER --> EXITS --> SIGNALS
+        MTM --> GUARDS --> HEALTH --> BREAKER --> EXITS --> SIGNALS
     end
 
     subgraph Decision["Decision and risk checks"]
@@ -64,7 +65,7 @@ flowchart TB
     subgraph Background["Background loops"]
         RECON["Position reconcile"]
         OREC["Open-order reconcile"]
-        VOL["Pair volume refresh"]
+        VOL["Volume weight refresh"]
         BAL["Optional balance resync"]
     end
 
@@ -81,7 +82,7 @@ flowchart TB
     classDef bg fill:#f8fafc,stroke:#94a3b8,color:#334155
 
     class MDIN,ACCT input
-    class MTM,HEALTH,BREAKER,EXITS,SIGNALS clock
+    class MTM,GUARDS,HEALTH,BREAKER,EXITS,SIGNALS clock
     class STRATEGY,NETTER,PRETRADE,RISK decision
     class ROUTER,GUARD,ALGOS,OMS,GATEWAY exec
     class POS,PORT,TCA state

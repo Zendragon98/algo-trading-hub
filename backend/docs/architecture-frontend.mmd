@@ -31,12 +31,12 @@ flowchart TB
     end
 
     subgraph Panels["Dashboard panels"]
-        PORT["Portfolio and equity"]
-        POS["Positions and klines"]
-        OMS["Working orders"]
+        PORT["Equity curve"]
+        POS["Open positions"]
+        OMS["Order management"]
         TCA["Execution quality"]
         HEALTH["System health"]
-        AUDIT["Logs and breakers"]
+        AUDIT["Live log"]
     end
 
     PROXY --> CLIENT

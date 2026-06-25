@@ -25,15 +25,16 @@ flowchart TB
         direction LR
         WS["WebSocket /ws<br/>dashboard stream"]
         REC["EventRecorder<br/>per-type JSONL"]
-        WAL["WAL journal<br/>recovery state"]
         LAT["LatencyTracker"]
         ALERT["AlertManager"]
         LOGBUF["Log buffer<br/>GET /api/logs"]
     end
 
+    WAL["WAL journal<br/>side-channel write in publish()"]
+
     BUS --> WS
     BUS --> REC
-    BUS --> WAL
+    BUS -. "side-channel" .-> WAL
     BUS --> LAT
     BUS --> ALERT
     BUS --> LOGBUF
@@ -42,7 +43,7 @@ flowchart TB
 
     subgraph Archive["Run archive: data/runs/<run-id>/"]
         direction LR
-        FILES["fills, orders, parents,<br/>executions, positions, equity,<br/>status, breakers, logs,<br/>markouts, strategy_hub,<br/>optional ticks,<br/>optional events.wal.jsonl,<br/>optional meta.json"]
+        FILES["manifest.json, app.log,<br/>fills, orders, parents,<br/>executions, positions, equity,<br/>status, breakers, logs,<br/>markouts, strategy_hub,<br/>optional ticks,<br/>optional events.wal.jsonl,<br/>optional meta.json"]
     end
 
     REC --> Archive
@@ -62,5 +63,5 @@ flowchart TB
 
     class ENGINE,GATEWAY,OMS,PORT,RISK,EXEC,LOGS producer
     class BUS bus
-    class WS,REC,WAL,LAT,ALERT,LOGBUF,UI sink
+    class WS,REC,LAT,ALERT,LOGBUF,UI sink
     class FILES,ANALYZERS archive

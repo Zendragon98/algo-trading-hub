@@ -52,14 +52,13 @@ flowchart LR
     subgraph Callbacks["Callbacks into Engine"]
         MARKET_CB["on_tick<br/>on_depth<br/>on_trade"]
         ORDER_CB["on_fill<br/>on_order_update"]
-        ACCOUNT_CB["on_account_update<br/>on_ws_connected"]
+        ACCOUNT_CB["on_account_update<br/>on_ws_connected (Binance only)"]
         META_CB["on_quote_volume_24h<br/>on_reconnect"]
     end
 
     MARKET --> MARKET_CB
     ORDER --> ORDER_CB
     ORDER --> ACCOUNT_CB
-    ACCT --> ACCOUNT_CB
     MARKET --> META_CB
 
     classDef engine fill:#eff6ff,stroke:#3b82f6,color:#172554

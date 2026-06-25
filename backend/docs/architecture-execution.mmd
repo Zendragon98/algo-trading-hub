@@ -24,18 +24,18 @@ sequenceDiagram
     PreTrade->>Router: parent order request
     Router->>Wheel: choose urgency profile
     Wheel-->>Router: frontload, normal, or backload
-    Router->>Slicer: create conserved slice schedule
     Router->>TCA: record arrival mid
+    Router->>VWAP: execute parent order
+    VWAP->>Slicer: build conserved slice schedule
 
     loop Each slice until filled or timeout
-        Router->>VWAP: schedule slice
         VWAP->>OMS: child LIMIT order
         OMS->>Gateway: place_order with deterministic clientOrderId
         Gateway-->>OMS: accepted or rejected
         Gateway-->>OMS: partial or full fill
         alt Timeout or slippage breach
             VWAP->>OMS: cancel child
-            VWAP->>Gateway: market residual, reduce_only if exit
+            VWAP->>OMS: market residual child, reduce_only if exit
         end
     end
 
