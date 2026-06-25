@@ -125,8 +125,9 @@ Runtime state and audit evidence are written under `backend/data/`:
 - `data/jobs/`: analytics job records.
 
 `engine/persistence/` owns event recording, WAL replay, market capture, and run
-bootstrap. The JSONL event stream mirrors the same shapes delivered through
-`/ws`, so a run can be reviewed without replaying live trading.
+bootstrap. JSONL records use the same event envelope as `/ws`, but the archive
+contains additional audit streams such as markouts and optional ticks. A run
+can be reviewed without replaying live trading.
 
 ## Dashboard Boundary
 

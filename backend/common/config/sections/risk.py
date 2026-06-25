@@ -176,6 +176,6 @@ class RiskMixin(BaseModel):
         if not isinstance(value, dict):
             return default_breaker_enabled_map()
         return merge_breaker_enabled({str(k): bool(v) for k, v in value.items()})
-    api_token: str = ""  # when set, required on mutating /api/control/* routes
+    api_token: str = ""  # when set, required on all /api/control/* routes
     prune_runs_older_than_days: int = 0  # 0 = disabled
 

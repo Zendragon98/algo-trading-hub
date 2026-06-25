@@ -89,7 +89,7 @@ Quick validation checklist:
 | **Git** | Clone the repository |
 | **Node.js 20+** | Frontend dev server (`npm`) |
 | **Python 3.11+** | Backend engine + API |
-| **Binance Futures Demo/Testnet keys** | Optional for API-only startup and the offline smoke test; required before starting the engine against Binance |
+| **Binance Futures Demo/Testnet keys** | Optional for API-only startup with explicit symbol lists and for the offline smoke test; required before starting the engine against Binance account/order endpoints |
 
 ---
 
@@ -121,9 +121,10 @@ http://127.0.0.1:8000
 Use Ctrl+C in the launcher terminal to stop both processes.
 
 The engine starts stopped by default. This lets the dashboard load without
-placing orders or connecting to Binance account/order endpoints. To start the
-engine against Binance Demo/Testnet, add keys to `backend/.env`, then press
-**Start** in the dashboard:
+placing orders or connecting to Binance account/order endpoints. If any symbol
+list is set to `AUTO`, boot still uses public Binance REST metadata to resolve
+the universe. To start the engine against Binance Demo/Testnet, add keys to
+`backend/.env`, then press **Start** in the dashboard:
 
 ```dotenv
 BINANCE_API_KEY=replace_with_demo_or_testnet_key
@@ -199,7 +200,9 @@ cd ..
 
 Edit `backend/.env` only for local overrides. Binance Demo/Testnet keys are
 needed when the engine connects to user-data, account, position, or order
-endpoints. They are not needed for API-only startup or the offline smoke test.
+endpoints. They are not needed for the offline smoke test, or for API-only
+startup when symbol lists are explicit. `AUTO` universes still use public
+Binance REST metadata at boot.
 
 ```dotenv
 BINANCE_API_KEY=replace_with_demo_or_testnet_key
@@ -246,9 +249,11 @@ python main.py
 - API: **http://127.0.0.1:8000** (REST + `/ws`)
 - Engine boots **stopped** by default - press **Start** in the UI or `POST /api/control/start`
 - Auto-start: `ENGINE_AUTOSTART=true` or `python main.py --engine`
-- API-only (engine never started): `python main.py --no-engine`
-- API-only startup does not require Binance connectivity; starting the engine
-  does require valid venue connectivity for live market/account operations.
+- Stopped-engine startup: `python main.py --no-engine` (same as default unless
+  `ENGINE_AUTOSTART=true`; `POST /api/control/start` can still start it)
+- API-only startup does not hit Binance account/order endpoints. If any
+  universe is configured as `AUTO`, startup still needs public Binance REST
+  metadata to resolve symbols.
 - Until the engine starts, the dashboard shows default/unseeded portfolio
   values such as `0` equity. Binance balances and positions are loaded only
   when the engine connects on **Start**.
@@ -507,7 +512,7 @@ flowchart TB
         REST["Binance REST<br/>orders, account, depth"]
         WS_P["Binance public WS<br/>book, tape, tickers"]
         WS_U["Binance user WS<br/>fills, wallet, orders"]
-        TWS["IBKR TWS/Gateway<br/>future adapter target"]
+        TWS["IBKR TWS/Gateway<br/>connector scaffold"]
     end
 
     CLIENT <-->|"dev proxy: /api and /ws"| FAST
@@ -534,27 +539,37 @@ flowchart TB
 sequenceDiagram
     autonumber
     participant Main as main.py
-    participant Engine
+    participant Boot as bootstrap_run
+    participant Bus as EventBus
     participant Gateway
-    participant API as FastAPI
+    participant Engine
+    participant API as uvicorn/FastAPI
 
-    Main->>Engine: create Engine + strategies
-    Main->>API: create FastAPI app
-    alt Autostart enabled
+    Main->>Main: load settings and resolve AUTO universes
+    Main->>Bus: create EventBus
+    Main->>Boot: create run archive, WAL, recorder
+    Main->>Gateway: create_gateway(VENUE)
+    Main->>Main: create strategies and wire providers
+    Main->>Engine: create Engine(settings, strategies, recovery_wal)
+    alt ENGINE_AUTOSTART or --engine
         Main->>Engine: start()
-        Engine->>Gateway: connect and fetch snapshots
-        Engine->>Gateway: subscribe market and user streams
-        Engine->>Engine: seed balances, positions, reconcilers
+        Engine->>Gateway: connect, snapshots, market/user streams
+        Engine->>Engine: optional WAL replay, seed state, reconcile orders
+        Engine->>Engine: start clock and background loops
     else Default local startup
-        Engine-->>Main: wait for POST /api/control/start
+        Engine-->>Main: status STOPPED until POST /api/control/start
     end
+    Main->>API: create_app(engine, bus)
     Main->>API: serve REST and WebSocket
-    Note over API,Main: SIGINT or shutdown request
+    Note over API,Main: SIGINT/SIGTERM or POST /api/control/shutdown
     API-->>Main: stop event
-    opt FLATTEN_ON_STOP
-        Engine->>Engine: flatten all legs
+    Main->>Engine: stop()
+    opt FLATTEN_ON_STOP or API shutdown force_flatten
+        Engine->>Engine: flatten and wait for flat
     end
-    Engine->>Gateway: cancel orders and disconnect
+    Engine->>Engine: stop loops and router
+    Engine->>Gateway: cancel open orders and disconnect
+    Main->>Boot: flush and close run archive
 ```
 
 **Editable source:** [`backend/docs/architecture-lifecycle.mmd`](backend/docs/architecture-lifecycle.mmd)
@@ -638,8 +653,8 @@ flowchart LR
     class WAL,REC,WS,UI sink
 ```
 
-| `EventType` | Archive file | UI use |
-|-------------|--------------|--------|
+| `EventType` | Archive file | Use |
+|-------------|--------------|-----|
 | `FILL` | `fills.jsonl` | Trades panel |
 | `ORDER_UPDATE` | `orders.jsonl` | OMS working orders |
 | `PARENT_UPDATE` | `parents.jsonl` | In-flight VWAP progress |
@@ -649,9 +664,9 @@ flowchart LR
 | `STATUS` | `status.jsonl` | Engine state, latency metrics |
 | `BREAKER` | `breakers.jsonl` | Breaker audit |
 | `LOG` | `logs.jsonl` | Log panel |
-| `MARKOUT` | `markouts.jsonl` | Post-trade markout review |
+| `MARKOUT` | `markouts.jsonl` | Post-trade markout audit |
 | `STRATEGY_HUB` | `strategy_hub.jsonl` | Strategy analytics / attribution |
-| `TICK` | `ticks.jsonl` | Optional tick archive when `PERSIST_RECORD_TICKS=true` |
+| `TICK` | `ticks.jsonl` | Optional archive only when `PERSIST_RECORD_TICKS=true` |
 
 Run directories can also contain `manifest.json`, optional `events.wal.jsonl`
 plus `meta.json`, and `app.log`. `app.log` is human-readable process logging;
@@ -737,7 +752,7 @@ Unified **circuit breaker** across the stack:
 ```mermaid
 stateDiagram-v2
     [*] --> Armed: engine start
-    Armed --> Minor: stale tick, wide spread, stale MD
+    Armed --> Minor: stale_tick, wide_spread, stale_market_data
     Minor --> Armed: cooldown elapsed
     Armed --> Major: drawdown, reconcile, operator halt
     Major --> Latched: flatten triggered

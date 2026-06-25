@@ -52,7 +52,7 @@ Strategies ship in-tree for demonstration and extension:
 - **SMA crossover** — trend-following; **whipsaw** and regime risk.
 - **Market making** — inventory and adverse-selection risk; optional fade vs follow modes.
 
-**Governance expectation:** define **approval** for parameter changes (`common/config.py` vs env), backtesting independence, and **kill-switch** authority (who may `POST /control/breakers/trip`).
+**Governance expectation:** define **approval** for parameter changes (`common/config.py` vs env), backtesting independence, and **kill-switch** authority (who may `POST /api/control/breakers/trip`).
 
 ---
 

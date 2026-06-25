@@ -27,12 +27,16 @@ BINANCE_API_SECRET=...
 Local frontend development does not require a root `.env`; Vite proxies `/api`
 and `/ws` to `127.0.0.1:8000`.
 
+`ENGINE_AUTOSTART=false` keeps the engine stopped, but `AUTO` symbol universes
+are resolved during backend boot and can still require public Binance REST
+metadata.
+
 ## Startup Modes
 
 | Command | Effect |
 |---|---|
 | `python main.py` | Start API with engine stopped by default |
-| `python main.py --no-engine` | API-only; engine never starts |
+| `python main.py --no-engine` | Force stopped-engine startup even if `ENGINE_AUTOSTART=true`; `POST /api/control/start` can still start it |
 | `python main.py --engine` | Start API and engine immediately |
 | `.\run.bat` | Windows backend launcher |
 | `..\run-local.ps1` | Repo-root launcher for backend + frontend |
@@ -72,24 +76,47 @@ Strategy aliases are normalized in `common/config/aliases.py`.
 | `GET` | `/ready` | Trading readiness |
 | `GET` | `/api/state` | Full dashboard snapshot |
 | `GET` | `/api/status` | Engine status |
+| `GET` | `/api/equity` | Equity curve |
 | `GET` | `/api/positions` | Current positions |
 | `GET` | `/api/orders` | Working orders |
+| `GET` | `/api/trades` | Recent trades |
 | `GET` | `/api/execution` | Execution-quality reports |
+| `GET` | `/api/klines` | Venue klines for charts |
 | `GET` | `/api/logs` | Recent backend logs |
-| `GET/PATCH` | `/api/settings` | Runtime settings |
+| `GET` | `/api/reports/latest` | Latest run summary |
+| `GET` | `/api/strategy-hub` | Per-strategy analytics snapshot |
+| `GET` | `/api/strategy-hub/log` | Tail of `strategy_hub.jsonl` |
+| `GET` | `/api/settings` | Read runtime settings |
+| `PATCH` | `/api/settings` | Update runtime settings |
 | `POST` | `/api/control/start` | Start/resume engine |
 | `POST` | `/api/control/pause` | Pause strategy evaluation |
+| `POST` | `/api/control/resume` | Resume strategy evaluation |
 | `POST` | `/api/control/stop` | Stop engine |
 | `POST` | `/api/control/flatten` | Flatten venue positions |
+| `POST` | `/api/control/strategy` | Hot-swap active strategy or `all` mode |
+| `PATCH` | `/api/control/risk` | Update `max_risk_pct` |
 | `POST` | `/api/control/kill` | Dashboard E-Stop; API stays up |
 | `POST` | `/api/control/shutdown` | Process shutdown |
+| `GET` | `/api/control/breakers` | Inspect breaker registry, active trips, and history |
+| `PATCH` | `/api/control/breakers/enabled` | Enable/disable breaker codes |
+| `POST` | `/api/control/breakers/trip` | Operator halt / manual breaker trip |
+| `POST` | `/api/control/breakers/rearm` | Rearm latched breakers |
+| `GET` | `/api/backtest/datasets` | Available kline datasets |
+| `GET` | `/api/backtest/sessions` | Run-capture sessions with bars |
+| `GET` | `/api/backtest/jobs` | Analytics job list |
+| `GET` | `/api/backtest/jobs/{job_id}` | Analytics job status |
+| `POST` | `/api/backtest/download` | Enqueue kline download |
 | `POST` | `/api/backtest/run` | Enqueue backtest |
 | `GET` | `/api/backtest/runs` | Saved backtest results |
+| `GET` | `/api/backtest/runs/{run_id}` | Saved backtest detail |
+| `GET` | `/api/analytics/mm-universe` | Latest MM universe scan |
+| `POST` | `/api/analytics/mm-universe/scan` | Enqueue MM universe scan |
 | `WS` | `/ws` | WebSocket event stream |
 
-WebSocket events include `tick`, `fill`, `order`, `parent`, `execution`,
-`position`, `equity`, `log`, `status`, `breaker`, `markout`, and
-`strategy_hub`.
+WebSocket events include `fill`, `order`, `parent`, `execution`, `position`,
+`equity`, `log`, `status`, `breaker`, and `strategy_hub`. The archive can also
+contain `markout` and optional `tick` files; those are not forwarded to the
+dashboard WebSocket.
 
 ## Run Archive
 
@@ -118,7 +145,7 @@ Typical files:
 | `strategy_hub.jsonl` | Per-strategy analytics and attributed PnL snapshots |
 | `ticks.jsonl` | Optional market-data tick stream when `PERSIST_RECORD_TICKS=true` |
 | `events.wal.jsonl` | Optional WAL journal |
-| `meta.json` | WAL checkpoint metadata: last sequence, run id, start time |
+| `meta.json` | Optional WAL checkpoint metadata: last sequence, run id, start time |
 
 `app.log` and `logs.jsonl` are deliberately separate. `app.log` is the
 human-readable logger output from the Python process. `logs.jsonl` is a

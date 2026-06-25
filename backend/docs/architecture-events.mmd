@@ -42,14 +42,14 @@ flowchart TB
 
     subgraph Archive["Run archive: data/runs/<run-id>/"]
         direction LR
-        FILES["fills, orders, parents,<br/>executions, positions,<br/>equity, status, breakers,<br/>logs, events.wal"]
+        FILES["fills, orders, parents,<br/>executions, positions, equity,<br/>status, breakers, logs,<br/>markouts, strategy_hub,<br/>optional ticks,<br/>optional events.wal.jsonl,<br/>optional meta.json"]
     end
 
     REC --> Archive
     WAL --> Archive
 
     subgraph Analytics["Offline analytics"]
-        ANALYZERS["pair_analyzer<br/>orderbook_analyzer"]
+        ANALYZERS["backtest runner<br/>strategy PnL report<br/>market analysis"]
     end
 
     Archive -.-> ANALYZERS
