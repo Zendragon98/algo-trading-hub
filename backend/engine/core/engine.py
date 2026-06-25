@@ -1221,7 +1221,7 @@ class Engine:
     async def stop(self, *, force_flatten: bool = False) -> None:
         if self._state.status is EngineStatus.STOPPED:
             return
-        logger.info("engine stopping")
+        logger.error("engine stopping (operator request)")
         # Optionally market-out residual positions before tearing down
         # connections, so a stop never leaves naked exposure on the
         # venue. Skipped on PAPER smoke tests by setting FLATTEN_ON_STOP=false.
