@@ -13,14 +13,14 @@ flowchart LR
     end
 
     subgraph API["FastAPI control routes"]
-        CSTART["POST /start"]
-        CPAUSE["POST /pause<br/>POST /resume"]
-        CSTOP["POST /stop"]
-        CFLAT["POST /flatten"]
-        CSTRAT["POST /strategy"]
-        CRISK["PATCH /risk"]
-        CBREAK["POST /breakers/trip<br/>POST /breakers/rearm"]
-        CKILL["POST /kill"]
+        CSTART["POST /api/control/start"]
+        CPAUSE["POST /api/control/pause<br/>POST /api/control/resume"]
+        CSTOP["POST /api/control/stop"]
+        CFLAT["POST /api/control/flatten"]
+        CSTRAT["POST /api/control/strategy"]
+        CRISK["PATCH /api/control/risk"]
+        CBREAK["POST /api/control/breakers/trip<br/>POST /api/control/breakers/rearm"]
+        CKILL["POST /api/control/kill"]
         CSHUT["POST /api/control/shutdown"]
     end
 

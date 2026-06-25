@@ -52,7 +52,7 @@ flowchart TB
         BREST["Binance REST<br/>orders, account, depth"]
         BPUB["Public WebSocket<br/>book, trades, tickers"]
         BUSER["User-data WebSocket<br/>fills, orders, wallet"]
-        TWS["IBKR TWS / Gateway<br/>future adapter target"]
+        TWS["IBKR TWS / Gateway<br/>connector scaffold"]
     end
 
     CLIENT <-->|"dev proxy: /api and /ws"| FASTAPI

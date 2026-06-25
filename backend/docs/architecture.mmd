@@ -13,17 +13,18 @@ flowchart TB
         PERSIST["WAL + run JSONL"]
 
         subgraph Engine["Engine"]
+            CORE["Engine core"]
             MARKET["Market data<br/>books, trades, features"]
             STRATEGY["Strategies"]
             RISK["Risk and breakers"]
             EXEC["Execution<br/>router, slicer, OMS"]
             STATE["Position + portfolio"]
-            MARKET --> STRATEGY --> RISK --> EXEC --> STATE
+            CORE --> MARKET --> STRATEGY --> RISK --> EXEC --> STATE
         end
 
         GATEWAY["GatewayInterface<br/>venue adapters"]
 
-        MAIN --> MARKET
+        MAIN --> CORE
         MAIN --> API
         STATE <--> GATEWAY
         STATE --> BUS
@@ -51,5 +52,5 @@ flowchart TB
 
     class UI,VENUE external
     class MAIN,API,BUS,PERSIST,GATEWAY backend
-    class MARKET,STRATEGY,RISK,EXEC,STATE engine
+    class CORE,MARKET,STRATEGY,RISK,EXEC,STATE engine
     class RECON,OBS,STOP safety

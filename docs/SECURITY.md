@@ -19,7 +19,7 @@ flowchart LR
     end
 
     subgraph Internet["External internet"]
-        VENUE["Exchange APIs<br/>Binance active, IBKR target"]
+        VENUE["Exchange APIs<br/>Binance active, IBKR scaffold"]
     end
 
     BROWSER --> API

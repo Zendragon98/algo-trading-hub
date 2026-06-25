@@ -507,7 +507,7 @@ flowchart TB
         REST["Binance REST<br/>orders, account, depth"]
         WS_P["Binance public WS<br/>book, tape, tickers"]
         WS_U["Binance user WS<br/>fills, wallet, orders"]
-        TWS["IBKR TWS/Gateway<br/>future adapter target"]
+        TWS["IBKR TWS/Gateway<br/>connector scaffold"]
     end
 
     CLIENT <-->|"dev proxy: /api and /ws"| FAST
@@ -534,27 +534,37 @@ flowchart TB
 sequenceDiagram
     autonumber
     participant Main as main.py
-    participant Engine
+    participant Boot as bootstrap_run
+    participant Bus as EventBus
     participant Gateway
-    participant API as FastAPI
+    participant Engine
+    participant API as uvicorn/FastAPI
 
-    Main->>Engine: create Engine + strategies
-    Main->>API: create FastAPI app
-    alt Autostart enabled
+    Main->>Main: load settings and resolve AUTO universes
+    Main->>Bus: create EventBus
+    Main->>Boot: create run archive, WAL, recorder
+    Main->>Gateway: create_gateway(VENUE)
+    Main->>Main: create strategies and wire providers
+    Main->>Engine: create Engine(settings, strategies, recovery_wal)
+    alt ENGINE_AUTOSTART or --engine
         Main->>Engine: start()
-        Engine->>Gateway: connect and fetch snapshots
-        Engine->>Gateway: subscribe market and user streams
-        Engine->>Engine: seed balances, positions, reconcilers
+        Engine->>Gateway: connect, snapshots, market/user streams
+        Engine->>Engine: optional WAL replay, seed state, reconcile orders
+        Engine->>Engine: start clock and background loops
     else Default local startup
-        Engine-->>Main: wait for POST /api/control/start
+        Engine-->>Main: status STOPPED until POST /api/control/start
     end
+    Main->>API: create_app(engine, bus)
     Main->>API: serve REST and WebSocket
-    Note over API,Main: SIGINT or shutdown request
+    Note over API,Main: SIGINT/SIGTERM or POST /api/control/shutdown
     API-->>Main: stop event
-    opt FLATTEN_ON_STOP
-        Engine->>Engine: flatten all legs
+    Main->>Engine: stop()
+    opt FLATTEN_ON_STOP or API shutdown force_flatten
+        Engine->>Engine: flatten and wait for flat
     end
-    Engine->>Gateway: cancel orders and disconnect
+    Engine->>Engine: stop loops and router
+    Engine->>Gateway: cancel open orders and disconnect
+    Main->>Boot: flush and close run archive
 ```
 
 **Editable source:** [`backend/docs/architecture-lifecycle.mmd`](backend/docs/architecture-lifecycle.mmd)
@@ -638,8 +648,8 @@ flowchart LR
     class WAL,REC,WS,UI sink
 ```
 
-| `EventType` | Archive file | UI use |
-|-------------|--------------|--------|
+| `EventType` | Archive file | Use |
+|-------------|--------------|-----|
 | `FILL` | `fills.jsonl` | Trades panel |
 | `ORDER_UPDATE` | `orders.jsonl` | OMS working orders |
 | `PARENT_UPDATE` | `parents.jsonl` | In-flight VWAP progress |
@@ -649,9 +659,9 @@ flowchart LR
 | `STATUS` | `status.jsonl` | Engine state, latency metrics |
 | `BREAKER` | `breakers.jsonl` | Breaker audit |
 | `LOG` | `logs.jsonl` | Log panel |
-| `MARKOUT` | `markouts.jsonl` | Post-trade markout review |
+| `MARKOUT` | `markouts.jsonl` | Post-trade markout audit |
 | `STRATEGY_HUB` | `strategy_hub.jsonl` | Strategy analytics / attribution |
-| `TICK` | `ticks.jsonl` | Optional tick archive when `PERSIST_RECORD_TICKS=true` |
+| `TICK` | `ticks.jsonl` | Optional archive only when `PERSIST_RECORD_TICKS=true` |
 
 Run directories can also contain `manifest.json`, optional `events.wal.jsonl`
 plus `meta.json`, and `app.log`. `app.log` is human-readable process logging;
@@ -737,7 +747,7 @@ Unified **circuit breaker** across the stack:
 ```mermaid
 stateDiagram-v2
     [*] --> Armed: engine start
-    Armed --> Minor: stale tick, wide spread, stale MD
+    Armed --> Minor: stale_tick, wide_spread, stale_market_data
     Minor --> Armed: cooldown elapsed
     Armed --> Major: drawdown, reconcile, operator halt
     Major --> Latched: flatten triggered
