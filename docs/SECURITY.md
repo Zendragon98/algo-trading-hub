@@ -19,7 +19,7 @@ flowchart LR
     end
 
     subgraph Internet["External internet"]
-        VENUE["Exchange APIs<br/>Binance active, IBKR scaffold"]
+        VENUE["Venue APIs<br/>Binance active, IBKR scaffold"]
     end
 
     BROWSER --> API
@@ -58,7 +58,7 @@ When **`API_TOKEN`** is non-empty (`Settings.api_token`, `backend/common/config.
 The following are **not** guarded by `API_TOKEN` in middleware:
 
 - `GET /api/state`, `GET /api/positions`, `GET /api/execution`, `GET /api/settings`, etc.
-- **`GET /ws`** event stream
+- **`/ws`** WebSocket event stream
 
 **Institutional implication:** Treat the **entire FastAPI surface** as sensitive if it exposes positions, PnL, or logs. Network controls (private VPC, mTLS, reverse proxy auth) are **required** for production unless you extend the codebase to authenticate reads and WebSocket.
 

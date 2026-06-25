@@ -89,7 +89,7 @@ Quick validation checklist:
 | **Git** | Clone the repository |
 | **Node.js 20+** | Frontend dev server (`npm`) |
 | **Python 3.11+** | Backend engine + API |
-| **Binance Futures Demo/Testnet keys** | Optional for API-only startup and the offline smoke test; required before starting the engine against Binance |
+| **Binance Futures Demo/Testnet keys** | Optional for API-only startup with explicit symbol lists and for the offline smoke test; required before starting the engine against Binance account/order endpoints |
 
 ---
 
@@ -121,9 +121,10 @@ http://127.0.0.1:8000
 Use Ctrl+C in the launcher terminal to stop both processes.
 
 The engine starts stopped by default. This lets the dashboard load without
-placing orders or connecting to Binance account/order endpoints. To start the
-engine against Binance Demo/Testnet, add keys to `backend/.env`, then press
-**Start** in the dashboard:
+placing orders or connecting to Binance account/order endpoints. If any symbol
+list is set to `AUTO`, boot still uses public Binance REST metadata to resolve
+the universe. To start the engine against Binance Demo/Testnet, add keys to
+`backend/.env`, then press **Start** in the dashboard:
 
 ```dotenv
 BINANCE_API_KEY=replace_with_demo_or_testnet_key
@@ -199,7 +200,9 @@ cd ..
 
 Edit `backend/.env` only for local overrides. Binance Demo/Testnet keys are
 needed when the engine connects to user-data, account, position, or order
-endpoints. They are not needed for API-only startup or the offline smoke test.
+endpoints. They are not needed for the offline smoke test, or for API-only
+startup when symbol lists are explicit. `AUTO` universes still use public
+Binance REST metadata at boot.
 
 ```dotenv
 BINANCE_API_KEY=replace_with_demo_or_testnet_key
@@ -246,9 +249,11 @@ python main.py
 - API: **http://127.0.0.1:8000** (REST + `/ws`)
 - Engine boots **stopped** by default - press **Start** in the UI or `POST /api/control/start`
 - Auto-start: `ENGINE_AUTOSTART=true` or `python main.py --engine`
-- API-only (engine never started): `python main.py --no-engine`
-- API-only startup does not require Binance connectivity; starting the engine
-  does require valid venue connectivity for live market/account operations.
+- Stopped-engine startup: `python main.py --no-engine` (same as default unless
+  `ENGINE_AUTOSTART=true`; `POST /api/control/start` can still start it)
+- API-only startup does not hit Binance account/order endpoints. If any
+  universe is configured as `AUTO`, startup still needs public Binance REST
+  metadata to resolve symbols.
 - Until the engine starts, the dashboard shows default/unseeded portfolio
   values such as `0` equity. Binance balances and positions are loaded only
   when the engine connects on **Start**.

@@ -17,7 +17,7 @@ This runbook describes how to operate **Algo Trading Hub** in a production-like 
 
 - `python -m analytics.worker_main` — runs backtest and kline download jobs from `data/jobs/`.
 - Settings: `ANALYTICS_WORKER_ENABLED`, `ANALYTICS_WORKER_MODE` (`embedded` \| `external` \| `disabled`).
-- API: `POST /api/backtest/run` and `/download` return `202` + `job_id`; poll `GET /api/backtest/jobs/{id}`.
+- API: `POST /api/backtest/run` and `POST /api/backtest/download` return `202` + `job_id`; poll `GET /api/backtest/jobs/{id}`.
 - CLI calibrators (`mm_spread_pipeline`, `symbol_calibrator`) remain separate manual processes; avoid heavy disk writes on `data/klines/` during live capture if possible.
 
 Implications:
@@ -89,7 +89,8 @@ The live engine is a **single long-lived process** with WebSockets and on-disk r
 - **Stdout / logging**: configured in `backend/common/logging.py`; failures and operator actions must be collectable to your central log platform.
 - **Per-run file**: `backend/data/runs/<run-id>/app.log` (rotating, when enabled).
 - **JSONL streams**: fills, orders, positions, equity, logs, markouts,
-  strategy hub, breakers, optional ticks, optional WAL - see
+  strategy hub, breakers, optional ticks, optional `events.wal.jsonl` +
+  `meta.json` - see
   [`Run Archive`](../backend/docs/runtime-reference.md#run-archive).
 
 ### 2.4 WebSocket stream
@@ -106,13 +107,14 @@ REST control under **`/api/control/*`**. When `API_TOKEN` is set, **all** paths 
 
 | Action | Endpoint | Effect (summary) |
 |--------|----------|-------------------|
-| Start / resume | `POST /api/control/start` | `engine.start()` if stopped, else `resume()` |
+| Start | `POST /api/control/start` | `engine.start()` if stopped, else `resume()` |
 | Pause | `POST /api/control/pause` | Stops strategy evaluation; state retained |
+| Resume | `POST /api/control/resume` | Resumes strategy evaluation |
 | Stop | `POST /api/control/stop` | Optional flatten (`FLATTEN_ON_STOP`); disconnect |
 | Flatten | `POST /api/control/flatten` | Pauses, cancels, syncs venue, closes legs — **remains paused** |
 | Strategy | `POST /api/control/strategy` | Hot-swap active strategy |
 | Risk | `PATCH /api/control/risk` | Updates live `max_risk_pct` |
-| Breakers | `GET/PATCH/POST .../breakers` | Inspect, enable/disable per code, trip, re-arm |
+| Breakers | `GET /api/control/breakers`, `PATCH /api/control/breakers/enabled`, `POST /api/control/breakers/trip`, `POST /api/control/breakers/rearm` | Inspect, enable/disable per code, trip, re-arm |
 | E-Stop | `POST /api/control/kill` | Flatten + `Engine.stop()`; **API keeps running** — use **Start** again from the dashboard |
 | Shutdown | `POST /api/control/shutdown` | Process exit when wired in `main.py` (not the default UI button) |
 
@@ -174,7 +176,7 @@ In **LIVE**, turning off a **major** kill switch requires typing `DISABLE LIVE B
 |-------|----------|----------------|
 | Run archives | `backend/data/runs/` | Replicate to durable object storage; **exclude** from mutable prod disk without backup |
 | Config | `backend/common/config.py` + env | Version control for non-secret defaults; secrets in vault |
-| WAL / journal | `events.wal.jsonl` in run dir | Required if using `RECOVER_ON_START` |
+| WAL / journal | `events.wal.jsonl` + `meta.json` in run dir | Required if using `RECOVER_ON_START` |
 
 Define **retention** (e.g. 30/90 days) per your policy. JSONL is suitable for batch analytics (warehouse ingestion).
 

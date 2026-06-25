@@ -1,12 +1,13 @@
 """Backend entrypoint: runs the engine + FastAPI in one process.
 
 Both the engine and uvicorn share the asyncio event loop so the API can
-read engine state without any locks or IPC. We start the engine first
-(failing fast on bad credentials) then hand control to uvicorn.
+read engine state without any locks or IPC. By default the API boots with
+the engine stopped; ``--engine`` or ``ENGINE_AUTOSTART=true`` starts the
+engine before serving.
 
 Usage:
     python main.py                      # default host/port from .env
-    python main.py --no-engine          # serve API with the engine paused
+    python main.py --no-engine          # serve API with the engine stopped
 """
 
 from __future__ import annotations
@@ -75,7 +76,7 @@ def _parse_args() -> argparse.Namespace:
     engine_mode.add_argument(
         "--no-engine",
         action="store_true",
-        help="Boot the API but leave the engine stopped (manual /control/start)",
+        help="Boot the API but leave the engine stopped (manual /api/control/start)",
     )
     engine_mode.add_argument(
         "--engine",

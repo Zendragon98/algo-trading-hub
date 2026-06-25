@@ -1,5 +1,4 @@
-"""POST /api/control/{start|pause|resume|stop|shutdown|flatten|strategy}, PATCH /api/control/risk,
-GET/POST circuit-breaker controls."""
+"""Control routes under /api/control for engine lifecycle, risk, strategy, and breakers."""
 
 from __future__ import annotations
 
@@ -145,7 +144,7 @@ async def shutdown(
 ) -> StatusDTO:
     """Flatten, cancel all orders, stop the engine, then exit the process.
 
-    Used by the dashboard **Kill** control when the API is embedded in
+    Used by explicit process-shutdown clients when the API is embedded in
     ``backend/main.py``. Unwind runs *before* the HTTP response so the operator
     sees errors if flatten fails; process exit is scheduled after the response.
     Unit tests that mount ``create_app`` without ``request_shutdown`` receive

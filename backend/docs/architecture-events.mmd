@@ -42,7 +42,7 @@ flowchart TB
 
     subgraph Archive["Run archive: data/runs/<run-id>/"]
         direction LR
-        FILES["fills, orders, parents,<br/>executions, positions, equity,<br/>status, breakers, logs,<br/>markouts, strategy_hub,<br/>optional ticks + WAL"]
+        FILES["fills, orders, parents,<br/>executions, positions, equity,<br/>status, breakers, logs,<br/>markouts, strategy_hub,<br/>optional ticks,<br/>optional events.wal.jsonl,<br/>optional meta.json"]
     end
 
     REC --> Archive

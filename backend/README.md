@@ -70,7 +70,8 @@ ENGINE_AUTOSTART=false
 
 With `ENGINE_AUTOSTART=false`, the API and dashboard start while the engine is
 stopped. Binance balances and positions are loaded only when the engine starts
-and connects to the venue.
+and connects to the venue. If any universe is configured as `AUTO`, startup can
+still call public Binance REST metadata to resolve symbols before serving.
 
 API:
 

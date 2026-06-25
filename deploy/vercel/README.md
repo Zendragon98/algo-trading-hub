@@ -35,7 +35,7 @@ curl -s https://api.yourdomain.com/health
 1. [vercel.com/new](https://vercel.com/new) → import this Git repository.
 2. **Root directory:** repository root (where `package.json` lives).
 3. **Framework preset:** Vercel auto-detects TanStack Start when `nitro` is in `vite.config.ts` (set via `VERCEL=1` during build).
-4. **Build command:** `npm run build` (default).
+4. **Build command:** leave the repo default from `vercel.json` (`npm run build:vercel`).
 5. **Do not** set a custom Output Directory — Nitro writes `.vercel/output` automatically.
 
 ---

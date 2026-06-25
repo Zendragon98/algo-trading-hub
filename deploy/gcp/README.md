@@ -132,7 +132,7 @@ VITE_API_BASE=https://api.yourdomain.com
 VITE_API_TOKEN=your-api-token   # optional; must match API_TOKEN for control actions
 ```
 
-Then deploy via Vercel Git integration (`npm run build` runs automatically) **or** Cloudflare Workers (`npm run build:cloudflare` + `wrangler deploy`).
+Then deploy via Vercel Git integration (`npm run build:vercel` runs from `vercel.json`) **or** Cloudflare Workers (`npm run build:cloudflare` + `wrangler deploy`).
 
 The browser must reach **`wss://`** when the page is **`https://`** ([`docs/OPERATIONS.md`](../../docs/OPERATIONS.md)).
 

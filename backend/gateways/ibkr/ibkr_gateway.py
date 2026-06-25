@@ -89,11 +89,13 @@ class IBKRGateway(GatewayInterface):
     # --- Lifecycle ---
 
     async def connect(self) -> None:
-        # TODO: ib = IB(); await ib.connectAsync(self._host, self._port, clientId=self._client_id)
+        # IBKR note: ib = IB(); await ib.connectAsync(
+        #     self._host, self._port, clientId=self._client_id
+        # )
         raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
 
     async def disconnect(self) -> None:
-        # TODO: self._ib.disconnect()
+        # IBKR note: self._ib.disconnect()
         raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
 
     # --- Market data ---
@@ -108,7 +110,7 @@ class IBKRGateway(GatewayInterface):
         on_quote_volume_24h=None,
         on_reconnect=None,
     ) -> None:
-        # TODO: build IB Contract objects from `symbols`, call reqMktData /
+        # IBKR note: build IB Contract objects from `symbols`, call reqMktData /
         # reqMktDepth / reqTickByTickData, attach ib.pendingTickersEvent,
         # ib.updateMktDepthEvent, ib.tickByTickAllLastEvent handlers and
         # translate each callback into the engine-native Tick / DepthDiff /
@@ -123,7 +125,7 @@ class IBKRGateway(GatewayInterface):
         on_order_update: OrderUpdateCallback,
         on_account_update=None,
     ) -> None:
-        # TODO: ib.execDetailsEvent += <translate to Fill> and forward
+        # IBKR note: ib.execDetailsEvent += <translate to Fill> and forward
         # via on_fill; ib.orderStatusEvent += <translate to ChildOrder>
         # and forward via on_order_update.
         raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
@@ -131,38 +133,38 @@ class IBKRGateway(GatewayInterface):
     # --- Order management ---
 
     async def place_order(self, order: ChildOrder) -> ChildOrder:
-        # TODO: build the IB Order (LMT vs MKT, qty, action), look up the
+        # IBKR note: build the IB Order (LMT vs MKT, qty, action), look up the
         # IB Contract for `order.symbol`, call ib.placeOrder, populate
         # `order.venue_order_id` from the trade.order.permId / orderId.
         raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
 
     async def cancel_order(self, symbol: str, client_order_id: str) -> None:
-        # TODO: locate the open IB Trade by clientOrderId in self._open_trades
+        # IBKR note: locate the open IB Trade by clientOrderId in self._open_trades
         # and call ib.cancelOrder(trade.order).
         raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
 
     # --- Account ---
 
     async def fetch_positions(self) -> list[Position]:
-        # TODO: for p in ib.positions(): yield Position(symbol=..., qty=p.position, ...)
+        # IBKR note: for p in ib.positions(): yield Position(symbol=..., qty=p.position, ...)
         raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
 
     async def fetch_balance(self) -> float:
-        # TODO: pick the NetLiquidation row from ib.accountValues(...) in
+        # IBKR note: pick the NetLiquidation row from ib.accountValues(...) in
         # settings.base_currency and cast to float.
         raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
 
     # --- Reference data ---
 
     async def book_snapshot(self, symbol: str, depth: int = 100) -> dict:
-        # TODO: take a one-shot snapshot via reqMktDepth and shape the
+        # IBKR note: take a one-shot snapshot via reqMktDepth and shape the
         # response into {"lastUpdateId": <seq>, "bids": [[p, q], ...],
         # "asks": [...]} so the engine's incremental loop can consume it
         # without caring it came from IBKR.
         raise NotImplementedError(_NOT_IMPLEMENTED_MSG)
 
     async def klines(self, symbol: str, interval: str, limit: int = 200) -> list[Kline]:
-        # TODO: ib.reqHistoricalData(contract, endDateTime="", durationStr=...,
+        # IBKR note: ib.reqHistoricalData(contract, endDateTime="", durationStr=...,
         # barSizeSetting=<map interval>, whatToShow="MIDPOINT") then translate
         # each bar into a Kline (date -> epoch seconds, open/high/low/close
         # straight, volume in base units).
