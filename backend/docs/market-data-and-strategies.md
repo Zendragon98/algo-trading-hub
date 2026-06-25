@@ -132,7 +132,7 @@ configured universe. It manages its own stop/take-profit/hold-time exits.
 | `inventory_cap.py` | Portfolio inventory cap logic |
 | `universe.py` | `MM2_SYMBOLS` / AUTO resolution |
 | `ids.py` | `MM_STRATEGY_NAMES` canonical id list |
-| `settings_adapter.py` | Translates mm_* attribute names to mm2_* settings fields for mm_core |
+| `settings_adapter.py` | Exposes mm2_* settings fields as mm_* attribute names for mm_core |
 
 Market making posts standing quotes through `QuoteExecutor`, not through the
 VWAP wheel. It has separate microstructure risk gates for toxicity, depletion,

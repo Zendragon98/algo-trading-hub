@@ -82,7 +82,8 @@ Examples:
 |---|---|---|
 | `stale_tick` | symbol | Pause entries for stale public market data |
 | `wide_spread` | symbol | Veto entry on poor spread |
-| `stale_market_data` | engine | Pause entries when market or user-data streams are stale |
+| `stale_market_data` | engine | Pause entries when the public market-data WebSocket is silent |
+| `stale_user_data` | engine | Pause entries when user-data WebSocket is stale while orders are working |
 | `toxic_flow` | symbol | Pause MM quotes |
 | `reconcile_mismatch` | engine | Flatten and latch on venue/local drift |
 | `max_drawdown` | engine | Flatten and latch |

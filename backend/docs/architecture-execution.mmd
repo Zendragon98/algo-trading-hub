@@ -39,5 +39,5 @@ sequenceDiagram
         end
     end
 
-    OMS-->>TCA: fill stream
+    Gateway-->>TCA: fill events (via Engine on_fill callback)
     Note over TCA: publishes PARENT_UPDATE and<br/>EXECUTION_REPORT to EventBus
