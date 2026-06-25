@@ -22,7 +22,7 @@ sequenceDiagram
     PreTrade->>Risk: capped quantity, exposure, spread checks
     Risk-->>PreTrade: approved or rejected
     PreTrade->>Router: parent order request
-    Router->>Wheel: choose urgency profile
+    Router->>Wheel: choose algo mode
     Wheel-->>Router: frontload, normal, or backload
     Router->>TCA: record arrival mid
     Router->>VWAP: execute parent order
@@ -40,5 +40,4 @@ sequenceDiagram
     end
 
     OMS-->>TCA: fill stream
-    TCA-->>Router: PARENT_UPDATE on each fill
-    TCA-->>Router: EXECUTION_REPORT on completion
+    Note over TCA: publishes PARENT_UPDATE and<br/>EXECUTION_REPORT to EventBus

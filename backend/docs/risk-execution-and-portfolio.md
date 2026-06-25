@@ -61,7 +61,7 @@ events and are exposed through `/api/execution`.
 | Market data | `market_data_guard.py` | Stale/wide-spread vetoes |
 | Stops | `stop_loss.py` | Engine-managed per-leg brackets |
 | Losses | `loss_tracker.py`, `pnl_tracker.py` | Consecutive losses and PnL state |
-| Margin | `margin_ratio_guard.py` | Margin ratio monitoring |
+| Margin | `margin_ratio_guard.py` | Margin ratio monitoring; emits ExitIntent to reduce largest position when threshold breached |
 | MM flow | `mm_flow_guard.py` | Toxic flow, jump, depletion guards |
 | Breakers | `circuit_breaker.py`, `common/breaker_registry.py` | Minor/major halt logic |
 
@@ -98,7 +98,7 @@ orders can reach the venue.
 | Start | `POST /api/control/start` | Connect and start loops |
 | Pause / Resume | `POST /api/control/pause`, `POST /api/control/resume` | Stop/resume strategy evaluation |
 | Stop | `POST /api/control/stop` | Optional flatten and disconnect |
-| Flatten | `POST /api/control/flatten` | Pause, cancel, sync venue, close legs, stay paused |
+| Flatten | `POST /api/control/flatten` | Pause, cancel, sync venue, close legs; resume if was RUNNING |
 | E-Stop | `POST /api/control/kill` | Flatten + `Engine.stop()`; API stays up |
 | Shutdown | `POST /api/control/shutdown` | Flatten positions, stop engine, and exit process |
 | Strategy | `POST /api/control/strategy` | Hot-swap strategy |

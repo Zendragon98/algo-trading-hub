@@ -26,7 +26,7 @@ backtesting, and strategy design.
 | `markout_tracker.py` | Post-fill markout observations |
 | `own_quote_book.py` | Resting MM quote state |
 | `symbol_calibration.py` | Per-symbol calibration artefacts |
-| `funding_store.py` | Funding rate history fed to FeatureStore |
+| `funding_store.py` | Per-symbol funding rate snapshot for MM carry adjustment |
 
 Concept connection:
 
@@ -132,7 +132,7 @@ configured universe. It manages its own stop/take-profit/hold-time exits.
 | `inventory_cap.py` | Portfolio inventory cap logic |
 | `universe.py` | `MM2_SYMBOLS` / AUTO resolution |
 | `ids.py` | `MM_STRATEGY_NAMES` canonical id list |
-| `settings_adapter.py` | Bridges settings to strategy and engine |
+| `settings_adapter.py` | Translates mm_* attribute names to mm2_* settings fields for mm_core |
 
 Market making posts standing quotes through `QuoteExecutor`, not through the
 VWAP wheel. It has separate microstructure risk gates for toxicity, depletion,
