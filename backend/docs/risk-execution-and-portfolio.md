@@ -61,6 +61,7 @@ events and are exposed through `/api/execution`.
 | Market data | `market_data_guard.py` | Stale/wide-spread vetoes |
 | Stops | `stop_loss.py` | Engine-managed per-leg brackets |
 | Losses | `loss_tracker.py`, `pnl_tracker.py` | Consecutive losses and PnL state |
+| Margin | `margin_ratio_guard.py` | Margin ratio monitoring; emits ExitIntent to reduce largest position when threshold breached |
 | MM flow | `mm_flow_guard.py` | Toxic flow, jump, depletion guards |
 | Breakers | `circuit_breaker.py`, `common/breaker_registry.py` | Minor/major halt logic |
 
@@ -81,6 +82,8 @@ Examples:
 |---|---|---|
 | `stale_tick` | symbol | Pause entries for stale public market data |
 | `wide_spread` | symbol | Veto entry on poor spread |
+| `stale_market_data` | engine | Pause entries when the public market-data WebSocket is silent |
+| `stale_user_data` | engine | Pause entries when user-data WebSocket is stale while orders are working |
 | `toxic_flow` | symbol | Pause MM quotes |
 | `reconcile_mismatch` | engine | Flatten and latch on venue/local drift |
 | `max_drawdown` | engine | Flatten and latch |
@@ -96,9 +99,9 @@ orders can reach the venue.
 | Start | `POST /api/control/start` | Connect and start loops |
 | Pause / Resume | `POST /api/control/pause`, `POST /api/control/resume` | Stop/resume strategy evaluation |
 | Stop | `POST /api/control/stop` | Optional flatten and disconnect |
-| Flatten | `POST /api/control/flatten` | Pause, cancel, sync venue, close legs, stay paused |
+| Flatten | `POST /api/control/flatten` | Pause, cancel, sync venue, close legs; resume only when flat is confirmed and engine was RUNNING |
 | E-Stop | `POST /api/control/kill` | Flatten + `Engine.stop()`; API stays up |
-| Shutdown | `POST /api/control/shutdown` | Stop engine and exit process |
+| Shutdown | `POST /api/control/shutdown` | Flatten positions, stop engine, and exit process |
 | Strategy | `POST /api/control/strategy` | Hot-swap strategy |
 | Risk | `PATCH /api/control/risk` | Update `max_risk_pct` |
 | Breakers | `GET /api/control/breakers`, `PATCH /api/control/breakers/enabled`, `POST /api/control/breakers/trip`, `POST /api/control/breakers/rearm` | Inspect, enable/disable, trip, rearm |
@@ -110,9 +113,9 @@ orders can reach the venue.
 1. Pause strategy evaluation.
 2. Cancel open venue/local working orders.
 3. Pull venue positions.
-4. Close open legs with market, aggressive VWAP, or passive VWAP.
-5. Poll the venue until flat or timeout.
-6. Leave the engine paused.
+4. Close open legs with market, aggressive VWAP, or passive VWAP (initial attempt).
+5. Poll the venue until flat or timeout; retry closes use market orders only.
+6. Resume trading if the engine was RUNNING before flatten; remain paused if already paused.
 
 Flatten orders are reduce-only. Small/wide-spread positions use market closes;
 larger tight-spread positions can use VWAP flatten settings.

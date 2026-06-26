@@ -31,12 +31,13 @@ flowchart TB
     end
 
     subgraph Panels["Dashboard panels"]
-        PORT["Portfolio and equity"]
-        POS["Positions and klines"]
-        OMS["Working orders"]
+        PORT["Equity curve"]
+        POS["Open positions"]
+        OMS["Order management"]
         TCA["Execution quality"]
         HEALTH["System health"]
-        AUDIT["Logs and breakers"]
+        AUDIT["Live log"]
+        TRADES["Recent trades"]
     end
 
     PROXY --> CLIENT
@@ -55,6 +56,7 @@ flowchart TB
     ROUTE --> TCA
     ROUTE --> HEALTH
     ROUTE --> AUDIT
+    ROUTE --> TRADES
 
     NOTE["The browser never calls Binance directly"]
     NOTE -.-> CLIENT
@@ -67,4 +69,4 @@ flowchart TB
     class VITE,PROXY local
     class ROUTE,HOOK,CLIENT,TYPES,CHARTS,NOTE app
     class STATE,LOGS,SETTINGS,WS,MOUNT,POLL,FOCUS,RECONNECT api
-    class PORT,POS,OMS,TCA,HEALTH,AUDIT panel
+    class PORT,POS,OMS,TCA,HEALTH,AUDIT,TRADES panel

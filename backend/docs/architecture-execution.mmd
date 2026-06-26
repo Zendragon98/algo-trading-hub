@@ -2,9 +2,11 @@
 sequenceDiagram
     autonumber
     participant Strategy
+    participant Eng as Engine
     participant PreTrade as PreTradeValidator
     participant Risk as RiskManager
     participant Router as ExecutionRouter
+    participant SG as SubmitGuard
     participant Wheel as AlgoWheel
     participant Slicer
     participant VWAP as VwapExecutor
@@ -12,7 +14,8 @@ sequenceDiagram
     participant Gateway
     participant TCA as ExecutionTracker
 
-    Strategy->>PreTrade: Signal, optional group_id for pairs
+    Strategy-->>Eng: emit signal (pairs carry group_id)
+    Eng->>PreTrade: dispatch signal
     alt Pair group
         PreTrade->>PreTrade: validate group and common quantity floor
     else Single leg
@@ -21,24 +24,26 @@ sequenceDiagram
 
     PreTrade->>Risk: capped quantity, exposure, spread checks
     Risk-->>PreTrade: approved or rejected
-    PreTrade->>Router: parent order request
-    Router->>Wheel: choose urgency profile
+    Eng->>Router: parent order request
+    Router->>SG: can_submit_parent
+    SG-->>Router: allowed or rejected
+    Router->>Wheel: choose algo mode
     Wheel-->>Router: frontload, normal, or backload
-    Router->>Slicer: create conserved slice schedule
     Router->>TCA: record arrival mid
+    Router->>VWAP: execute parent order
+    VWAP->>Slicer: build conserved slice schedule
 
     loop Each slice until filled or timeout
-        Router->>VWAP: schedule slice
-        VWAP->>OMS: child LIMIT order
+        VWAP->>OMS: child LIMIT or MARKET order
         OMS->>Gateway: place_order with deterministic clientOrderId
         Gateway-->>OMS: accepted or rejected
         Gateway-->>OMS: partial or full fill
         alt Timeout or slippage breach
             VWAP->>OMS: cancel child
-            VWAP->>Gateway: market residual, reduce_only if exit
+            VWAP->>OMS: market residual child (skipped if reduce_only)
         end
     end
 
-    OMS-->>TCA: fill stream
-    TCA-->>Router: PARENT_UPDATE on each fill
-    TCA-->>Router: EXECUTION_REPORT on completion
+    Gateway-->>Eng: fill callback (_on_fill)
+    Eng->>OMS: on_fill
+    Note over Eng,TCA: Engine._on_fill also updates ExecutionTracker,<br/>which publishes PARENT_UPDATE and EXECUTION_REPORT to EventBus

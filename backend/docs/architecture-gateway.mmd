@@ -6,6 +6,7 @@ flowchart LR
         ORDERS["place_order<br/>cancel_order"]
         ACCOUNT["fetch balances<br/>and positions"]
         BOOK["book_snapshot"]
+        KLINES["klines"]
     end
 
     subgraph Interface["gateways/gateway_interface.py"]
@@ -22,6 +23,8 @@ flowchart LR
         BG --> MARKET
         BG --> ORDER
         BG --> ACCT
+        ACCT --> REST
+        ORDER --> REST
     end
 
     subgraph IBKR["IBKR adapter scaffold"]
@@ -40,6 +43,7 @@ flowchart LR
     ORDERS --> ABC
     ACCOUNT --> ABC
     BOOK --> ABC
+    KLINES --> ABC
 
     ABC --> BG
     ABC -.-> IB
@@ -52,14 +56,13 @@ flowchart LR
     subgraph Callbacks["Callbacks into Engine"]
         MARKET_CB["on_tick<br/>on_depth<br/>on_trade"]
         ORDER_CB["on_fill<br/>on_order_update"]
-        ACCOUNT_CB["on_account_update<br/>on_ws_connected"]
+        ACCOUNT_CB["on_account_update<br/>on_ws_connected (Binance only)"]
         META_CB["on_quote_volume_24h<br/>on_reconnect"]
     end
 
     MARKET --> MARKET_CB
     ORDER --> ORDER_CB
     ORDER --> ACCOUNT_CB
-    ACCT --> ACCOUNT_CB
     MARKET --> META_CB
 
     classDef engine fill:#eff6ff,stroke:#3b82f6,color:#172554
@@ -67,7 +70,7 @@ flowchart LR
     classDef adapter fill:#f0fdf4,stroke:#22c55e,color:#14532d
     classDef venue fill:#fef2f2,stroke:#ef4444,color:#7f1d1d
 
-    class MKT_SUB,USER_SUB,ORDERS,ACCOUNT,BOOK engine
+    class MKT_SUB,USER_SUB,ORDERS,ACCOUNT,BOOK,KLINES engine
     class ABC seam
     class BG,REST,MARKET,ORDER,ACCT,IB,MARKET_CB,ORDER_CB,ACCOUNT_CB,META_CB adapter
     class BREST,BWS,BUSR,TWS venue

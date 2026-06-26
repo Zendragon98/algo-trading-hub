@@ -2,11 +2,10 @@
 stateDiagram-v2
     [*] --> Armed: engine start
 
-    Armed --> Minor: minor breach<br/>stale_tick, wide_spread, stale_market_data
-    Minor --> Armed: cooldown elapsed
+    Armed --> Cooldown: minor breach<br/>stale_tick, wide_spread, stale_market_data, stale_user_data
+    Cooldown --> Armed: cooldown elapsed
 
-    Armed --> Major: major breach<br/>drawdown, reconcile, operator_halt
-    Major --> Latched: flatten triggered
+    Armed --> Latched: major breach<br/>max_drawdown, reconcile_mismatch, operator_halt
     Latched --> Armed: operator rearm
 
     state Armed {
@@ -14,24 +13,13 @@ stateDiagram-v2
         EntriesAllowed --> EntriesAllowed: pre-trade checks pass
     }
 
-    state Minor {
-        [*] --> EntryVeto
-        EntryVeto --> WaitingCooldown
-        WaitingCooldown --> [*]: breaker.tick()
-    }
-
-    state Major {
-        [*] --> PauseAndFlatten
-        PauseAndFlatten --> BlockEntries
-        BlockEntries --> [*]
-    }
 
     note right of Armed
         PreTradeValidator checks
         breaker state before entries.
     end note
 
-    note right of Major
+    note right of Latched
         Reduce-only exits remain allowed
         so flattening can still reach the venue.
     end note

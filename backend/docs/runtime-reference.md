@@ -35,7 +35,7 @@ metadata.
 
 | Command | Effect |
 |---|---|
-| `python main.py` | Start API with engine stopped by default |
+| `python main.py` | Start API; engine auto-starts if `ENGINE_AUTOSTART=true`, otherwise stays stopped |
 | `python main.py --no-engine` | Force stopped-engine startup even if `ENGINE_AUTOSTART=true`; `POST /api/control/start` can still start it |
 | `python main.py --engine` | Start API and engine immediately |
 | `.\run.bat` | Windows backend launcher |
@@ -64,7 +64,7 @@ Settings live in `common/config/settings.py` and are grouped under
 | `risk.py` | drawdown, exposure, breaker, reconcile, API token |
 | `pairs.py`, `sma.py`, `blend.py`, `flow.py` | Strategy settings |
 | `mm2.py`, `mm_institutional.py`, `mm_legacy.py` | Market-making settings |
-| `api_persist.py` | CORS, logs, persistence, run archives |
+| `api_persist.py` | CORS, logs, run archives, tick recording |
 
 Strategy aliases are normalized in `common/config/aliases.py`.
 
@@ -95,8 +95,8 @@ Strategy aliases are normalized in `common/config/aliases.py`.
 | `POST` | `/api/control/flatten` | Flatten venue positions |
 | `POST` | `/api/control/strategy` | Hot-swap active strategy or `all` mode |
 | `PATCH` | `/api/control/risk` | Update `max_risk_pct` |
-| `POST` | `/api/control/kill` | Dashboard E-Stop; API stays up |
-| `POST` | `/api/control/shutdown` | Process shutdown |
+| `POST` | `/api/control/kill` | Force-flatten then stop engine; API stays up |
+| `POST` | `/api/control/shutdown` | Force-flatten, stop engine, and exit process |
 | `GET` | `/api/control/breakers` | Inspect breaker registry, active trips, and history |
 | `PATCH` | `/api/control/breakers/enabled` | Enable/disable breaker codes |
 | `POST` | `/api/control/breakers/trip` | Operator halt / manual breaker trip |

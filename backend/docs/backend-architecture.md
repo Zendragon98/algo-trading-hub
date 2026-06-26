@@ -18,14 +18,16 @@ repository structure rather than replacing it.
 `backend/main.py` creates the runtime:
 
 1. Load `Settings` from defaults and `backend/.env`.
-2. Configure logging.
-3. Create one `EventBus`.
+2. Create one `EventBus`.
+3. Resolve `AUTO` symbol universes and partition the multi-strategy universe.
 4. Bootstrap a run archive and optional WAL.
-5. Create a gateway through `gateways.factory.create_gateway`.
-6. Register strategies.
-7. Create the `Engine`.
-8. Create the FastAPI app with `api.server.create_app`.
-9. Serve uvicorn on the same asyncio process.
+5. Configure logging (after archive path is known).
+6. Create a gateway through `gateways.factory.create_gateway`.
+7. Create strategies, then the `Engine`, then wire equity and position providers.
+8. Auto-start the engine if `ENGINE_AUTOSTART=true` or `--engine` flag is set.
+9. Start the `AnalyticsWorkerSupervisor`.
+10. Create the FastAPI app with `api.server.create_app`.
+11. Serve uvicorn on the same asyncio process.
 
 The trading process is a single live writer. The API exposes state and control,
 but engine state is owned by `Engine`, not by the dashboard.
@@ -109,11 +111,12 @@ and tests.
 | `config/settings.py` | Full `Settings` model |
 | `config/sections/` | Settings grouped by venue, strategy, risk, execution, API/persistence |
 | `config/aliases.py` | Strategy alias normalization |
-| `events.py` | EventBus and event types |
-| `types.py` | Shared dataclasses such as signals, fills, orders, features |
-| `enums.py` | Shared enums |
+| `events.py` | EventBus and event envelope |
+| `types.py` | Shared dataclasses such as signals, fills, orders, positions, ticks, klines |
+| `enums.py` | Shared enums including `EventType` |
 | `breaker_registry.py` | Canonical breaker definitions |
 | `universe_bootstrap.py` | Startup universe resolution helpers |
+| `multi_strategy_universe.py` | Multi-strategy universe partitioning at boot |
 
 ## Persistence
 
