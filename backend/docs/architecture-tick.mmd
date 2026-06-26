@@ -12,7 +12,7 @@ flowchart TB
         QUALITY["DataQuality<br/>gaps, crossed book, staleness"]
         FEATURES["FeatureStore<br/>spread, imbalance, flow"]
         MDIN --> OB
-        MDIN --> TAPE
+        MDIN -->|"trade"| TAPE
         OB --> QUALITY
         OB --> FEATURES
         TAPE --> FEATURES

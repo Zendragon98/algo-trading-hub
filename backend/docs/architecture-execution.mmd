@@ -2,6 +2,7 @@
 sequenceDiagram
     autonumber
     participant Strategy
+    participant Eng as Engine
     participant PreTrade as PreTradeValidator
     participant Risk as RiskManager
     participant Router as ExecutionRouter
@@ -13,7 +14,8 @@ sequenceDiagram
     participant Gateway
     participant TCA as ExecutionTracker
 
-    Strategy->>PreTrade: Signal, optional group_id for pairs
+    Strategy-->>Eng: emit signal (pairs carry group_id)
+    Eng->>PreTrade: dispatch signal
     alt Pair group
         PreTrade->>PreTrade: validate group and common quantity floor
     else Single leg
@@ -32,7 +34,7 @@ sequenceDiagram
     VWAP->>Slicer: build conserved slice schedule
 
     loop Each slice until filled or timeout
-        VWAP->>OMS: child LIMIT order
+        VWAP->>OMS: child LIMIT or MARKET order
         OMS->>Gateway: place_order with deterministic clientOrderId
         Gateway-->>OMS: accepted or rejected
         Gateway-->>OMS: partial or full fill
@@ -42,5 +44,6 @@ sequenceDiagram
         end
     end
 
-    Gateway-->>OMS: fill (Engine._on_fill → OMS and TCA)
-    Note over OMS,TCA: Engine._on_fill also updates ExecutionTracker,<br/>which publishes PARENT_UPDATE and EXECUTION_REPORT to EventBus
+    Gateway-->>Eng: fill callback (_on_fill)
+    Eng->>OMS: on_fill
+    Note over Eng,TCA: Engine._on_fill also updates ExecutionTracker,<br/>which publishes PARENT_UPDATE and EXECUTION_REPORT to EventBus

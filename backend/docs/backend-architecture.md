@@ -24,9 +24,10 @@ repository structure rather than replacing it.
 5. Configure logging (after archive path is known).
 6. Create a gateway through `gateways.factory.create_gateway`.
 7. Create strategies, then the `Engine`, then wire equity and position providers.
-8. Start the `AnalyticsWorkerSupervisor`.
-9. Create the FastAPI app with `api.server.create_app`.
-10. Serve uvicorn on the same asyncio process.
+8. Auto-start the engine if `ENGINE_AUTOSTART=true` or `--engine` flag is set.
+9. Start the `AnalyticsWorkerSupervisor`.
+10. Create the FastAPI app with `api.server.create_app`.
+11. Serve uvicorn on the same asyncio process.
 
 The trading process is a single live writer. The API exposes state and control,
 but engine state is owned by `Engine`, not by the dashboard.

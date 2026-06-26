@@ -113,8 +113,8 @@ orders can reach the venue.
 1. Pause strategy evaluation.
 2. Cancel open venue/local working orders.
 3. Pull venue positions.
-4. Close open legs with market, aggressive VWAP, or passive VWAP.
-5. Poll the venue until flat or timeout.
+4. Close open legs with market, aggressive VWAP, or passive VWAP (initial attempt).
+5. Poll the venue until flat or timeout; retry closes use market orders only.
 6. Resume trading if the engine was RUNNING before flatten; remain paused if already paused.
 
 Flatten orders are reduce-only. Small/wide-spread positions use market closes;
