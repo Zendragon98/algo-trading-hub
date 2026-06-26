@@ -112,7 +112,7 @@ and tests.
 | `config/sections/` | Settings grouped by venue, strategy, risk, execution, API/persistence |
 | `config/aliases.py` | Strategy alias normalization |
 | `events.py` | EventBus and event envelope |
-| `types.py` | Shared dataclasses such as signals, fills, orders, features |
+| `types.py` | Shared dataclasses such as signals, fills, orders, positions, ticks, klines |
 | `enums.py` | Shared enums including `EventType` |
 | `breaker_registry.py` | Canonical breaker definitions |
 | `universe_bootstrap.py` | Startup universe resolution helpers |

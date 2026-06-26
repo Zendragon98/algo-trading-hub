@@ -99,7 +99,7 @@ orders can reach the venue.
 | Start | `POST /api/control/start` | Connect and start loops |
 | Pause / Resume | `POST /api/control/pause`, `POST /api/control/resume` | Stop/resume strategy evaluation |
 | Stop | `POST /api/control/stop` | Optional flatten and disconnect |
-| Flatten | `POST /api/control/flatten` | Pause, cancel, sync venue, close legs; resume if was RUNNING |
+| Flatten | `POST /api/control/flatten` | Pause, cancel, sync venue, close legs; resume only when flat is confirmed and engine was RUNNING |
 | E-Stop | `POST /api/control/kill` | Flatten + `Engine.stop()`; API stays up |
 | Shutdown | `POST /api/control/shutdown` | Flatten positions, stop engine, and exit process |
 | Strategy | `POST /api/control/strategy` | Hot-swap strategy |

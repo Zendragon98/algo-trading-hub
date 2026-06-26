@@ -2,7 +2,7 @@
 stateDiagram-v2
     [*] --> Armed: engine start
 
-    Armed --> Cooldown: minor breach<br/>stale_tick, wide_spread, stale_market_data
+    Armed --> Cooldown: minor breach<br/>stale_tick, wide_spread, stale_market_data, stale_user_data
     Cooldown --> Armed: cooldown elapsed
 
     Armed --> Latched: major breach<br/>max_drawdown, reconcile_mismatch, operator_halt
