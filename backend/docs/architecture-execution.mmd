@@ -24,7 +24,7 @@ sequenceDiagram
 
     PreTrade->>Risk: capped quantity, exposure, spread checks
     Risk-->>PreTrade: approved or rejected
-    PreTrade->>Router: parent order request
+    Eng->>Router: parent order request
     Router->>SG: can_submit_parent
     SG-->>Router: allowed or rejected
     Router->>Wheel: choose algo mode
@@ -40,7 +40,7 @@ sequenceDiagram
         Gateway-->>OMS: partial or full fill
         alt Timeout or slippage breach
             VWAP->>OMS: cancel child
-            VWAP->>OMS: market residual child, reduce_only if exit
+            VWAP->>OMS: market residual child (skipped if reduce_only)
         end
     end
 

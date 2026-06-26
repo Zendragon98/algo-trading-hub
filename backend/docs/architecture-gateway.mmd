@@ -24,6 +24,7 @@ flowchart LR
         BG --> ORDER
         BG --> ACCT
         ACCT --> REST
+        ORDER --> REST
     end
 
     subgraph IBKR["IBKR adapter scaffold"]

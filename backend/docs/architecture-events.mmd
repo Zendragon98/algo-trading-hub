@@ -30,11 +30,11 @@ flowchart TB
         LOGBUF["Log buffer<br/>GET /api/logs"]
     end
 
-    WAL["WAL journal<br/>side-channel write in publish()"]
+    WAL["WAL journal<br/>async queue → background writer"]
 
     BUS --> WS
     BUS --> REC
-    BUS -. "side-channel" .-> WAL
+    BUS -. "async queue" .-> WAL
     BUS --> LAT
     BUS --> ALERT
     BUS --> LOGBUF
