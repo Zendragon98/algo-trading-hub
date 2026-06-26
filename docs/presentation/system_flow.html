@@ -1,0 +1,390 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Algo Trading Hub — System Flow</title>
+<style>
+  :root{--bg:#0b1020;--panel:#111a30;--line:#1e293b;--ink:#e2e8f0;--muted:#94a3b8;--faint:#2a3a52}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+    font:13px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  #app{max-width:1480px;margin:0 auto;padding:14px}
+  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+  h1{font-size:16px;margin:0;font-weight:650}
+  h1 small{color:var(--muted);font-weight:400;margin-left:6px}
+  .spacer{flex:1}
+  .seg{display:flex;gap:5px;background:#0d1426;border:1px solid var(--line);border-radius:9px;padding:3px;flex-wrap:wrap}
+  .seg button{border:0;background:transparent;color:var(--muted);padding:5px 10px;border-radius:7px;cursor:pointer;font-size:12px}
+  .seg button.on{background:var(--flow,#38bdf8);color:#08111f;font-weight:600}
+  .btn{border:1px solid var(--line);background:#0d1426;color:var(--ink);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12.5px}
+  .btn:hover{border-color:var(--flow,#38bdf8)}
+  select{background:#0d1426;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+  .wrap{display:flex;gap:12px;align-items:stretch}
+  .stage{flex:1;min-width:0;background:linear-gradient(180deg,#0c1322,#0b1020);border:1px solid var(--line);border-radius:14px;padding:6px}
+  svg{width:100%;height:auto;display:block}
+  #drill{flex:0 0 408px;width:408px;background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:auto;max-height:792px}
+  @media(max-width:1080px){.wrap{flex-direction:column}#drill{flex:1 1 auto;width:100%;max-height:460px}}
+  .node rect.bx{fill:#0c1322;stroke:var(--faint);stroke-width:1.5;cursor:pointer;transition:stroke .2s,fill .2s}
+  .node .t{fill:var(--ink);font-size:13px;font-weight:600;pointer-events:none}
+  .node .s{fill:var(--muted);font-size:10.5px;pointer-events:none}
+  .node.on rect.bx{stroke:var(--flow);stroke-width:2.6;fill:#10203a}
+  .node.dim{opacity:.4}
+  .glyph{stroke:var(--muted);stroke-width:1.6;fill:none;pointer-events:none}
+  .node.on .glyph{stroke:var(--flow)}
+  .edge{fill:none;stroke:var(--faint);stroke-width:1.5;transition:stroke .15s,stroke-width .15s}
+  .edge.on{stroke:var(--flow);stroke-width:3}
+  #inspector{pointer-events:none}
+  .insp{fill:rgba(12,19,34,.72);stroke:var(--flow,#38bdf8);stroke-opacity:.45;stroke-width:1.5}
+  .insptt{fill:var(--flow,#38bdf8);font-size:12px;font-weight:700;letter-spacing:.4px}
+  .inspsub{fill:var(--muted);font-size:10.5px}
+  .inspedge{stroke:#46597a;stroke-width:1.5}
+  .insparrow{fill:#6982a6}
+  .inspchip{fill:#0c1322;stroke:var(--flow,#38bdf8);stroke-opacity:.5;stroke-width:1.3}
+  .inspct{fill:#cbd5e1;font-size:11px}
+  .inspconn{fill:none;stroke:var(--flow,#38bdf8);stroke-opacity:.3;stroke-width:1.5;stroke-dasharray:5 5}
+  #narr{display:flex;align-items:flex-start;gap:12px;margin-top:10px;background:var(--panel);
+    border:1px solid var(--line);border-left:4px solid var(--flow,#38bdf8);border-radius:10px;padding:11px 14px;min-height:54px}
+  #step{flex:0 0 auto;font-variant-numeric:tabular-nums;color:var(--flow,#38bdf8);font-weight:700;font-size:13px}
+  #desc{flex:1}
+  #desc b{color:var(--flow,#38bdf8);font-weight:600}
+  .dh{position:sticky;top:0;background:var(--panel);border-bottom:1px solid var(--line);padding:12px 14px;z-index:2}
+  .dh .lab{font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--flow,#38bdf8);font-weight:700}
+  .dh .ttl{font-size:15px;font-weight:650;margin-top:2px}
+  .dh .role{color:var(--muted);font-size:12px;margin-top:4px}
+  .db{padding:8px 12px 36px}
+  .mod{border:1px solid var(--line);border-radius:9px;margin:8px 0;overflow:hidden}
+  .mod>.f{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 9px;background:#0d1628;
+    font-family:ui-monospace,Menlo,monospace;font-size:11px;color:#9fb4d6}
+  .mod>.f .tag{font-family:inherit;font-size:9px;text-transform:uppercase;color:#0b1020;background:#64748b;border-radius:4px;padding:1px 5px}
+  .mod>.f .tag.fe{background:#2dd4bf}.mod>.f .tag.miss{background:#f43f5e}
+  .mb{padding:6px 9px}
+  .key{margin:0 0 6px}
+  .key .kt{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:#fbbf24;font-weight:700;margin-bottom:3px}
+  .kn{font-weight:600;font-size:12px;margin:6px 0 3px;color:#cbd5e1}
+  .kn::before{content:"▸ ";color:var(--muted)}
+  .chips{display:flex;flex-wrap:wrap;gap:4px}
+  .m{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;background:#0b1322;border:1px solid #1d2840;
+    border-radius:5px;padding:2px 6px;color:#cbd5e1}
+  .m.k{border-color:#fbbf24;color:#fde68a;background:#1c1705}
+  .more{color:var(--muted);font-size:10.5px;align-self:center}
+  .note{color:var(--muted);font-style:italic;font-size:11px;padding:2px 0}
+  .hintp{color:var(--muted);font-size:12px;padding:10px 2px}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Algo Trading Hub <small>system flow + live code drill-down</small></h1>
+    <div class="spacer"></div>
+    <div class="seg" id="flows"></div>
+  </header>
+
+  <div class="wrap">
+    <div class="stage">
+      <svg id="flow" viewBox="0 0 1200 900" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#3b4d68"/>
+          </marker>
+          <marker id="ar2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#5b7196"/>
+          </marker>
+        </defs>
+        <g id="edges"></g>
+        <g id="nodes"></g>
+        <g id="inspector"></g>
+        <circle id="token" r="7" fill="#38bdf8" stroke="#0b1020" stroke-width="2" opacity="0"/>
+        <circle id="orbit" r="5" fill="#38bdf8" stroke="#0b1020" stroke-width="1.5" opacity="0"/>
+      </svg>
+    </div>
+    <aside id="drill">
+      <div class="dh"><div class="lab">code drill-down</div><div class="ttl">—</div><div class="role"></div></div>
+      <div class="db" id="dbody"><div class="hintp">Play a flow or click any box to see the real classes &amp; methods behind that stage.</div></div>
+    </aside>
+  </div>
+
+  <div id="narr"><div id="step">—</div><div id="desc">Pick a flow and press play. Each box = a system module; the panel shows the code that runs there.</div></div>
+
+  <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+    <button class="btn" id="play">▶ Play</button>
+    <button class="btn" id="stepb">⏭ Step</button>
+    <button class="btn" id="restart">↺ Restart</button>
+    <label style="color:var(--muted)">Speed
+      <select id="speed"><option value="1.6">0.5×</option><option value="1" selected>1×</option><option value="0.55">2×</option></select>
+    </label>
+    <div class="spacer"></div>
+    <div style="color:var(--muted);font-size:12px">tip: click a box to pin its code</div>
+  </div>
+</div>
+
+<script>
+const CODE = {"MD": {"role": "Ingests the venue feed and computes microstructure features.", "modules": [{"rel": "engine/market_data/orderbook.py", "classes": [{"name": "BookLevel", "methods": [], "more": 0}, {"name": "OrderBook", "methods": ["invalidate", "apply_snapshot", "apply_diff", "ready", "best_bid", "best_ask", "mid", "spread_bps", "depth_sum", "imbalance", "micro_price"], "more": 0}, {"name": "OrderBookStore", "methods": ["get"], "more": 0}], "functions": ["_upsert"], "fmore": 0, "key": []}, {"rel": "engine/market_data/trade_tape.py", "classes": [{"name": "TapeStats", "methods": ["total_qty", "bid_hit_ratio", "ask_hit_ratio"], "more": 0}, {"name": "TradeTape", "methods": ["set_window_sec", "record", "stats"], "more": 0}, {"name": "_RunningSums", "methods": ["add", "remove", "total_qty"], "more": 0}], "functions": ["_velocity", "_large_trade_share"], "fmore": 0, "key": []}, {"rel": "engine/market_data/feature_store.py", "classes": [{"name": "Features", "methods": [], "more": 0}, {"name": "FeatureStore", "methods": ["apply_settings", "hub", "snapshot"], "more": 0}], "functions": ["unrealized_pnl_bps", "_inventory_ratio"], "fmore": 0, "key": []}, {"rel": "engine/market_data/microstructure_hub.py", "classes": [{"name": "MicrostructureSnapshot", "methods": [], "more": 0}, {"name": "MicrostructureHub", "methods": ["apply_settings", "on_trade", "on_mid", "set_markout_listener", "on_fill", "last_fill_adverse_bps", "snapshot"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/market_data/mid_tracker.py", "classes": [{"name": "MidStats", "methods": [], "more": 0}, {"name": "MidReturnTracker", "methods": ["apply_settings", "on_mid", "stats"], "more": 0}], "functions": ["_realized_vol_bps", "_return_bps_over"], "fmore": 0, "key": []}, {"rel": "engine/market_data/funding_store.py", "classes": [{"name": "FundingSnapshot", "methods": [], "more": 0}, {"name": "FundingRateStore", "methods": ["update", "get", "rate_bps", "carry_bps"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/market_data/data_quality.py", "classes": [{"name": "DiffAction", "methods": [], "more": 0}, {"name": "SymbolMdHealth", "methods": [], "more": 0}, {"name": "DataQualityMonitor", "methods": ["assess", "on_applied", "record_gap", "on_snapshot", "invalidate", "tick_staleness", "metrics"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "gateways/binance/market_connection.py", "classes": [{"name": "MarketConnection", "methods": ["_spawn", "start", "stop", "_run_shard", "_read_into_queue", "_process_shard_queue", "_schedule_ticker_arr", "_run_reconnect_handler", "_dispatch_ticker_arr", "_dispatch"], "more": 0}], "functions": ["_stream_parts_for_symbols", "_joined_stream_url_len", "_shard_symbols_for_streams", "_parse_book_ticker", "_parse_agg_trade", "_parse_depth_diff"], "fmore": 0, "key": []}, {"rel": "engine/core/engine.py", "classes": [{"name": "Engine", "methods": ["_refresh_ticks_from_books", "_on_tick", "_on_depth", "_on_trade", "_on_quote_volume_24h"]}], "functions": [], "key": ["_on_tick", "_on_depth", "_on_trade", "_on_quote_volume_24h", "_refresh_ticks_from_books"]}], "inside": ["depth diff", "order book", "trade tape", "features", "publish"]}, "SIG": {"role": "Strategies turn features into trading Signals (the alpha).", "modules": [{"rel": "engine/strategies/strategy_base.py", "classes": [{"name": "StrategyBase", "methods": ["symbols", "on_tick", "on_fill", "manages_own_risk", "analytics_snapshot", "refresh_settings", "attach_position_provider", "_position_qty", "_sync_open_side_from_position"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/strategies/pairs_trading.py", "classes": [{"name": "PairConfig", "methods": [], "more": 0}, {"name": "_DeviationStats", "methods": ["push", "restore_samples", "export_samples", "zscore"], "more": 0}, {"name": "PairsTradingStrategy", "methods": ["_effective_z_window_sec", "refresh_settings", "_warmup_state_path", "_restore_warmup_state", "persist_warmup_state", "_maybe_persist_warmup_state", "_load_calibration", "_load_symbol_calibration_pairs", "_apply_pair_calibration_map", "attach_equity_provider", "attach_weight_provider", "symbols", "manages_own_risk", "analytics_snapshot", "on_tick", "_maybe_refresh_analytics"], "more": 17}], "functions": ["_basis"], "fmore": 0, "key": []}, {"rel": "engine/strategies/sma_crossover.py", "classes": [{"name": "_SymbolState", "methods": ["append"], "more": 0}, {"name": "SmaCrossoverStrategy", "methods": ["analytics_snapshot", "_resolve_universe", "attach_equity_provider", "symbols", "refresh_settings", "on_fill", "on_tick", "_cap_entries", "_maybe_log_scan_heartbeat", "_push_sample", "_append_bar_close_if_advanced", "_state_for", "_size_for"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/strategies/flow_momentum.py", "classes": [{"name": "_SymbolState", "methods": [], "more": 0}, {"name": "FlowMomentumStrategy", "methods": ["analytics_snapshot", "_resolve_universe", "attach_equity_provider", "attach_venue_position_provider", "_venue_position", "_position_qty", "symbols", "manages_own_risk", "refresh_settings", "on_fill", "on_tick", "_tape_exit_pressure", "_maybe_exit", "_tape_momentum_faded", "_sync_state", "_state_for"], "more": 3}], "functions": ["_tape_pressure", "_flow_direction"], "fmore": 0, "key": []}, {"rel": "engine/strategies/blended_signals.py", "classes": [{"name": "BlendRegime", "methods": [], "more": 0}, {"name": "_IndicatorState", "methods": [], "more": 0}, {"name": "BlendedSignalsStrategy", "methods": ["analytics_snapshot", "_validate_windows", "_resolve_universe", "attach_equity_provider", "attach_mm2_active_symbols_provider", "symbols", "refresh_settings", "on_fill", "on_tick", "_on_bar_close", "_regime_flip_exit", "_min_bars_required", "_update_regime", "_component_votes", "_blend_score", "_log_bar"], "more": 7}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/strategies/indicators.py", "classes": [{"name": "RsiWilderState", "methods": [], "more": 0}, {"name": "AdxWilderState", "methods": [], "more": 0}], "functions": ["ema_step", "ema_seed_from_closes", "wilder_alpha", "wilder_step", "sma", "std_dev", "rsi_from_closes", "rsi_wilder_step", "rsi_wilder_seed_from_closes", "adx_wilder_step", "bollinger_bands", "macd_step"], "fmore": 1, "key": []}, {"rel": "engine/strategies/signal_scaling.py", "classes": [], "functions": ["clamp_unit_signal", "normalized_unit_signal", "conviction_above_entry", "cubic_scaled_qty", "cubic_position_size"], "fmore": 0, "key": []}, {"rel": "engine/strategies/market_making/strategy.py", "classes": [{"name": "_SymbolState", "methods": [], "more": 0}, {"name": "MarketMakingV2Strategy", "methods": ["analytics_snapshot", "refresh_settings", "manages_own_risk", "attach_equity_provider", "attach_own_book_provider", "attach_fill_vwap_provider", "attach_venue_position_provider", "_venue_position", "symbols", "on_fill", "on_tick", "_open_position_count", "_total_inventory_notional", "on_tick_quotes", "_spread_ok", "_own"], "more": 10}], "functions": ["_tape_confirms"], "fmore": 0, "key": []}, {"rel": "engine/strategies/market_making/core.py", "classes": [{"name": "SkewState", "methods": [], "more": 0}, {"name": "MmQuotePricing", "methods": [], "more": 0}], "functions": ["exit_pegged_price", "exit_loss_urgency", "exit_limit_price", "inventory_ratio", "signed_tape_pressure", "tape_pressure", "build_microstructure_bias", "_quote_asset", "stablecoin_fx", "stablecoin_basis_bps", "funding_shift_bps", "update_protect_state"], "fmore": 29, "key": []}, {"rel": "engine/strategies/market_making/avellaneda_stoikov.py", "classes": [{"name": "AsPricingParams", "methods": [], "more": 0}], "functions": ["resolve_as_params", "as_vol_bps", "effective_liquidity_k", "compute_as_reservation", "compute_as_half_spread_bps", "compute_as_quote_pricing"], "fmore": 0, "key": []}, {"rel": "engine/strategies/market_making/ids.py", "classes": [], "functions": ["is_mm_strategy"], "fmore": 0, "key": []}, {"rel": "engine/strategies/market_making/settings_adapter.py", "classes": [{"name": "Mm2SettingsAdapter", "methods": ["__getattr__"], "more": 0}], "functions": ["mm_settings_for"], "fmore": 0, "key": []}], "inside": ["read features", "on_tick", "signal / z-score", "size & scale", "emit Signal"]}, "DEC": {"role": "Sizing, cross-strategy netting and dispatch choose the order.", "modules": [{"rel": "engine/strategies/signal_netter.py", "classes": [{"name": "NettedSignal", "methods": [], "more": 0}, {"name": "NettingResult", "methods": [], "more": 0}], "functions": ["_signed_delta", "net_strategy_signals", "_with_strategy"], "fmore": 0, "key": []}, {"rel": "engine/strategies/signal_scaling.py", "classes": [], "functions": ["clamp_unit_signal", "normalized_unit_signal", "conviction_above_entry", "cubic_scaled_qty", "cubic_position_size"], "fmore": 0, "key": []}, {"rel": "engine/core/engine.py", "classes": [{"name": "Engine", "methods": ["_evaluate_strategies", "_evaluate_all_strategies_netted", "_dispatch_signals", "_dispatch_netted_single", "_dispatch_single", "_dispatch_group"]}], "functions": [], "key": ["_evaluate_strategies", "_evaluate_all_strategies_netted", "_dispatch_signals", "_dispatch_single", "_dispatch_group", "_dispatch_netted_single"]}], "inside": ["collect signals", "net (all-mode)", "resolve size", "build parent", "dispatch"]}, "RISKC": {"role": "Pre-trade validation + circuit breakers approve or veto.", "modules": [{"rel": "engine/risk/pretrade_validator.py", "classes": [{"name": "ValidationResult", "methods": [], "more": 0}, {"name": "_DedupEntry", "methods": [], "more": 0}, {"name": "_DedupWindow", "methods": [], "more": 0}, {"name": "PreTradeValidator", "methods": ["apply_settings", "validate_single", "validate_group", "check_limit_collar", "_validate_reduce_only", "_fat_finger", "_venue_bump_ok", "_dedup_key", "_is_duplicate", "_is_duplicate_window", "_record_dedup", "_record_dedup_window", "_prune_dedup"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/risk/circuit_breaker.py", "classes": [{"name": "BreakerScope", "methods": [], "more": 0}, {"name": "BreakerSeverity", "methods": [], "more": 0}, {"name": "BreakerState", "methods": [], "more": 0}, {"name": "Breach", "methods": [], "more": 0}, {"name": "BreakerStatus", "methods": ["to_dict"], "more": 0}, {"name": "CircuitBreaker", "methods": ["set_enabled", "trip", "rearm", "clear_disabled_codes", "tick", "is_engine_halted", "is_blocked", "active", "history", "_archive", "_publish"], "more": 0}], "functions": ["_blocks_strategy", "_affects", "keys_for"], "fmore": 0, "key": []}, {"rel": "common/breaker_registry.py", "classes": [{"name": "BreakerDefinition", "methods": [], "more": 0}], "functions": ["breaker_applies_to_strategy", "default_breaker_enabled_map", "merge_breaker_enabled", "majors_being_disabled"], "fmore": 0, "key": []}, {"rel": "engine/risk/market_data_guard.py", "classes": [{"name": "MarketDataGuard", "methods": ["apply_settings", "from_settings", "evaluate", "_evaluate_spread_static", "_evaluate_spread_dynamic", "_allowed_spread_bps"], "more": 0}], "functions": [], "fmore": 0, "key": []}], "inside": ["validate", "fat-finger", "spread collar", "breaker state", "approve / veto"]}, "OMS": {"role": "Builds parent/child orders; submission & rate gates.", "modules": [{"rel": "engine/orders/order_manager.py", "classes": [{"name": "_SubmitGuardLike", "methods": ["gate_child", "record_status"], "more": 0}, {"name": "OrderManager", "methods": ["attach_submit_guard", "last_ws_user_activity_ts", "last_venue_truth_ts", "touch_ws_user_data_activity", "touch_venue_truth_from_rest", "register_parent", "_strategy_for_child", "submit_child", "on_order_update", "on_fill", "cancel", "cancel_parent", "cancel_all", "mark_working_cancelled", "working_children", "parent"], "more": 5}], "functions": ["new_client_order_id", "_order_to_dict", "_fill_to_dict"], "fmore": 0, "key": []}, {"rel": "engine/orders/order_state_machine.py", "classes": [], "functions": ["merge_order_status"], "fmore": 0, "key": []}, {"rel": "engine/execution/submit_guard.py", "classes": [{"name": "_TokenBucket", "methods": ["acquire"], "more": 0}, {"name": "SubmitGuard", "methods": ["apply_settings", "from_settings", "can_submit_parent", "gate_child", "clear_reject_streak", "record_status"], "more": 0}], "functions": [], "fmore": 0, "key": []}], "inside": ["client id", "submit guard", "place child", "state machine", "track working"]}, "EXEC": {"role": "Algo wheel \u2192 VWAP slicer / passive quotes \u2192 child orders.", "modules": [{"rel": "engine/execution/execution_router.py", "classes": [{"name": "_ParentGate", "methods": ["can_submit_parent"], "more": 0}, {"name": "ParentSubmissionRejected", "methods": [], "more": 0}, {"name": "ExecutionRouter", "methods": ["attach_submit_guard", "submit", "_resolve_urgency", "cancel", "shutdown"], "more": 0}], "functions": ["_new_parent_id"], "fmore": 0, "key": []}, {"rel": "engine/execution/vwap_executor.py", "classes": [{"name": "_FlattenRecoverComplete", "methods": [], "more": 0}, {"name": "ExecutorConfig", "methods": [], "more": 0}, {"name": "VwapExecutor", "methods": ["set_limit_collar_check", "apply_settings", "_cfg_for_parent", "execute", "cancel_parent", "shutdown", "_build_viable_schedule", "_run_parent", "_notify_venue_flat", "_try_reduce_only_recovery_after_reject", "_submit_slice", "_await_terminal", "_await_fill_or_market", "_passive_price"], "more": 0}], "functions": ["_aggressive_touch_price", "_is_reduce_only_reject", "_slice_satisfies", "_single_shot_delay"], "fmore": 0, "key": []}, {"rel": "engine/execution/algo_wheel.py", "classes": [{"name": "WheelConfig", "methods": ["from_settings"], "more": 0}, {"name": "AlgoWheel", "methods": ["apply_settings", "config_for", "choose"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/execution/slicer.py", "classes": [{"name": "Slice", "methods": [], "more": 0}], "functions": ["build_schedule", "_weights"], "fmore": 0, "key": []}, {"rel": "engine/execution/quote_executor.py", "classes": [{"name": "_WorkingQuote", "methods": [], "more": 0}, {"name": "_SymbolSession", "methods": [], "more": 0}, {"name": "QuoteExecutor", "methods": ["apply_settings", "refresh", "cancel_all", "clear_sessions", "prune_symbol", "seed_sessions_from_oms", "_is_child_working", "_prune_stale_levels", "_seed_symbol_from_oms", "_refresh_symbol", "_sync_side", "_sync_single", "_sync_climb", "_sync_ladder", "_sync_take", "_place_level"], "more": 2}], "functions": ["_new_quote_parent_id", "_aggregate_level", "_quote_unchanged"], "fmore": 0, "key": []}, {"rel": "engine/execution/exec_style.py", "classes": [], "functions": ["resolve_cross_touch"], "fmore": 0, "key": []}, {"rel": "engine/execution/slippage_guard.py", "classes": [{"name": "SlippageGuard", "methods": ["set_cooldown_sec", "on_fill"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/execution/impact_model.py", "classes": [{"name": "ImpactConfig", "methods": ["from_settings"], "more": 0}, {"name": "ImpactModel", "methods": ["config", "estimate_bps", "apply"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/execution/quality_guard.py", "classes": [{"name": "ExecutionQualityGuard", "methods": ["apply_settings", "from_settings", "evaluate"], "more": 0}], "functions": [], "fmore": 0, "key": []}], "inside": ["wheel choose", "vwap schedule", "slice orders", "peg / cross", "slippage guard"]}, "EXCH": {"role": "The venue seam \u2014 only this layer talks to Binance.", "modules": [{"rel": "gateways/gateway_interface.py", "classes": [{"name": "DepthDiff", "methods": [], "more": 0}, {"name": "SymbolFilters", "methods": [], "more": 0}, {"name": "GatewayInterface", "methods": ["connect", "disconnect", "subscribe_market_data", "subscribe_user_data", "place_order", "cancel_order", "fetch_open_orders", "fetch_order_by_client_id", "cancel_all_open_orders", "get_symbol_filters", "set_leverage", "fetch_positions", "fetch_balance", "fetch_balances", "fetch_balances_and_positions", "fetch_24h_volumes"], "more": 4}], "functions": [], "fmore": 0, "key": []}, {"rel": "gateways/binance/binance_gateway.py", "classes": [{"name": "BinanceGateway", "methods": ["sync_clock", "clock_skew_ms", "connect", "get_symbol_filters", "disconnect", "subscribe_market_data", "subscribe_user_data", "place_order", "cancel_order", "fetch_open_orders", "fetch_order_by_client_id", "cancel_all_open_orders", "set_leverage", "fetch_positions", "fetch_balance", "fetch_balances"], "more": 7}], "functions": ["_max_initial_leverage_from_brackets", "_parse_symbol_filters", "_safe_float", "_parse_open_order", "_map_open_status"], "fmore": 0, "key": []}, {"rel": "gateways/binance/rest_client.py", "classes": [{"name": "BinanceRestError", "methods": [], "more": 0}, {"name": "BinanceRestClient", "methods": ["_extend_global_pause", "rest_backoff_remaining_sec", "rest_is_heavily_throttled", "close", "_ensure_open", "_sign_params", "_execute_rate_limited_request", "server_time", "sync_server_time", "time_offset_ms", "exchange_info", "klines", "book_snapshot", "agg_trades", "book_ticker", "ticker_24hr"], "more": 19}], "functions": ["_retry_after_from_rate_limit_message", "parse_retry_after_header"], "fmore": 0, "key": []}, {"rel": "gateways/binance/order_connection.py", "classes": [{"name": "OrderConnection", "methods": ["load_exchange_info", "_quantize_qty", "_quantize_price", "start", "stop", "place_order", "cancel_order", "_user_ws_url", "_keepalive_loop", "_user_data_loop", "_read_loop", "_dispatch", "_handle_account_update", "_handle_order_trade_update"], "more": 0}], "functions": ["_safe_float", "_fmt_qty", "_fmt_price", "_map_status"], "fmore": 0, "key": []}, {"rel": "gateways/binance/account_connection.py", "classes": [{"name": "AccountConnection", "methods": ["fetch_balances", "fetch_balances_and_positions", "fetch_balance", "fetch_positions"], "more": 0}], "functions": ["_balances_from_assets", "_position_from_row", "_positions_from_rows", "_asset_balance"], "fmore": 0, "key": []}, {"rel": "gateways/binance/leverage_bracket_cache.py", "classes": [], "functions": ["_normalize_rest_base", "backend_root", "leverage_bracket_cache_path", "load_leverage_bracket_cache", "save_leverage_bracket_cache"], "fmore": 0, "key": []}, {"rel": "gateways/factory.py", "classes": [], "functions": ["_build_binance", "_build_ibkr", "create_gateway", "supported_venues"], "fmore": 0, "key": []}], "inside": ["sign", "REST order", "user-data WS", "fills / acct", "resync"]}, "RMEAS": {"role": "Continuously measured risk inputs (exposure, PnL, drawdown, margin).", "modules": [{"rel": "engine/risk/exposure_tracker.py", "classes": [{"name": "ExposureTracker", "methods": ["from_settings", "symbol_additional_budget", "symbol_ok", "margin_ok"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/risk/pnl_tracker.py", "classes": [{"name": "PnLSnapshot", "methods": ["total"], "more": 0}, {"name": "PnLTracker", "methods": ["snapshot", "drawdown_pct", "update", "hwm_drawdown_pct", "hwm", "reanchor_hwm_after_drawdown_rearm", "reset_session"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/risk/loss_tracker.py", "classes": [{"name": "_DailyAnchor", "methods": [], "more": 0}, {"name": "LossTracker", "methods": ["apply_settings", "from_settings", "update", "_refresh_daily_anchor", "_check_daily_loss", "_check_streak", "consecutive_losses", "clear_streak_after_rearm", "reset_session", "reanchor_daily_baseline_after_rearm"], "more": 0}], "functions": ["_utc_day_start"], "fmore": 0, "key": []}, {"rel": "engine/risk/margin_ratio_guard.py", "classes": [{"name": "MarginRatioGuard", "methods": ["apply_settings", "from_settings", "evaluate"], "more": 0}], "functions": ["_exit_intent"], "fmore": 0, "key": []}, {"rel": "engine/portfolio/portfolio.py", "classes": [{"name": "EquityPoint", "methods": [], "more": 0}, {"name": "PortfolioSnapshot", "methods": ["equity"], "more": 0}, {"name": "Portfolio", "methods": ["seed_balances", "seed_cash", "update_asset_balance", "update_balances", "update_cash", "session_start_equity", "reanchor_session_start_equity_after_drawdown_rearm", "_reset_session_drawdown", "_update_session_drawdown", "session_peak_equity", "session_max_drawdown_abs", "session_max_drawdown_pct", "cash", "cash_by_asset", "_unrealized_pnl", "snapshot"], "more": 2}], "functions": ["_extrema_indices"], "fmore": 0, "key": []}, {"rel": "engine/position/venue_pnl.py", "classes": [{"name": "VenuePnlSnapshot", "methods": [], "more": 0}], "functions": ["executable_price", "venue_position_from", "price_pnl_bps", "qty_aligned_with_venue", "resolve_entry_price", "venue_bps_from_exchange_upnl", "compute_venue_pnl", "apply_attributed_fill_vwap", "inventory_pnl_bps", "maybe_log_pnl_verification"], "fmore": 0, "key": []}], "inside": ["mark-to-mkt", "exposure", "drawdown", "VaR", "margin ratio"]}, "RCTRL": {"role": "Acts on the measures: sizing, stops, limits, breakers.", "modules": [{"rel": "engine/risk/risk_manager.py", "classes": [{"name": "RiskDecision", "methods": [], "more": 0}, {"name": "ExitIntent", "methods": [], "more": 0}, {"name": "RiskManager", "methods": ["kill_switch", "breaker", "limits", "evaluate_market_data", "update_max_risk_pct", "apply_settings", "check", "on_fill", "note_venue_rejected_exit", "monitor_tick", "_maybe_trip_drawdown"], "more": 0}], "functions": ["_exit_intent"], "fmore": 0, "key": []}, {"rel": "engine/risk/stop_loss.py", "classes": [{"name": "StopBracket", "methods": [], "more": 0}, {"name": "StopLossMonitor", "methods": ["arm", "disarm", "note_venue_rejected_exit", "set_externally_managed", "evaluate", "replace_limits"], "more": 0}], "functions": ["_sign", "_bracket_changed"], "fmore": 0, "key": []}, {"rel": "engine/risk/limits.py", "classes": [{"name": "Limits", "methods": ["from_settings"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/risk/circuit_breaker.py", "classes": [{"name": "BreakerScope", "methods": [], "more": 0}, {"name": "BreakerSeverity", "methods": [], "more": 0}, {"name": "BreakerState", "methods": [], "more": 0}, {"name": "Breach", "methods": [], "more": 0}, {"name": "BreakerStatus", "methods": ["to_dict"], "more": 0}, {"name": "CircuitBreaker", "methods": ["set_enabled", "trip", "rearm", "clear_disabled_codes", "tick", "is_engine_halted", "is_blocked", "active", "history", "_archive", "_publish"], "more": 0}], "functions": ["_blocks_strategy", "_affects", "keys_for"], "fmore": 0, "key": []}, {"rel": "engine/risk/venue_sizing.py", "classes": [], "functions": ["venue_min_qty", "_floor_to_step", "venue_cap_qty", "_round_to_tick", "clamp_limit_price", "venue_qty_in_bounds"], "fmore": 0, "key": []}, {"rel": "engine/risk/mm_flow_guard.py", "classes": [{"name": "MmFlowGuard", "methods": ["apply_settings", "evaluate_entry"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/risk/order_exposure_guard.py", "classes": [{"name": "OrderExposureGuard", "methods": ["apply_settings", "from_settings", "check"], "more": 0}], "functions": ["_child_open_notional"], "fmore": 0, "key": []}], "inside": ["sizing", "stop-loss", "limits", "circuit breaker", "force exit"]}, "RECON": {"role": "Heals OMS/position drift against the venue (venue = truth).", "modules": [{"rel": "engine/core/reconciliation.py", "classes": [{"name": "Reconciler", "methods": ["apply_settings", "from_settings", "start", "stop", "_run", "reconcile_once"], "more": 0}], "functions": ["_log_venue_throttle"], "fmore": 0, "key": []}, {"rel": "engine/core/order_reconciliation.py", "classes": [{"name": "OrderReconciler", "methods": ["apply_settings", "start", "stop", "_run", "from_settings", "sync_startup", "_refresh_local_orphans_from_venue", "reconcile_once"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/core/connection_monitor.py", "classes": [{"name": "ConnectionMonitor", "methods": ["apply_settings", "from_settings", "evaluate"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/core/book_resync_runtime.py", "classes": [], "functions": ["schedule_gap_resync", "drain_gap_resync", "on_market_ws_reconnect", "flush_reconnect_resync", "book_resync_concurrency", "book_resync_symbol_timeout_sec", "snapshot_book_timed", "run_book_resync_workers", "cancel_reconnect_resync_task", "_clear_book_resync_if_current", "resync_symbol_books", "_resync_symbol_books_locked"], "fmore": 1, "key": []}], "inside": ["venue snapshot", "diff vs OMS", "heal positions", "cancel orphans", "resync books"]}, "POS": {"role": "Source-of-truth positions, per-strategy ledger and portfolio.", "modules": [{"rel": "engine/position/position_tracker.py", "classes": [{"name": "PositionTracker", "methods": ["seed", "on_fill", "on_tick", "apply_exchange_positions", "sync_from_venue", "all", "get", "venue_qty", "record_venue_snapshot", "entry_before_flat", "clear_entry_before_flat", "_apply_fill", "_publish"], "more": 0}], "functions": ["_same_sign", "_position_to_dict"], "fmore": 0, "key": []}, {"rel": "engine/position/strategy_ledger.py", "classes": [{"name": "_SymbolLeg", "methods": [], "more": 0}, {"name": "StrategyPositionLedger", "methods": ["qty", "fill_vwap", "apply_delta", "apply_fill", "reconcile_symbol_to_venue", "symbols", "snapshot", "_leg"], "more": 0}], "functions": ["_sign"], "fmore": 0, "key": []}, {"rel": "engine/position/venue_pnl.py", "classes": [{"name": "VenuePnlSnapshot", "methods": [], "more": 0}], "functions": ["executable_price", "venue_position_from", "price_pnl_bps", "qty_aligned_with_venue", "resolve_entry_price", "venue_bps_from_exchange_upnl", "compute_venue_pnl", "apply_attributed_fill_vwap", "inventory_pnl_bps", "maybe_log_pnl_verification"], "fmore": 0, "key": []}, {"rel": "engine/portfolio/portfolio.py", "classes": [{"name": "EquityPoint", "methods": [], "more": 0}, {"name": "PortfolioSnapshot", "methods": ["equity"], "more": 0}, {"name": "Portfolio", "methods": ["seed_balances", "seed_cash", "update_asset_balance", "update_balances", "update_cash", "session_start_equity", "reanchor_session_start_equity_after_drawdown_rearm", "_reset_session_drawdown", "_update_session_drawdown", "session_peak_equity", "session_max_drawdown_abs", "session_max_drawdown_pct", "cash", "cash_by_asset", "_unrealized_pnl", "snapshot"], "more": 2}], "functions": ["_extrema_indices"], "fmore": 0, "key": []}, {"rel": "engine/core/engine.py", "classes": [{"name": "Engine", "methods": ["_on_fill", "_on_account_update"]}], "functions": [], "key": ["_on_fill", "_on_account_update"]}], "inside": ["apply fill", "update position", "strategy ledger", "portfolio PnL", "publish"]}, "MON": {"role": "Performance, execution-quality TCA, attribution and alerts.", "modules": [{"rel": "engine/performance/performance_tracker.py", "classes": [{"name": "TradeRecord", "methods": [], "more": 0}, {"name": "_PendingParentClose", "methods": [], "more": 0}, {"name": "PerformanceTracker", "methods": ["record_fill", "finalize_parent_close", "_accumulate_parent_close", "_attribute_strategy_pnl", "realized_pnl_by_strategy", "_append_realized", "_bump_session", "trades", "realized_transactions", "win_rate", "gross_pnls", "profit_factor", "rolling_close_wins", "rolling_close_losses", "rolling_close_breakevens", "session_wins"], "more": 9}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/performance/strategy_hub.py", "classes": [{"name": "StrategyLegSnapshot", "methods": [], "more": 0}, {"name": "StrategyPnlSnapshot", "methods": [], "more": 0}, {"name": "StrategyHubSnapshot", "methods": [], "more": 0}, {"name": "StrategyHubService", "methods": ["last_snapshot", "mark_strategy_swap", "peek_snapshot", "refresh", "_build_snapshot", "_unrealized_for_strategy", "_to_payload", "_material_change"], "more": 0}], "functions": ["_side_label", "_leg_unrealized", "_leg_unrealized_venue_aligned", "_analytics_equal"], "fmore": 0, "key": []}, {"rel": "engine/performance/strategy_attribution.py", "classes": [{"name": "RiskExitAttribution", "methods": [], "more": 0}], "functions": ["_ledger_owners", "strategy_for_risk_exit", "contribution_weights", "split_pnl_by_strategy"], "fmore": 0, "key": []}, {"rel": "engine/performance/session_costs.py", "classes": [], "functions": ["stable_usd_amount", "commission_to_usd"], "fmore": 0, "key": []}, {"rel": "engine/performance/fill_classification.py", "classes": [{"name": "FillClassification", "methods": [], "more": 0}], "functions": ["position_before_fill", "classify_fill", "_same_sign", "_pick_close_pnl"], "fmore": 0, "key": []}, {"rel": "engine/execution/execution_metrics.py", "classes": [{"name": "ExecutionReport", "methods": ["is_complete"], "more": 0}, {"name": "ExecutionTracker", "methods": ["on_parent_submit", "on_fill", "close_parent", "open_reports", "report_for_parent", "history", "clear_completed_history_after_rearm", "aggregate", "_mark_complete", "_publish_progress"], "more": 0}], "functions": ["_slippage_bps"], "fmore": 0, "key": []}, {"rel": "engine/observability/alert_manager.py", "classes": [{"name": "AlertManager", "methods": ["fire"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "engine/observability/latency_tracker.py", "classes": [{"name": "_Span", "methods": [], "more": 0}, {"name": "LatencyTracker", "methods": ["on_tick", "on_signal", "on_risk_passed", "on_child_submitted", "on_venue_ack", "histograms", "maybe_emit", "_record"], "more": 0}], "functions": [], "fmore": 0, "key": []}], "inside": ["classify fill", "perf metrics", "exec TCA", "attribution", "alerts"]}, "BUS": {"role": "Decouples producers from API/persistence subscribers.", "modules": [{"rel": "common/events.py", "classes": [{"name": "Event", "methods": [], "more": 0}, {"name": "EventBus", "methods": ["attach_journal", "start_journal_writer", "stop_journal_writer", "_journal_writer_loop", "_enqueue_journal", "publish", "publish_many", "publish_nowait", "subscribe", "subscriber_count"], "more": 0}], "functions": [], "fmore": 0, "key": []}], "inside": ["publish", "fan-out", "WAL sink", "JSONL sink", "WS sink"]}, "PERSIST": {"role": "WAL journal + per-run JSONL archive (audit / crash replay).", "modules": [{"rel": "engine/persistence/journal.py", "classes": [{"name": "JournalCheckpoint", "methods": [], "more": 0}, {"name": "ReplaySummary", "methods": [], "more": 0}, {"name": "EventJournal", "methods": ["open", "append", "flush", "close", "_write_checkpoint"], "more": 0}], "functions": ["find_previous_wal", "_parse_side", "_parse_order_status", "_parse_order_type", "_child_from_payload", "_fill_from_payload", "_position_from_payload", "replay_wal_async"], "fmore": 0, "key": []}, {"rel": "engine/persistence/event_recorder.py", "classes": [{"name": "RecorderConfig", "methods": [], "more": 0}, {"name": "EventRecorder", "methods": ["start", "stop", "run_dir", "_run", "_file_for", "_write_event", "_flush_all", "_close_all", "_write_manifest"], "more": 0}], "functions": ["make_run_dir", "_json_default", "types_recorded"], "fmore": 0, "key": []}, {"rel": "engine/persistence/run_bootstrap.py", "classes": [{"name": "RunBootstrap", "methods": [], "more": 0}], "functions": ["resolve_run_dir", "resolve_recovery_wal", "open_journal", "start_recorder", "bootstrap_run", "shutdown_bootstrap"], "fmore": 0, "key": []}, {"rel": "engine/persistence/market_capture.py", "classes": [{"name": "_BuildingBar", "methods": ["update", "to_row"], "more": 0}, {"name": "MarketBarCapturer", "methods": ["_bucket_start", "on_clock", "flush_requested", "flush", "_flush_impl", "refresh_symbols"], "more": 0}], "functions": ["should_capture", "create_capturer"], "fmore": 0, "key": []}], "inside": ["append WAL", "per-run JSONL", "flush", "replay on boot"]}, "API": {"role": "REST + WebSocket control plane and serializers.", "modules": [{"rel": "api/server.py", "classes": [], "functions": ["_fmt", "_log_buffer_pump", "create_app"], "fmore": 0, "key": []}, {"rel": "api/ws.py", "classes": [], "functions": ["stream"], "fmore": 0, "key": []}, {"rel": "api/routes/control.py", "classes": [{"name": "_StrategyToggleBody", "methods": [], "more": 0}], "functions": ["_status", "_breaker_dto", "_breaker_list", "_log_control_ok", "_run_or_500", "start", "pause", "resume", "stop", "kill", "shutdown", "flatten"], "fmore": 6, "key": []}, {"rel": "api/routes/status.py", "classes": [], "functions": ["status", "equity", "state"], "fmore": 0, "key": []}, {"rel": "api/routes/positions.py", "classes": [], "functions": ["positions"], "fmore": 0, "key": []}, {"rel": "api/routes/orders.py", "classes": [], "functions": ["orders"], "fmore": 0, "key": []}, {"rel": "api/routes/backtest.py", "classes": [], "functions": ["_persist_base", "_jobs_dir", "_job_to_dto", "_ensure_worker", "list_datasets", "list_capture_sessions", "list_analytics_jobs", "get_analytics_job", "download_dataset", "run_backtest_endpoint", "list_backtest_runs", "get_backtest_run"], "fmore": 0, "key": []}, {"rel": "api/serializers.py", "classes": [], "functions": ["_startup_dto", "build_status_dto", "_fmt_ts", "position_to_dto", "trade_to_dto", "child_order_to_dto", "execution_report_to_parent_dto", "execution_report_to_dto", "orders_dto", "execution_stats_dto", "strategy_to_dto", "snapshot_to_state_dto"], "fmore": 4, "key": []}, {"rel": "engine/core/engine.py", "classes": [{"name": "Engine", "methods": ["set_active_strategy", "apply_settings_patch", "start", "pause", "resume", "stop", "flatten"]}], "functions": [], "key": ["start", "pause", "resume", "stop", "flatten", "set_active_strategy", "apply_settings_patch"]}], "inside": ["recv request", "validate", "call engine", "serialize", "stream /ws"]}, "UI": {"role": "Frontend (TypeScript) \u2014 hydrate + /ws live stream.", "modules": [{"rel": "src/hooks/useAlgoStream.ts", "frontend": true, "classes": [], "functions": [], "key": []}, {"rel": "src/lib/api.ts", "frontend": true, "classes": [], "functions": [], "key": []}, {"rel": "src/routes/index.tsx", "frontend": true, "classes": [], "functions": [], "key": []}, {"rel": "src/components/algo/EquityChart.tsx", "frontend": true, "classes": [], "functions": [], "key": []}], "inside": ["GET state", "open /ws", "apply events", "5s poll", "render"]}, "USER": {"role": "Human operator \u2014 the only manual control surface.", "modules": [{"rel": "api/routes/control.py", "classes": [{"name": "_StrategyToggleBody", "methods": [], "more": 0}], "functions": ["_status", "_breaker_dto", "_breaker_list", "_log_control_ok", "_run_or_500", "start", "pause", "resume", "stop", "kill", "shutdown", "flatten"], "fmore": 6, "key": []}, {"rel": "engine/core/engine.py", "classes": [{"name": "Engine", "methods": ["set_active_strategy", "start", "pause", "stop", "flatten"]}], "functions": [], "key": ["start", "pause", "stop", "flatten", "set_active_strategy"]}], "inside": ["watch", "decide", "click control", "POST /control", "confirm"]}, "OFF": {"role": "Out-of-process backtests + calibration jobs (no live-loop impact).", "modules": [{"rel": "analytics/backtest/runner.py", "classes": [{"name": "BacktestResult", "methods": [], "more": 0}], "functions": ["_patched_strategy_clock", "_resolve_run_dir", "run_backtest", "_run_single_symbol", "_save_result", "list_saved_results", "load_saved_result"], "fmore": 0, "key": []}, {"rel": "analytics/backtest/simulator.py", "classes": [{"name": "SimFill", "methods": [], "more": 0}, {"name": "SimState", "methods": ["qty", "mark_equity"], "more": 0}, {"name": "FillSimulator", "methods": ["apply_signals", "_fill_one"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "analytics/backtest/metrics.py", "classes": [{"name": "BacktestMetrics", "methods": [], "more": 0}], "functions": ["compute_metrics"], "fmore": 0, "key": []}, {"rel": "analytics/backtest/strategy_factory.py", "classes": [], "functions": ["build_strategy", "symbols_for_strategy"], "fmore": 0, "key": []}, {"rel": "analytics/spread_calibrator.py", "classes": [{"name": "SymbolSpreadStats", "methods": [], "more": 0}, {"name": "SpreadCalibrationReport", "methods": [], "more": 0}], "functions": ["calibrate_symbol_spread", "build_calibration", "write_calibration", "_resolve_symbols", "main"], "fmore": 0, "key": []}, {"rel": "analytics/symbol_calibrator.py", "classes": [{"name": "SymbolCalibrationPayload", "methods": [], "more": 0}], "functions": ["_clamp", "_calibrate_from_l2", "_enrich_tape_hit_ratio", "build_symbol_calibration_from_l2", "enrich_symbol_calibration_tape", "build_symbol_calibration", "write_symbol_calibration", "_resolve_symbols", "main"], "fmore": 0, "key": []}, {"rel": "analytics/mm_universe_scanner.py", "classes": [{"name": "TickerVolStats", "methods": [], "more": 0}, {"name": "MmSymbolScore", "methods": [], "more": 0}, {"name": "StabilityThresholds", "methods": [], "more": 0}, {"name": "MmUniverseReport", "methods": [], "more": 0}], "functions": ["_clamp", "_range_vol_24h_bps", "_sample_window_sec", "_intraday_vol_from_range", "_parse_ticker_vol_row", "_effective_mid_vol_bps", "derive_stability_thresholds", "_min_edge_bps", "_pin_symbols", "_ranking_by_symbol", "assemble_pin_universe", "assemble_tiered_universe"], "fmore": 12, "key": []}, {"rel": "analytics/data_loader.py", "classes": [{"name": "DownloadResult", "methods": [], "more": 0}], "functions": ["fetch_klines", "download_klines", "_run_cli", "main"], "fmore": 0, "key": []}, {"rel": "analytics/worker_main.py", "classes": [], "functions": ["_handle_signal", "run_loop", "main"], "fmore": 0, "key": []}, {"rel": "analytics/worker_supervisor.py", "classes": [{"name": "AnalyticsWorkerSupervisor", "methods": ["start", "stop", "pid"], "more": 0}], "functions": [], "fmore": 0, "key": []}, {"rel": "analytics/jobs.py", "classes": [{"name": "JobRecord", "methods": [], "more": 0}], "functions": ["resolve_jobs_dir", "_status_path", "_find_job_path", "enqueue_job", "load_job", "_write_job", "list_jobs", "claim_next_job", "finish_job", "execute_job", "_parse_dt", "_run_backtest_job"], "fmore": 4, "key": []}], "inside": ["load klines", "replay bars", "run strategy", "sim fills", "metrics"]}};
+const N = {
+  MD:{x:60,y:44,w:200,h:58,t:"Market data",s:"gateway · book · features"},
+  SIG:{x:60,y:130,w:200,h:58,t:"Signal generation",s:"strategies · indicators"},
+  DEC:{x:60,y:216,w:200,h:58,t:"Decision engine",s:"sizing · netting · arbitration"},
+  RISKC:{x:60,y:302,w:200,h:58,t:"Risk checks",s:"pre-trade · breakers"},
+  OMS:{x:60,y:388,w:200,h:58,t:"Order management",s:"order mgr · submit guard"},
+  EXEC:{x:60,y:474,w:200,h:58,t:"Execution",s:"algo wheel · vwap · quotes"},
+  EXCH:{x:60,y:560,w:200,h:58,t:"Exchange",s:"Binance gateway · venue"},
+  RMEAS:{x:300,y:216,w:210,h:58,t:"Risk measures",s:"exposure · drawdown · VaR · margin"},
+  RCTRL:{x:300,y:302,w:210,h:58,t:"Risk controls",s:"stop-loss · limits · breakers"},
+  RECON:{x:300,y:446,w:210,h:58,t:"Reconciliation",s:"venue truth · heal drift"},
+  POS:{x:300,y:560,w:210,h:58,t:"Position tracking",s:"position · portfolio · ledger"},
+  MON:{x:560,y:360,w:200,h:58,t:"Monitoring",s:"performance · TCA · alerts"},
+  BUS:{x:560,y:560,w:200,h:58,t:"EventBus",s:"event fan-out"},
+  PERSIST:{x:800,y:300,w:210,h:58,t:"Persistence",s:"WAL · JSONL archive"},
+  API:{x:800,y:420,w:210,h:58,t:"API · WebSocket",s:"REST + /ws"},
+  UI:{x:800,y:520,w:210,h:58,t:"React dashboard",s:"useAlgoStream"},
+  USER:{x:800,y:620,w:210,h:58,t:"You · operator",s:"controls + watches",person:true},
+  OFF:{x:60,y:812,w:620,h:58,t:"Offline analytics",s:"backtest · walk-forward · calibration"}
+};
+const E = {
+  md_sig:{a:"MD",b:"SIG",p:[[160,102],[160,130]]},
+  sig_dec:{a:"SIG",b:"DEC",p:[[160,188],[160,216]]},
+  dec_rk:{a:"DEC",b:"RISKC",p:[[160,274],[160,302]]},
+  rk_oms:{a:"RISKC",b:"OMS",p:[[160,360],[160,388]]},
+  oms_ex:{a:"OMS",b:"EXEC",p:[[160,446],[160,474]]},
+  ex_exch:{a:"EXEC",b:"EXCH",p:[[160,532],[160,560]]},
+  exch_md:{a:"EXCH",b:"MD",p:[[60,589],[40,589],[40,73],[60,73]]},
+  exch_pos:{a:"EXCH",b:"POS",p:[[260,589],[300,589]]},
+  pos_rmeas:{a:"POS",b:"RMEAS",p:[[510,575],[540,575],[540,245],[510,245]]},
+  rmeas_rctrl:{a:"RMEAS",b:"RCTRL",p:[[405,274],[405,302]]},
+  rctrl_riskc:{a:"RCTRL",b:"RISKC",p:[[300,331],[260,331]]},
+  rctrl_oms:{a:"RCTRL",b:"OMS",p:[[360,360],[360,417],[260,417]]},
+  exch_recon:{a:"EXCH",b:"RECON",p:[[260,575],[280,575],[280,475],[300,475]]},
+  recon_pos:{a:"RECON",b:"POS",p:[[405,504],[405,560]]},
+  pos_bus:{a:"POS",b:"BUS",p:[[510,589],[560,589]]},
+  bus_mon:{a:"BUS",b:"MON",p:[[660,560],[660,418]]},
+  bus_per:{a:"BUS",b:"PERSIST",p:[[760,575],[778,575],[778,330],[800,330]]},
+  bus_api:{a:"BUS",b:"API",p:[[760,589],[792,589],[792,449],[800,449]]},
+  api_ui:{a:"API",b:"UI",p:[[905,478],[905,520]]},
+  ui_user:{a:"UI",b:"USER",p:[[905,578],[905,620]]},
+  user_api:{a:"USER",b:"API",p:[[1010,648],[1035,648],[1035,449],[1010,449]]},
+  api_eng:{a:"API",b:"OMS",p:[[800,460],[785,460],[785,725],[270,725],[270,420],[260,420]]},
+  off_sig:{a:"OFF",b:"SIG",p:[[60,841],[18,841],[18,159],[60,159]]},
+  off_md:{a:"OFF",b:"MD",p:[[60,827],[30,827],[30,73],[60,73]]}
+};
+const FLOWS = {
+  trade:{label:"Trade lifecycle",color:"#38bdf8",steps:[
+    ["exch_md","<b>Market data:</b> the exchange streams L2 depth & trades; the gateway builds the order book + FeatureStore."],
+    ["md_sig","<b>Signal generation:</b> strategies turn features into trading signals."],
+    ["sig_dec","<b>Decision engine:</b> position sizing, signal netting & strategy arbitration choose the order."],
+    ["dec_rk","<b>Risk checks:</b> pre-trade validation + circuit breakers approve or veto."],
+    ["rk_oms","<b>Order management:</b> parent order created with dedup, rate-limit & exposure gates."],
+    ["oms_ex","<b>Execution:</b> algo wheel → VWAP slicer / passive quotes → child orders."],
+    ["ex_exch","<b>Exchange:</b> child orders routed to Binance through the gateway."],
+    ["exch_pos","<b>Fills</b> + ACCOUNT_UPDATE update position & portfolio — the venue is the truth."],
+    ["pos_bus","State changes publish to the EventBus."],
+    ["bus_api","Fanned out to the API / WebSocket."],
+    ["api_ui","Streamed live to the React dashboard."],
+    ["ui_user","<b>You</b> monitor equity, positions, health & breakers."]
+  ]},
+  control:{label:"Operator control",color:"#fbbf24",steps:[
+    ["user_api","<b>You</b> click Start / Pause / Flatten, swap strategy or move the risk slider — the browser sends POST /api/control/* (it never talks to Binance directly)."],
+    ["api_eng","The <b>engine</b> applies it: connect, pause ticks, hot-swap strategy, or flatten (reduce-only) via order management."],
+    ["oms_ex","Any resulting orders are sliced for execution…"],
+    ["ex_exch","…and routed to the exchange."],
+    ["exch_pos","Positions update to the new truth."],
+    ["pos_bus","The change is published as an event."],
+    ["bus_api","EventBus fans the new state out to the API."],
+    ["api_ui","Fresh state streams back over /ws."],
+    ["ui_user","<b>You</b> see your action confirmed on the dashboard — closing the human-in-the-loop."]
+  ]},
+  risk:{label:"Risk framework",color:"#f43f5e",steps:[
+    ["exch_pos","Live <b>position tracking</b> feeds the risk engine with real exposure & PnL."],
+    ["pos_rmeas","<b>Risk measures:</b> position exposure, volatility, maximum drawdown, Value-at-Risk, margin ratio."],
+    ["rmeas_rctrl","<b>Risk controls</b> act: position sizing, stop-loss, drawdown & exposure limits, margin, circuit breakers — soft and hard limits."],
+    ["rctrl_riskc","<b>Soft limits</b> gate new orders at the risk-check stage before they are sized."],
+    ["rctrl_oms","<b>Hard limits & breakers</b> force reduce-only exits straight through order management — they bypass entry gates so exits always reach the venue."],
+    ["oms_ex","The protective exit is sliced for execution…"],
+    ["ex_exch","…and sent to the exchange to cut risk."]
+  ]},
+  events:{label:"Events & monitoring",color:"#2dd4bf",steps:[
+    ["pos_bus","Every fill, position and PnL change is published to the <b>EventBus</b>."],
+    ["bus_per","Events are journaled to the <b>WAL + per-run JSONL</b> archive (audit & crash replay)."],
+    ["bus_mon","<b>Monitoring</b> computes performance, execution quality (TCA) and fires alerts."],
+    ["bus_api","The same events fan out to the API / WebSocket."],
+    ["api_ui","The dashboard renders them live (+ a 5 s safety poll)."],
+    ["ui_user","<b>You</b> watch equity, positions, health & breakers."]
+  ]},
+  reconcile:{label:"Position truth",color:"#c084fc",steps:[
+    ["exch_recon","Periodically — and after every WS reconnect — the engine pulls REST snapshots + ACCOUNT_UPDATE from the venue."],
+    ["recon_pos","The <b>reconciler</b> heals any drift: the venue is the source of truth, not local state."],
+    ["pos_bus","Corrected positions publish events…"],
+    ["bus_api","…fanned out to the API…"],
+    ["api_ui","…so the dashboard always matches Binance."]
+  ]},
+  backtest:{label:"Backtest & validation",color:"#a3e635",steps:[
+    ["off_sig","<b>Backtesting:</b> stored 1m klines / L2 are replayed bar-by-bar into the strategy."],
+    ["sig_dec","Replay uses the <b>same</b> signal + decision code as live — no look-ahead bias."],
+    ["dec_rk","<b>Walk-forward:</b> calibrate on one window, trade the next out-of-sample; the same risk checks apply."],
+    ["rk_oms","A FillSimulator applies slippage + transaction costs to the simulated orders."],
+    ["oms_ex","Metrics — Sharpe, max drawdown, win rate — plus robustness: parameter sweep, Monte Carlo, regime tests."]
+  ]},
+  calibration:{label:"Calibration → boot",color:"#f472b6",steps:[
+    ["off_md","<b>Calibration</b> (spread, per-symbol, MM universe) runs offline and writes JSON artifacts."],
+    ["md_sig","Loaded at <b>boot</b>, they seed the market-data features the strategies consume."]
+  ]}
+};
+
+const svgNS="http://www.w3.org/2000/svg";
+const nodesG=document.getElementById("nodes"), edgesG=document.getElementById("edges");
+const token=document.getElementById("token");
+const nodeEls={}, edgeEls={};
+function el(tag,a){const e=document.createElementNS(svgNS,tag);for(const k in a)e.setAttribute(k,a[k]);return e;}
+
+for(const id in E){
+  const pl=el("polyline",{points:E[id].p.map(p=>p.join(",")).join(" "),class:"edge","marker-end":"url(#ar)"});
+  edgesG.appendChild(pl); edgeEls[id]=pl;
+}
+for(const id in N){
+  const n=N[id], cx=n.x+n.w/2;
+  const g=el("g",{class:"node"}); g.dataset.id=id;
+  g.appendChild(el("rect",{x:n.x,y:n.y,width:n.w,height:n.h,rx:10,class:"bx"}));
+  if(n.person){
+    g.appendChild(el("circle",{cx:n.x+22,cy:n.y+23,r:7,class:"glyph"}));
+    g.appendChild(el("path",{d:`M${n.x+11},${n.y+46} q11,-14 22,0`,class:"glyph"}));
+  }
+  const t=el("text",{x:cx,y:n.y+27,"text-anchor":"middle",class:"t"}); t.textContent=n.t; g.appendChild(t);
+  const s=el("text",{x:cx,y:n.y+n.h-12,"text-anchor":"middle",class:"s"}); s.textContent=n.s; g.appendChild(s);
+  g.addEventListener("click",()=>{ stop(); selectNode(id); });
+  nodesG.appendChild(g); nodeEls[id]=g;
+}
+
+function edgeLen(p){let L=0;for(let i=1;i<p.length;i++)L+=Math.hypot(p[i][0]-p[i-1][0],p[i][1]-p[i-1][1]);return L;}
+function pointAt(p,t){let d=t*edgeLen(p);
+  for(let i=1;i<p.length;i++){const s=Math.hypot(p[i][0]-p[i-1][0],p[i][1]-p[i-1][1]);
+    if(d<=s||i===p.length-1){const r=s?d/s:0;return[p[i-1][0]+(p[i][0]-p[i-1][0])*r,p[i-1][1]+(p[i][1]-p[i-1][1])*r];}d-=s;}
+  return p[p.length-1];}
+
+let flowKey="trade", idx=0, playing=false, raf=null, speed=1;
+const stepEl=document.getElementById("step"), descEl=document.getElementById("desc");
+
+function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+function renderDrill(id){
+  const c=CODE[id], n=N[id];
+  const dh=document.querySelector("#drill .dh");
+  dh.querySelector(".ttl").textContent=n.t;
+  dh.querySelector(".role").textContent=c?c.role:"";
+  const b=document.getElementById("dbody"); b.innerHTML="";
+  if(!c){ b.innerHTML='<div class="hintp">No backend code maps to this node.</div>'; return; }
+  c.modules.forEach(m=>{
+    const card=document.createElement("div"); card.className="mod";
+    let tag=""; if(m.frontend)tag='<span class="tag fe">frontend</span>'; if(m.missing)tag='<span class="tag miss">n/a</span>';
+    let html=`<div class="f"><span>${esc(m.rel)}</span>${tag}</div><div class="mb">`;
+    if(m.frontend){ html+='<div class="note">TypeScript — see file in src/</div>'; }
+    else if(m.missing){ html+='<div class="note">file not found at build time</div>'; }
+    else{
+      if(m.key&&m.key.length){ html+=`<div class="key"><div class="kt">key methods used here</div><div class="chips">`+
+        m.key.map(k=>`<span class="m k">${esc(k)}()</span>`).join("")+`</div></div>`; }
+      (m.classes||[]).forEach(cl=>{
+        html+=`<div class="kn">${esc(cl.name)}</div><div class="chips">`+
+          cl.methods.map(me=>`<span class="m">${esc(me)}()</span>`).join("")+
+          (cl.more?`<span class="more">+${cl.more} more</span>`:"")+`</div>`;
+      });
+      if(m.functions&&m.functions.length){
+        html+=`<div class="chips" style="margin-top:5px">`+
+          m.functions.map(f=>`<span class="m">${esc(f)}()</span>`).join("")+
+          (m.fmore?`<span class="more">+${m.fmore} more</span>`:"")+`</div>`;
+      }
+      if((!m.classes||!m.classes.length)&&(!m.functions||!m.functions.length)&&!(m.key&&m.key.length))
+        html+='<div class="note">module-level wiring</div>';
+    }
+    card.innerHTML=html+"</div>"; b.appendChild(card);
+  });
+}
+
+// ---- on-canvas "inside this component" loop --------------------------------
+const inspG=document.getElementById("inspector"), orbit=document.getElementById("orbit");
+let orbitState=null, orbAng=0;
+function clampRect(r,tx,ty){return [Math.max(r.x,Math.min(tx,r.x+r.w)), Math.max(r.y,Math.min(ty,r.y+r.h))];}
+function clearInside(){ inspG.innerHTML=""; orbitState=null; }
+function renderInside(id){
+  inspG.innerHTML="";
+  const steps=(CODE[id]&&CODE[id].inside)||[], n=N[id];
+  const bx={x:540,y:28,w:628,h:252};
+  inspG.appendChild(el("rect",{x:bx.x,y:bx.y,width:bx.w,height:bx.h,rx:14,class:"insp"}));
+  const tt=el("text",{x:bx.x+18,y:bx.y+26,class:"insptt"}); tt.textContent="INSIDE · "+n.t.toUpperCase(); inspG.appendChild(tt);
+  const sub=el("text",{x:bx.x+18,y:bx.y+42,class:"inspsub"}); sub.textContent="what runs inside this component"; inspG.appendChild(sub);
+  if(!steps.length){ orbitState=null; return; }
+  const cx=bx.x+bx.w/2, cy=bx.y+58+(bx.h-58)/2, rx=212, ry=92;
+  // regular polygon (pentagon for 5 steps) gently widened to fit the panel,
+  // first vertex at the top so it reads point-up.
+  const pts=steps.map((s,i)=>{const a=(-90+i*360/steps.length)*Math.PI/180; return [cx+rx*Math.cos(a), cy+ry*Math.sin(a)];});
+  // connector from the active node up into the loop (faint dashed pointer)
+  const [sx,sy]=clampRect(n,cx,cy), [ex,ey]=clampRect(bx, n.x+n.w/2, n.y+n.h/2);
+  inspG.appendChild(el("path",{d:`M${sx},${sy} Q${(sx+ex)/2},${Math.min(sy,ey)-46} ${ex},${ey}`,class:"inspconn"}));
+  // straight polygon edges + a direction arrow at each edge midpoint
+  for(let i=0;i<pts.length;i++){const A=pts[i],B=pts[(i+1)%pts.length];
+    inspG.appendChild(el("line",{x1:A[0],y1:A[1],x2:B[0],y2:B[1],class:"inspedge"}));
+    const mx=(A[0]+B[0])/2,my=(A[1]+B[1])/2, deg=Math.atan2(B[1]-A[1],B[0]-A[0])*180/Math.PI;
+    inspG.appendChild(el("polygon",{points:"-5,-4 6,0 -5,4",class:"insparrow",transform:`translate(${mx},${my}) rotate(${deg})`}));
+  }
+  // step chips
+  steps.forEach((s,i)=>{const P=pts[i], w=Math.max(64,s.length*6.6+16), h=24;
+    inspG.appendChild(el("rect",{x:P[0]-w/2,y:P[1]-h/2,width:w,height:h,rx:7,class:"inspchip"}));
+    const tx=el("text",{x:P[0],y:P[1]+4,"text-anchor":"middle",class:"inspct"}); tx.textContent=`${i+1}. ${s}`; inspG.appendChild(tx);
+  });
+  orbitState={pts};
+}
+(function orbitLoop(){ if(orbitState&&orbitState.pts){const P=orbitState.pts,nn=P.length; orbAng=(orbAng+0.02)%nn;
+    const i=Math.floor(orbAng), r=orbAng-i, A=P[i], B=P[(i+1)%nn];
+    orbit.setAttribute("cx",A[0]+(B[0]-A[0])*r); orbit.setAttribute("cy",A[1]+(B[1]-A[1])*r); orbit.setAttribute("opacity",1);}
+  else orbit.setAttribute("opacity",0); requestAnimationFrame(orbitLoop); })();
+
+function setFlow(k){
+  flowKey=k; idx=0; stop(); clearActive();
+  const f=FLOWS[k];
+  document.documentElement.style.setProperty("--flow",f.color);
+  token.setAttribute("fill",f.color); orbit.setAttribute("fill",f.color);
+  document.querySelectorAll("#flows button").forEach(b=>b.classList.toggle("on",b.dataset.k===k));
+  stepEl.textContent="—"; descEl.innerHTML=`<b>${f.label}.</b> Press play to watch it move, or step through.`;
+}
+function clearActive(){
+  for(const id in edgeEls)edgeEls[id].classList.remove("on");
+  for(const id in nodeEls){nodeEls[id].classList.remove("on");nodeEls[id].classList.remove("dim");}
+  token.setAttribute("opacity",0); clearInside();
+}
+function selectNode(id){
+  for(const e in edgeEls)edgeEls[e].classList.remove("on");
+  for(const nid in nodeEls){nodeEls[nid].classList.toggle("on",nid===id);nodeEls[nid].classList.toggle("dim",nid!==id);}
+  token.setAttribute("opacity",0); renderDrill(id); renderInside(id);
+}
+function highlight(eid){
+  const used=new Set([E[eid].a,E[eid].b]);
+  for(const id in nodeEls){nodeEls[id].classList.toggle("on",used.has(id));nodeEls[id].classList.toggle("dim",!used.has(id));}
+  for(const id in edgeEls)edgeEls[id].classList.toggle("on",id===eid);
+  renderDrill(E[eid].b); renderInside(E[eid].b);
+}
+function runStep(after){
+  const f=FLOWS[flowKey]; if(idx>=f.steps.length)idx=0;
+  const [eid,desc]=f.steps[idx];
+  stepEl.textContent=`${idx+1}/${f.steps.length}`; descEl.innerHTML=desc; highlight(eid);
+  const pts=E[eid].p, dur=1500*speed, t0=performance.now();
+  token.setAttribute("opacity",1); cancelAnimationFrame(raf);
+  (function frame(now){let p=(now-t0)/dur; if(p>1)p=1;
+    const pt=pointAt(pts,p<0?0:p); token.setAttribute("cx",pt[0]); token.setAttribute("cy",pt[1]);
+    if(p<1)raf=requestAnimationFrame(frame);
+    else{token.setAttribute("opacity",0); idx++; if(after)after();}})(t0);
+}
+function loop(){ if(!playing)return; runStep(()=>{ if(playing) setTimeout(loop,520); }); }
+function play(){ playing=true; document.getElementById("play").textContent="⏸ Pause"; loop(); }
+function stop(){ playing=false; cancelAnimationFrame(raf); token.setAttribute("opacity",0);
+  document.getElementById("play").textContent="▶ Play"; }
+
+document.getElementById("play").onclick=()=>{ playing?stop():play(); };
+document.getElementById("stepb").onclick=()=>{ stop(); runStep(); };
+document.getElementById("restart").onclick=()=>{ stop(); idx=0; clearActive(); stepEl.textContent="—";
+  descEl.innerHTML=`<b>${FLOWS[flowKey].label}.</b> Restarted — press play or step.`; };
+document.getElementById("speed").onchange=e=>{ speed=parseFloat(e.target.value); };
+
+const fb=document.getElementById("flows");
+for(const k in FLOWS){const b=document.createElement("button");b.dataset.k=k;b.textContent=FLOWS[k].label;
+  b.onclick=()=>{const wp=playing;setFlow(k);if(wp)play();};fb.appendChild(b);}
+
+setFlow("trade"); play();
+</script>
+</body>
+</html>
