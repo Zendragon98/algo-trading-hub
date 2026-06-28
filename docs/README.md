@@ -10,7 +10,6 @@ local setup, engineering handover, and production-readiness checks.
 | [../README.md](../README.md) | All readers | Product overview, installation, local run path, validation checklist |
 | [../backend/README.md](../backend/README.md) | Engineers / quants | Backend overview, quick start, folder map, reading path |
 | [**ARCHITECTURE.md**](ARCHITECTURE.md) | Architects / engineers | Canonical architecture diagram index and component map |
-| [**REPORT_ALIGNMENT.md**](REPORT_ALIGNMENT.md) | Report writers | Project report sections mapped to repo evidence and remaining report work |
 
 ## Backend Deep Dives
 

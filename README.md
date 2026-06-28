@@ -10,8 +10,6 @@ A full-stack **algorithmic trading console**: a React dashboard observes and con
 
 **Full documentation register:** [`docs/README.md`](docs/README.md)
 
-**Project report support:** [`docs/REPORT_ALIGNMENT.md`](docs/REPORT_ALIGNMENT.md)
-
 **Disclaimer:** This repository is software for engineering and research. It is **not** certified for any specific regulatory regime; institutional use requires your own legal, risk, and security sign-off ([`docs/COMPLIANCE_AND_GOVERNANCE.md`](docs/COMPLIANCE_AND_GOVERNANCE.md)).
 
 ---
@@ -54,8 +52,6 @@ Recommended first pass:
 2. Open the dashboard and inspect state, strategy controls, circuit breakers,
    OMS panels, logs, and backtesting views.
 3. Run any needed [validation and optional checks](#validation-and-optional-checks).
-4. Use [`docs/REPORT_ALIGNMENT.md`](docs/REPORT_ALIGNMENT.md) when preparing a
-   project report from the repository evidence.
 
 Where to start reading the code:
 
