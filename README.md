@@ -449,6 +449,8 @@ algo-trading-hub/
 │   ├── pyproject.toml
 │   ├── run.bat
 │   └── .env.example
+├── architecture_map.html         # Interactive map: components and how they connect
+├── system_flow.html              # Interactive view: data, control, and order flow
 ├── package.json
 ├── vite.config.ts                # Dev proxy to backend :8000
 ├── wrangler.jsonc                # Cloudflare Workers (TanStack Start production build)
