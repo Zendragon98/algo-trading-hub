@@ -10,6 +10,8 @@ A full-stack **algorithmic trading console**: a React dashboard observes and con
 
 **Full documentation register:** [`docs/README.md`](docs/README.md)
 
+**Interactive architecture views:** Open [`architecture_map.html`](architecture_map.html) and [`system_flow.html`](system_flow.html) in any browser. These are self-contained pages that visualize every component of the system and the connections between them - the architecture map shows how the modules wire together, and the system flow shows how data, control, and orders move through the engine.
+
 **Disclaimer:** This repository is software for engineering and research. It is **not** certified for any specific regulatory regime; institutional use requires your own legal, risk, and security sign-off ([`docs/COMPLIANCE_AND_GOVERNANCE.md`](docs/COMPLIANCE_AND_GOVERNANCE.md)).
 
 ---
@@ -447,6 +449,8 @@ algo-trading-hub/
 │   ├── pyproject.toml
 │   ├── run.bat
 │   └── .env.example
+├── architecture_map.html         # Interactive map: components and how they connect
+├── system_flow.html              # Interactive view: data, control, and order flow
 ├── package.json
 ├── vite.config.ts                # Dev proxy to backend :8000
 ├── wrangler.jsonc                # Cloudflare Workers (TanStack Start production build)
